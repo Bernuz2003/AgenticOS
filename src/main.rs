@@ -1,5 +1,9 @@
+mod engine;
+mod memory;
+mod process;
 mod protocol;
-
+use engine::LLMEngine;
+use memory::{MemoryConfig, NeuralMemory};
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Interest, Poll, Token};
 use protocol::CommandHeader;
@@ -7,10 +11,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::rc::Rc;
-mod memory;
-use memory::{MemoryConfig, NeuralMemory};
-mod engine;
-use engine::LLMEngine;
 use std::sync::{Arc, Mutex};
 
 const SERVER: Token = Token(0);
@@ -73,8 +73,11 @@ fn main() -> io::Result<()> {
     println!("Agentic OS Kernel v0.5 (AI Inference) ready...");
 
     loop {
-        poll.poll(&mut events, None)?;
+        // 1. Networking Poll (Non bloccante o timeout cortissimo)
+        // Dobbiamo usare un timeout corto per permettere allo scheduler di girare
+        poll.poll(&mut events, Some(std::time::Duration::from_millis(10)))?;
 
+        // 2. Gestione Eventi Rete (Nuovi comandi)
         for event in events.iter() {
             match event.token() {
                 SERVER => loop {
@@ -103,6 +106,36 @@ fn main() -> io::Result<()> {
                         clients.remove(&token);
                     }
                 }
+            }
+        }
+
+        // 3. THE SCHEDULER (Round Robin)
+        // Blocca il mutex per un attimo per fare i calcoli
+        let mut lock = engine_state.lock().unwrap();
+        if let Some(engine) = lock.as_mut() {
+            let active_pids = engine.list_active_pids();
+
+            for pid in active_pids {
+                // Esegui uno step (genera 1 token)
+                match engine.step_process(pid) {
+                    Ok(Some(token)) => {
+                        // Stampa l'output con il prefisso del PID per vedere il multitasking!
+                        // Esempio: [P1] Ciao [P2] Hello [P1] Mondo
+                        use std::io::Write;
+                        print!("\x1b[32m[P{}]\x1b[0m{}", pid, token); // Colora il PID
+                        std::io::stdout().flush().unwrap();
+                    }
+                    Ok(None) => {} // Nessun output (prefill o token vuoto)
+                    Err(e) => {
+                        eprintln!("\n[P{}] Crashed: {}", pid, e);
+                        engine.kill_process(pid);
+                    }
+                }
+
+                // Se il processo ha finito, killiamolo per risparmiare RAM
+                // Nota: In un OS vero lo lasceremmo "Zombie" per far leggere l'output al client
+                // Qui puliamo per semplicità
+                // (Richiederebbe controllo stato process, facciamo semplificato)
             }
         }
     }
@@ -247,13 +280,14 @@ fn execute_command(
             let mut lock = engine_state.lock().unwrap();
 
             if let Some(engine) = lock.as_mut() {
-                // Generiamo max 100 token per test
-                match engine.predict(&prompt, 100) {
-                    Ok(text) => protocol::response_ok(&text),
-                    Err(e) => protocol::response_err(&format!("Inference Error: {}", e)),
+                // Invece di predict (bloccante), usiamo spawn_process
+                match engine.spawn_process(&prompt, 100) {
+                    // Max 100 token
+                    Ok(pid) => protocol::response_ok(&format!("Process Spawned PID: {}", pid)),
+                    Err(e) => protocol::response_err(&format!("Spawn Failed: {}", e)),
                 }
             } else {
-                protocol::response_err("No Model Loaded. Use LOAD <path> first.")
+                protocol::response_err("No Model Loaded")
             }
         }
 
