@@ -135,29 +135,65 @@ fn main() -> io::Result<()> {
         }
 
         // 2. SCHEDULER (Round Robin sui processi)
+        // 2. SCHEDULER
         let mut lock = engine_state.lock().unwrap();
         if let Some(engine) = lock.as_mut() {
             let active_pids = engine.list_active_pids();
 
             for pid in active_pids {
-                // Esegui uno step
                 match engine.step_process(pid) {
                     Ok(Some((text, owner_id))) => {
-                        // DEBUG: Vediamo se genera token
-                        // print!("[P{}]", pid); use std::io::Write; std::io::stdout().flush().unwrap();
-
-                        // Routing: Trova il client proprietario
                         let token = Token(owner_id);
                         if let Some(client) = clients.get_mut(&token) {
+                            // --- SYSCALL INTERCEPTION LOGIC (Semplificata) ---
+                            // In un sistema reale useremmo uno state-parser più robusto.
+                            // Qui controlliamo se il testo contiene i marcatori.
+
+                            // Nota: Questo è un hack per il test.
+                            // Se il token è "[[", iniziamo a bufferizzare (non inviamo al client).
+                            // Se il token è "]]", eseguiamo.
+                            // Per ora, assumiamo che l'agente generi il comando tutto insieme o quasi.
+
+                            // INVIO AL CLIENT (Standard Output)
                             client.output_buffer.extend(text.as_bytes());
+
+                            // CHECK SYSCALL (Post-processing dell'output)
+                            // Controlliamo se nel buffer di uscita c'è un comando completo
+                            // Questo è sporco ma efficace per demo: leggiamo l'intero buffer di uscita
+                            let output_so_far =
+                                String::from_utf8_lossy(client.output_buffer.make_contiguous())
+                                    .to_string();
+                                  
+                            if let Some(start) = output_so_far.rfind("[[") {
+                                if let Some(end) = output_so_far.rfind("]]") {
+                                    if end > start {
+                                        // ABBIAMO UNA SYSCALL!
+                                        let cmd_content = &output_so_far[start + 2..end];
+                                        println!(
+                                            "OS: Intercepted SysCall from PID {}: {}",
+                                            pid, cmd_content
+                                        );
+
+                                        // 1. Eseguiamo l'azione (Kernel Space)
+                                        let result = handle_syscall(cmd_content);
+
+                                        // 2. Iniettiamo il risultato (Context Injection)
+                                        // Diciamo all'agente: "Ecco il risultato, ora continua"
+                                        let _ = engine.inject_context(pid, &result);
+
+                                        // 3. (Opzionale) Puliamo il buffer di uscita per non mostrare
+                                        // i dettagli tecnici all'utente, oppure li lasciamo per debug.
+                                        // Lasciamoli per ora.
+                                    }
+                                }
+                            }
+
                             let _ = poll.registry().reregister(
                                 &mut client.stream,
                                 token,
                                 Interest::READABLE | Interest::WRITABLE,
                             );
                         } else {
-                            // Se arrivi qui, il client si è disconnesso ma il processo sta ancora generando
-                            // println!("DEBUG: Output for disconnected client {}", owner_id);
                             engine.kill_process(pid);
                         }
                     }
@@ -324,4 +360,24 @@ fn execute_command(
 
     // Scrivi risposta nel buffer di uscita
     client.output_buffer.extend(response);
+}
+
+// Funzione helper per eseguire "System Calls" simulate
+fn handle_syscall(command: &str) -> String {
+    // Formato atteso: "CALC: 2+2"
+    if command.starts_with("CALC:") {
+        let expr = command.trim_start_matches("CALC:").trim();
+        // Per ora facciamo una eval molto stupida o usiamo un crate,
+        // ma per testare il loop basta simulare:
+        if expr.contains('+') {
+            let parts: Vec<&str> = expr.split('+').collect();
+            if parts.len() == 2 {
+                let a: i32 = parts[0].trim().parse().unwrap_or(0);
+                let b: i32 = parts[1].trim().parse().unwrap_or(0);
+                return format!("SysCall Result: {}\n", a + b);
+            }
+        }
+        return "SysCall Error: Invalid Math\n".to_string();
+    }
+    "SysCall Error: Unknown Command\n".to_string()
 }

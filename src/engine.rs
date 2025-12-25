@@ -5,7 +5,6 @@ use candle_transformers::models::quantized_llama as model;
 use model::ModelWeights;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use tokenizers::Tokenizer;
 
 // Importiamo il modulo Process
@@ -160,6 +159,31 @@ impl LLMEngine {
         } else {
             Ok(None)
         }
+    }
+
+    /// Permette al Kernel di inserire testo arbitrario nella memoria del processo.
+    /// Usato per restituire i risultati delle System Calls.
+    // src/engine.rs - Modifica inject_context
+    pub fn inject_context(&mut self, pid: u64, text: &str) -> Result<()> {
+        let process = self
+            .processes
+            .get_mut(&pid)
+            .ok_or(E::msg("PID not found"))?;
+
+        // Aggiungiamo newline per pulizia visiva nel contesto dell'agente
+        let formatted_text = format!("\n{}\n", text);
+
+        let new_tokens = self
+            .tokenizer
+            .encode(formatted_text.as_str(), true)
+            .map_err(E::msg)?
+            .get_ids()
+            .to_vec();
+
+        println!("OS: Injecting {} tokens into PID {}", new_tokens.len(), pid);
+        process.tokens.extend(new_tokens);
+        process.state = ProcessState::Running;
+        Ok(())
     }
 
     pub fn list_active_pids(&self) -> Vec<u64> {
