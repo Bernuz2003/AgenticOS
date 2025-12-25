@@ -1,5 +1,3 @@
-// src/memory.rs
-
 use candle_core::{DType, Device, Tensor};
 use std::collections::{HashMap, VecDeque};
 
@@ -13,7 +11,6 @@ pub struct MemoryConfig {
     pub total_memory_mb: usize,
 }
 
-/// Un blocco fisico ora è un vero Tensonre Candle
 struct PhysicalBlock {
     tensor: Tensor,
 }
@@ -41,8 +38,8 @@ pub struct NeuralMemory {
 
 impl NeuralMemory {
     pub fn new(config: MemoryConfig) -> Result<Self, String> {
-        // Step 1: Seleziona Hardware.
-        // In futuro qui metteremo logic per Device::Cuda(0) o Device::Metal
+        // Seleziona Hardware.
+        // In futuro qui logic per Device::Cuda(0) o Device::Metal
         let device = Device::Cpu;
 
         let elements_per_block = config.block_size * config.hidden_dim;
@@ -92,11 +89,11 @@ impl NeuralMemory {
 
         let mut output = Vec::new();
 
-        // 2. Itera su ogni blocco fisico
+        // Itera su ogni blocco fisico
         for &block_idx in pages {
             let block = &self.physical_blocks[block_idx];
 
-            // 3. Converte il Tensore Candle in Vec<f32> standard
+            // Converte il Tensore Candle in Vec<f32> standard
             // to_vec1() scarica i dati dalla GPU/Tensor alla CPU se necessario
             let chunk: Vec<f32> = block
                 .tensor
@@ -115,8 +112,8 @@ impl NeuralMemory {
             return Err("Tensor ID not found".to_string());
         }
 
-        // 1. Converti bytes -> f32 (assumiamo Little Endian per ora)
-        // Nota: In produzione questo è unsafe cast per velocità, qui usiamo safe copy
+        // Converti bytes -> f32 (assumiamo Little Endian per ora)
+        // Nota: In produzione questo è unsafe cast per velocità, qui safe copy
         let f32_data: Vec<f32> = raw_data
             .chunks_exact(4)
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
@@ -179,8 +176,6 @@ impl NeuralMemory {
         ))
     }
 
-    // In src/memory.rs
-
     pub fn compute_test(&self, id: TensorId, multiplier: f32) -> Result<String, String> {
         let pages = self.page_table.get(&id).ok_or("ID not found")?;
 
@@ -189,12 +184,9 @@ impl NeuralMemory {
         for (i, &block_idx) in pages.iter().enumerate() {
             let block_tensor = &self.physical_blocks[block_idx].tensor;
 
-            // 1. Calcolo (Inference)
+            // Calcolo (Inference)
             let res = (block_tensor * (multiplier as f64)).map_err(|e| e.to_string())?;
 
-            // 2. Statistiche Migliori
-            // Max: ci dice il valore più alto raggiunto (dovrebbe essere 3.0)
-            // Mean: ci dice la densità dei dati
             let max_val: f32 = res
                 .max_all()
                 .map_err(|e| e.to_string())?
@@ -207,7 +199,7 @@ impl NeuralMemory {
                 .to_scalar()
                 .map_err(|e| e.to_string())?;
 
-            // 3. Peek (Anteprima): Estraiamo i primi 5 valori per vederli con i nostri occhi
+            // Peek (Anteprima): Estraiamo i primi 5 valori per vederli con i nostri occhi
             // Appiattiamo il tensore e prendiamo i primi valori
             let vec: Vec<f32> = res
                 .flatten_all()

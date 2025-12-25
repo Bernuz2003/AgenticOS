@@ -6,7 +6,7 @@ pub enum OpCode {
     Load,           // Carica modello
     Exec,           // Esegui inferenza
     Unload,         // Libera memoria
-    MemoryWrite,    // (Futuro) Scrivi tensore in VRAM
+    MemoryWrite,    // Scrivi tensore in VRAM
 }
 
 #[derive(Debug)]

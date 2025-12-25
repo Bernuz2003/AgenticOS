@@ -7,10 +7,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use tokenizers::Tokenizer;
 
-// Importiamo il modulo Process
 use crate::process::{AgentProcess, ProcessState};
 
-/// Mantiene il modello MASTER e gestisce i processi leggeri.
 pub struct LLMEngine {
     // IL MASTER MODEL: Contiene i pesi condivisi (Arc)
     // Usiamo Option per poterlo inizializzare dopo se necessario, ma qui sarà sempre Some dopo load
@@ -31,7 +29,7 @@ impl LLMEngine {
 
         let device = Device::Cpu;
 
-        // 1. Caricamento Pesi (Pesante)
+        // Caricamento Pesi (Pesante)
         let mut file = std::fs::File::open(path)
             .map_err(|e| E::msg(format!("Failed to open model file: {}", e)))?;
         let content = gguf_file::Content::read(&mut file)?;
@@ -39,7 +37,7 @@ impl LLMEngine {
 
         println!("ENGINE: Weights loaded. Loading Tokenizer...");
 
-        // 2. Caricamento Tokenizer (Intelligente)
+        // Caricamento Tokenizer (Intelligente)
         // Cerca prima accanto al modello (es. models/tokenizer.json), poi nella root
         let model_path = Path::new(path);
         let parent_dir = model_path.parent().unwrap_or(Path::new("."));
@@ -88,8 +86,8 @@ impl LLMEngine {
             pid, owner_id
         );
 
-        // 1. CLONAZIONE LEGGERA
-        // Qui avviene la magia. Clone() sui tensori Candle incrementa solo il ref-count.
+        // CLONAZIONE LEGGERA
+        // Clone() sui tensori Candle incrementa solo il ref-count.
         // I pesi (GB) NON vengono copiati. La cache interna viene ricreata vuota.
         let model_clone = self
             .master_model
@@ -97,7 +95,7 @@ impl LLMEngine {
             .ok_or(E::msg("Master model not loaded"))?
             .clone();
 
-        // 2. Tokenizziamo il prompt
+        // Tokenizziamo il prompt
         let tokens = self
             .tokenizer
             .encode(prompt, true)
@@ -105,7 +103,7 @@ impl LLMEngine {
             .get_ids()
             .to_vec();
 
-        // 3. Creiamo il processo con la sua copia privata (ma condivisa nei pesi) del modello
+        // Creiamo il processo con la sua copia privata (ma condivisa nei pesi) del modello
         let process = AgentProcess::new(pid, owner_id, model_clone, tokens, max_tokens);
 
         self.processes.insert(pid, process);
@@ -163,7 +161,6 @@ impl LLMEngine {
 
     /// Permette al Kernel di inserire testo arbitrario nella memoria del processo.
     /// Usato per restituire i risultati delle System Calls.
-    // src/engine.rs - Modifica inject_context
     pub fn inject_context(&mut self, pid: u64, text: &str) -> Result<()> {
         let process = self
             .processes
