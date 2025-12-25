@@ -49,8 +49,9 @@ impl Client {
     }
 }
 
+// --- TOOL HELPERS ---
+
 fn run_python_code(code: &str) -> String {
-    // Pulizia del codice
     let clean_code = code
         .trim()
         .trim_start_matches("```python")
@@ -58,33 +59,21 @@ fn run_python_code(code: &str) -> String {
         .trim_end_matches("```");
 
     println!("OS: Executing Python Code:\n---\n{}\n---", clean_code);
-
-    // Scriviamo il codice in un file temporaneo per gestire script multilinea complessi
     let temp_filename = "agent_script_temp.py";
     if let Err(e) = std::fs::write(temp_filename, clean_code) {
         return format!("SysCall Error: Failed to write temp file: {}", e);
     }
-
-    // Eseguiamo python3 sul file
     let output = Command::new("python3").arg(temp_filename).output();
-
-    // Gestione Risultato
     match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
-
-            // Uniamo stdout e stderr per dare feedback completo all'agente
             let result = if !stderr.is_empty() {
                 format!("Output:\n{}\nErrors:\n{}", stdout, stderr)
             } else {
-                format!("{}", stdout) // Solo output pulito se non ci sono errori
+                format!("{}", stdout)
             };
-
-            // Pulizia file temp
             let _ = std::fs::remove_file(temp_filename);
-
-            // Limitiamo la lunghezza per non intasare il contesto dell'agente
             let max_len = 2000;
             if result.len() > max_len {
                 format!("{}... (Output Truncated)", &result[..max_len])
@@ -98,38 +87,26 @@ fn run_python_code(code: &str) -> String {
     }
 }
 
-/// Verifica che il path sia sicuro e dentro la cartella workspace
 fn resolve_safe_path(filename: &str) -> Option<PathBuf> {
     let clean_name = filename.trim();
-
-    // Sicurezza basilare: rifiuta path con ".." o "/" o "\" all'inizio
     if clean_name.contains("..") || clean_name.starts_with('/') || clean_name.starts_with('\\') {
         return None;
     }
-
     let mut path = PathBuf::from(WORKSPACE_DIR);
     path.push(clean_name);
     Some(path)
 }
 
 fn handle_write_file(args: &str) -> String {
-    // Formato atteso: "nomefile.ext | contenuto..."
-    // Usiamo '|' come separatore perché è raro nei nomi file
     let parts: Vec<&str> = args.splitn(2, '|').collect();
-
     if parts.len() < 2 {
         return "SysCall Error: Usage [[WRITE_FILE: filename | content]]".to_string();
     }
-
     let filename = parts[0].trim();
-    let content = parts[1].trim_start(); // Manteniamo l'indentazione del contenuto
-
-    // 1. Assicuriamoci che il workspace esista
+    let content = parts[1].trim_start();
     if let Err(e) = fs::create_dir_all(WORKSPACE_DIR) {
         return format!("SysCall Error: Failed to create workspace: {}", e);
     }
-
-    // 2. Risolvi path sicuro
     if let Some(path) = resolve_safe_path(filename) {
         println!("OS: Writing file {:?}", path);
         match fs::write(&path, content) {
@@ -149,7 +126,7 @@ fn handle_read_file(filename: &str) -> String {
     if let Some(path) = resolve_safe_path(filename) {
         println!("OS: Reading file {:?}", path);
         match fs::read_to_string(&path) {
-            Ok(content) => content, // Ritorna il contenuto grezzo
+            Ok(content) => content,
             Err(e) => format!("SysCall Error: Read failed: {}", e),
         }
     } else {
@@ -176,53 +153,49 @@ fn handle_list_files() -> String {
 }
 
 fn handle_syscall(command_block: &str) -> String {
-    // Parser pulito
     let clean_cmd = command_block.trim();
-
-    // --- TOOL: PYTHON ---
     if clean_cmd.starts_with("PYTHON:") {
-        let code = clean_cmd.trim_start_matches("PYTHON:");
-        return run_python_code(code);
+        return run_python_code(clean_cmd.trim_start_matches("PYTHON:"));
     }
-
-    // --- TOOL: WRITE_FILE ---
     if clean_cmd.starts_with("WRITE_FILE:") {
-        let args = clean_cmd.trim_start_matches("WRITE_FILE:");
-        return handle_write_file(args);
+        return handle_write_file(clean_cmd.trim_start_matches("WRITE_FILE:"));
     }
-
-    // --- TOOL: READ_FILE ---
     if clean_cmd.starts_with("READ_FILE:") {
-        let filename = clean_cmd.trim_start_matches("READ_FILE:").trim();
-        return handle_read_file(filename);
+        return handle_read_file(clean_cmd.trim_start_matches("READ_FILE:").trim());
     }
-
-    // --- TOOL: LS ---
     if clean_cmd.starts_with("LS") {
         return handle_list_files();
     }
-
-    // --- TOOL: CALC (Legacy) ---
     if clean_cmd.starts_with("CALC:") {
         let expr = clean_cmd.trim_start_matches("CALC:").trim();
         return run_python_code(&format!("print({})", expr));
     }
-
     "SysCall Error: Unknown Tool.".to_string()
 }
 
+// --- HELPER PER IL FORMATO LLAMA 3 ---
+fn format_system_injection(content: &str) -> String {
+    // Usiamo i token speciali di Llama 3 per chiudere il turno precedente e aprire quello di sistema
+    // <|eot_id|> chiude l'assistant
+    // <|start_header_id|>system<|end_header_id|> apre il sistema
+    // ... contenuto ...
+    // <|eot_id|><|start_header_id|>assistant<|end_header_id|> riapre l'assistant
+    format!(
+        "<|eot_id|><|start_header_id|>system<|end_header_id|>\n\n{}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n",
+        content
+    )
+}
+
+// --- MAIN LOOP ---
+
 fn main() -> io::Result<()> {
     env_logger::init();
-
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(128);
-
     let addr = "127.0.0.1:6379".parse().unwrap();
     let mut server = TcpListener::bind(addr)?;
-
     poll.registry()
         .register(&mut server, SERVER, Interest::READABLE)?;
-
     let mut clients: HashMap<Token, Client> = HashMap::new();
     let mut unique_token = Token(SERVER.0 + 1);
 
@@ -235,7 +208,7 @@ fn main() -> io::Result<()> {
     let engine_state: Arc<Mutex<Option<LLMEngine>>> = Arc::new(Mutex::new(None));
 
     println!(
-        "Agentic OS Kernel v1.0 (Python Runtime Enabled) ready on {}",
+        "Agentic OS Kernel v1.2 (IPC & VFS with Llama3 Interrupt) ready on {}",
         addr
     );
 
@@ -285,7 +258,6 @@ fn main() -> io::Result<()> {
             }
         }
 
-        // SCHEDULER & SYSCALL INTERCEPTOR
         let mut lock = engine_state.lock().unwrap();
         if let Some(engine) = lock.as_mut() {
             let active_pids = engine.list_active_pids();
@@ -295,7 +267,6 @@ fn main() -> io::Result<()> {
                     Ok(Some((text, owner_id))) => {
                         let token = Token(owner_id);
                         if let Some(client) = clients.get_mut(&token) {
-                            // Invio Output al Client (Rete)
                             client.output_buffer.extend(text.as_bytes());
                             let _ = poll.registry().reregister(
                                 &mut client.stream,
@@ -303,54 +274,105 @@ fn main() -> io::Result<()> {
                                 Interest::READABLE | Interest::WRITABLE,
                             );
 
-                            // Accumulo per SysCall (Logica)
                             client.syscall_buffer.push_str(&text);
 
-                            // Controllo SysCall sul buffer persistente
-                            // Cerchiamo l'apertura "[["
                             if let Some(start) = client.syscall_buffer.find("[[") {
-                                // Cerchiamo la chiusura "]]" DOPO l'apertura
                                 if let Some(end_offset) = client.syscall_buffer[start..].find("]]")
                                 {
-                                    let end = start + end_offset + 2; // +2 per includere "]]"
-
-                                    // Estraiamo il comando completo
+                                    let end = start + end_offset + 2;
                                     let full_command =
                                         client.syscall_buffer[start..end].to_string();
-                                    // Contenuto interno (es. "PYTHON: print(1)")
-                                    let content = &full_command[2..full_command.len() - 2];
+                                    let content =
+                                        full_command[2..full_command.len() - 2].trim().to_string();
 
-                                    // Eseguiamo solo se è un tool conosciuto
-                                    if content.starts_with("PYTHON:")
+                                    // --- LOGICA SYSCALL CON INTERRUPT ---
+
+                                    if content.starts_with("SPAWN:") {
+                                        println!("OS: SysCall SPAWN from PID {}", pid);
+                                        let prompt = content.trim_start_matches("SPAWN:").trim();
+                                        match engine.spawn_process(prompt, 500, owner_id) {
+                                            Ok(new_pid) => {
+                                                // Feedback in formato Llama 3
+                                                let msg = format!("PROCESS SPAWNED. PID: {}.\nSTATUS: READY.\nACTION REQUIRED: Use [[SEND: {} | message]] to instruct the worker.", new_pid, new_pid);
+                                                let feedback = format_system_injection(&msg);
+                                                let _ = engine.inject_context(pid, &feedback);
+                                            }
+                                            Err(e) => {
+                                                let feedback = format_system_injection(&format!(
+                                                    "ERROR: Spawn failed: {}",
+                                                    e
+                                                ));
+                                                let _ = engine.inject_context(pid, &feedback);
+                                            }
+                                        }
+                                        client.syscall_buffer.clear();
+                                    } else if content.starts_with("SEND:") {
+                                        println!("OS: SysCall SEND from PID {}", pid);
+                                        let parts: Vec<&str> = content
+                                            .trim_start_matches("SEND:")
+                                            .splitn(2, '|')
+                                            .collect();
+                                        if parts.len() == 2 {
+                                            let target_pid_str = parts[0].trim();
+                                            let message = parts[1].trim();
+                                            if let Ok(target_pid) = target_pid_str.parse::<u64>() {
+                                                // Iniettiamo nel target (Formato User Message per lui)
+                                                let msg_for_target = format!(
+                                                    "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n[Message from Parent PID {}]: {}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n",
+                                                    pid, message
+                                                );
+                                                match engine
+                                                    .inject_context(target_pid, &msg_for_target)
+                                                {
+                                                    Ok(_) => {
+                                                        let feedback = format_system_injection("Message sent successfully. Waiting for worker output...");
+                                                        let _ =
+                                                            engine.inject_context(pid, &feedback);
+                                                    }
+                                                    Err(_) => {
+                                                        let _ = engine.inject_context(
+                                                            pid,
+                                                            &format_system_injection(
+                                                                "ERROR: Target PID not found.",
+                                                            ),
+                                                        );
+                                                    }
+                                                }
+                                            } else {
+                                                let _ = engine.inject_context(
+                                                    pid,
+                                                    &format_system_injection(
+                                                        "ERROR: Invalid PID format.",
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                        client.syscall_buffer.clear();
+                                    } else if content.starts_with("PYTHON:")
+                                        || content.starts_with("WRITE_FILE:")
+                                        || content.starts_with("READ_FILE:")
+                                        || content.starts_with("LS")
                                         || content.starts_with("CALC:")
                                     {
                                         println!(
-                                            "OS: Intercepted SysCall from PID {}: {}",
+                                            "OS: Intercepted Tool from PID {}: {}",
                                             pid, full_command
                                         );
-
-                                        let result = handle_syscall(content);
-
-                                        // Iniettiamo il risultato
-                                        let feedback = format!("\nSystem Output:\n{}\n", result);
+                                        let result = handle_syscall(&content);
+                                        let feedback = format_system_injection(&format!(
+                                            "Tool Output:\n{}",
+                                            result
+                                        ));
                                         let _ = engine.inject_context(pid, &feedback);
-
-                                        // Eseguito comando => svuota buffer
                                         client.syscall_buffer.clear();
                                     }
                                 }
                             }
-
-                            // Safety Valve (Pulizia Memoria)
-                            // Se il buffer cresce troppo e non contiene un inizio di comando "[[", buttiamo via il vecchio.
-                            // Questo previene memory leak su generazioni lunghe senza comandi.
                             if client.syscall_buffer.len() > 8000 {
                                 if let Some(start) = client.syscall_buffer.find("[[") {
-                                    // Teniamo solo da "[[" in poi
                                     let preserve = client.syscall_buffer[start..].to_string();
                                     client.syscall_buffer = preserve;
                                 } else {
-                                    // Nessun comando in vista, svuota tutto
                                     client.syscall_buffer.clear();
                                 }
                             }
@@ -369,6 +391,7 @@ fn main() -> io::Result<()> {
     }
 }
 
+// Includi anche queste funzioni per la gestione IO (sono le stesse di prima, ma servono per compilare)
 fn handle_read(
     client: &mut Client,
     memory: &Rc<RefCell<NeuralMemory>>,
@@ -384,9 +407,7 @@ fn handle_read(
                 break;
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return false,
-            Err(e) => {
-                return true;
-            }
+            Err(e) => return true,
         }
     }
     loop {
@@ -488,8 +509,7 @@ fn execute_command(
             let prompt = String::from_utf8_lossy(&payload).to_string();
             let mut lock = engine_state.lock().unwrap();
             if let Some(engine) = lock.as_mut() {
-                match engine.spawn_process(&prompt, 300, client_id) {
-                    // Aumentato token limit per permettere codice
+                match engine.spawn_process(&prompt, 500, client_id) {
                     Ok(pid) => protocol::response_ok(&format!("Process Started PID: {}", pid)),
                     Err(e) => protocol::response_err(&format!("Spawn Failed: {}", e)),
                 }

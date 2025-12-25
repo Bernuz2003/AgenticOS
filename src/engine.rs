@@ -144,21 +144,44 @@ impl LLMEngine {
 
         process.index_pos += input_len;
 
-        if next_token == 2
-            || next_token == 128009
-            || next_token == 128001
-            || (tokens.len() - process.index_pos) >= process.max_tokens
-        {
+        // Decode Output
+        // Decodifichiamo subito per poter controllare le condizioni di stop testuali
+        let text_output = self.tokenizer.decode(&[next_token], true).ok();
+
+        // --- LOGICA DI STOP AVANZATA ---
+        let mut should_stop = false;
+
+        // 1. Controllo ID Token (Stop standard Llama 3)
+        // 2 = EOS generico, 128001 = BOS (raro come stop), 128009 = EOT (End of Turn)
+        if next_token == 2 || next_token == 128001 || next_token == 128009 {
+            should_stop = true;
+        }
+
+        // 2. Controllo Testuale (Fail-safe per Llama 3 e SysCalls)
+        // Fondamentale: Se vediamo "]]", fermiamo tutto per dare priorità al Kernel.
+        if let Some(ref t) = text_output {
+            if t.contains("<|eot_id|>") || t.contains("<|end_of_text|>") || t.contains("]]") {
+                should_stop = true;
+            }
+        }
+
+        // 3. Controllo Lunghezza Massima
+        if (tokens.len() - process.index_pos) >= process.max_tokens {
+            should_stop = true;
+        }
+
+        // Applicazione dello Stop
+        if should_stop {
             process.state = ProcessState::Finished;
         }
 
-        if let Ok(t) = self.tokenizer.decode(&[next_token], true) {
+        // Restituzione risultato
+        if let Some(t) = text_output {
             Ok(Some((t, owner_id)))
         } else {
             Ok(None)
         }
     }
-
     /// Permette al Kernel di inserire testo arbitrario nella memoria del processo.
     /// Usato per restituire i risultati delle System Calls.
     pub fn inject_context(&mut self, pid: u64, text: &str) -> Result<()> {
