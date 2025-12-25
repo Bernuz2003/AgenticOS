@@ -1,0 +1,17 @@
+[package]
+name = "agentic_os_kernel"
+version = "0.5.0"
+edition = "2021"
+
+[dependencies]
+mio = { version = "1.0", features = ["os-poll", "net"] }
+log = "0.4"
+env_logger = "0.11"
+# IL MOTORE
+candle-core = "0.9.1" 
+candle-transformers = "0.9.1"
+tokenizers = "0.22.2"
+# candle-nn = "0.6.0" # Ci servirà per i layer neurali dopo
+byteorder = "1.5" # Utile per manipolare byte grezzi
+anyhow = "1.0" # Gestione errori più pulita per i file
+hf-hub = "0.4.3"
