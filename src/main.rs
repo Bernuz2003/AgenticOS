@@ -7,7 +7,9 @@ use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::fs;
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -17,6 +19,7 @@ use memory::{MemoryConfig, NeuralMemory};
 use protocol::{CommandHeader, OpCode};
 
 const SERVER: Token = Token(0);
+const WORKSPACE_DIR: &str = "./workspace";
 
 enum ClientState {
     WaitingForHeader,
@@ -95,22 +98,117 @@ fn run_python_code(code: &str) -> String {
     }
 }
 
-fn handle_syscall(command_block: &str) -> String {
-    // Parser: [[VERBO: contenuto]]
+/// Verifica che il path sia sicuro e dentro la cartella workspace
+fn resolve_safe_path(filename: &str) -> Option<PathBuf> {
+    let clean_name = filename.trim();
 
-    // Supporto Vecchio CALC (Simulato)
-    if command_block.starts_with("CALC:") {
-        let expr = command_block.trim_start_matches("CALC:").trim();
-        return run_python_code(&format!("print({})", expr)); // Usiamo python anche per CALC!
+    // Sicurezza basilare: rifiuta path con ".." o "/" o "\" all'inizio
+    if clean_name.contains("..") || clean_name.starts_with('/') || clean_name.starts_with('\\') {
+        return None;
     }
 
-    // Supporto NUOVO PYTHON
-    if command_block.starts_with("PYTHON:") {
-        let code = command_block.trim_start_matches("PYTHON:");
+    let mut path = PathBuf::from(WORKSPACE_DIR);
+    path.push(clean_name);
+    Some(path)
+}
+
+fn handle_write_file(args: &str) -> String {
+    // Formato atteso: "nomefile.ext | contenuto..."
+    // Usiamo '|' come separatore perché è raro nei nomi file
+    let parts: Vec<&str> = args.splitn(2, '|').collect();
+
+    if parts.len() < 2 {
+        return "SysCall Error: Usage [[WRITE_FILE: filename | content]]".to_string();
+    }
+
+    let filename = parts[0].trim();
+    let content = parts[1].trim_start(); // Manteniamo l'indentazione del contenuto
+
+    // 1. Assicuriamoci che il workspace esista
+    if let Err(e) = fs::create_dir_all(WORKSPACE_DIR) {
+        return format!("SysCall Error: Failed to create workspace: {}", e);
+    }
+
+    // 2. Risolvi path sicuro
+    if let Some(path) = resolve_safe_path(filename) {
+        println!("OS: Writing file {:?}", path);
+        match fs::write(&path, content) {
+            Ok(_) => format!(
+                "Success: File '{}' written ({} bytes).",
+                filename,
+                content.len()
+            ),
+            Err(e) => format!("SysCall Error: Write failed: {}", e),
+        }
+    } else {
+        "SysCall Error: Invalid filename or security violation.".to_string()
+    }
+}
+
+fn handle_read_file(filename: &str) -> String {
+    if let Some(path) = resolve_safe_path(filename) {
+        println!("OS: Reading file {:?}", path);
+        match fs::read_to_string(&path) {
+            Ok(content) => content, // Ritorna il contenuto grezzo
+            Err(e) => format!("SysCall Error: Read failed: {}", e),
+        }
+    } else {
+        "SysCall Error: Invalid filename or security violation.".to_string()
+    }
+}
+
+fn handle_list_files() -> String {
+    let _ = fs::create_dir_all(WORKSPACE_DIR);
+    match fs::read_dir(WORKSPACE_DIR) {
+        Ok(entries) => {
+            let files: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            if files.is_empty() {
+                "Workspace is empty.".to_string()
+            } else {
+                format!("Files:\n- {}", files.join("\n- "))
+            }
+        }
+        Err(e) => format!("SysCall Error: LS failed: {}", e),
+    }
+}
+
+fn handle_syscall(command_block: &str) -> String {
+    // Parser pulito
+    let clean_cmd = command_block.trim();
+
+    // --- TOOL: PYTHON ---
+    if clean_cmd.starts_with("PYTHON:") {
+        let code = clean_cmd.trim_start_matches("PYTHON:");
         return run_python_code(code);
     }
 
-    "SysCall Error: Unknown Tool. Use [[PYTHON: code]]".to_string()
+    // --- TOOL: WRITE_FILE ---
+    if clean_cmd.starts_with("WRITE_FILE:") {
+        let args = clean_cmd.trim_start_matches("WRITE_FILE:");
+        return handle_write_file(args);
+    }
+
+    // --- TOOL: READ_FILE ---
+    if clean_cmd.starts_with("READ_FILE:") {
+        let filename = clean_cmd.trim_start_matches("READ_FILE:").trim();
+        return handle_read_file(filename);
+    }
+
+    // --- TOOL: LS ---
+    if clean_cmd.starts_with("LS") {
+        return handle_list_files();
+    }
+
+    // --- TOOL: CALC (Legacy) ---
+    if clean_cmd.starts_with("CALC:") {
+        let expr = clean_cmd.trim_start_matches("CALC:").trim();
+        return run_python_code(&format!("print({})", expr));
+    }
+
+    "SysCall Error: Unknown Tool.".to_string()
 }
 
 fn main() -> io::Result<()> {
