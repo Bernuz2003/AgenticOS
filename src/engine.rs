@@ -29,31 +29,43 @@ impl LLMEngine {
     /// Carica il modello GGUF UNA VOLTA SOLA.
     pub fn load(path: &str) -> Result<Self> {
         println!("ENGINE: Loading Master Model from {}...", path);
-        println!("ENGINE: RAM Usage will spike now, but stay flat for new agents.");
 
-        // 1. Setup Device
         let device = Device::Cpu;
 
-        // 2. Load Weights (Standard Candle loading)
-        let mut file = std::fs::File::open(path)?;
+        // 1. Caricamento Pesi (Pesante)
+        let mut file = std::fs::File::open(path)
+            .map_err(|e| E::msg(format!("Failed to open model file: {}", e)))?;
         let content = gguf_file::Content::read(&mut file)?;
         let model = ModelWeights::from_gguf(content, &mut file, &device)?;
 
-        // 3. Load Tokenizer
-        let tokenizer_path = Path::new("tokenizer.json");
-        let tokenizer = if tokenizer_path.exists() {
-            Tokenizer::from_file(tokenizer_path).map_err(E::msg)?
+        println!("ENGINE: Weights loaded. Loading Tokenizer...");
+
+        // 2. Caricamento Tokenizer (Intelligente)
+        // Cerca prima accanto al modello (es. models/tokenizer.json), poi nella root
+        let model_path = Path::new(path);
+        let parent_dir = model_path.parent().unwrap_or(Path::new("."));
+        let local_tok_path = parent_dir.join("tokenizer.json");
+        let root_tok_path = Path::new("tokenizer.json");
+
+        let tokenizer = if local_tok_path.exists() {
+            println!("ENGINE: Found tokenizer at {:?}", local_tok_path);
+            Tokenizer::from_file(local_tok_path).map_err(E::msg)?
+        } else if root_tok_path.exists() {
+            println!("ENGINE: Found tokenizer at root (tokenizer.json)");
+            Tokenizer::from_file(root_tok_path).map_err(E::msg)?
         } else {
+            println!("ENGINE: Tokenizer not found locally. Downloading from HuggingFace (Meta-Llama-3-8B)...");
+            println!("WARNING: This might hang if internet is slow!");
             let api = hf_hub::api::sync::Api::new()?;
             let repo = api.model("meta-llama/Meta-Llama-3-8B-Instruct".to_string());
             let path = repo.get("tokenizer.json")?;
             Tokenizer::from_file(path).map_err(E::msg)?
         };
 
-        println!("ENGINE: Master Model Ready. Zero-Copy Cloning enabled.");
+        println!("ENGINE: Master Model & Tokenizer Ready. Zero-Copy Cloning enabled.");
 
         Ok(Self {
-            master_model: Some(model), // Salviamo il master
+            master_model: Some(model),
             tokenizer,
             device,
             processes: HashMap::new(),

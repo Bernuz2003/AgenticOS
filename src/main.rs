@@ -143,22 +143,21 @@ fn main() -> io::Result<()> {
                 // Esegui uno step
                 match engine.step_process(pid) {
                     Ok(Some((text, owner_id))) => {
+                        // DEBUG: Vediamo se genera token
+                        // print!("[P{}]", pid); use std::io::Write; std::io::stdout().flush().unwrap();
+
                         // Routing: Trova il client proprietario
                         let token = Token(owner_id);
                         if let Some(client) = clients.get_mut(&token) {
-                            // 1. Scrivi nel buffer di memoria del client
                             client.output_buffer.extend(text.as_bytes());
-
-                            // 2. Avvisa MIO che vogliamo scrivere su questo socket appena possibile
-                            // (Aggiungiamo Interest::WRITABLE)
                             let _ = poll.registry().reregister(
                                 &mut client.stream,
                                 token,
                                 Interest::READABLE | Interest::WRITABLE,
                             );
                         } else {
-                            // Il client si è disconnesso ma il processo gira ancora -> Kill
-                            println!("Orphan process {}, killing.", pid);
+                            // Se arrivi qui, il client si è disconnesso ma il processo sta ancora generando
+                            // println!("DEBUG: Output for disconnected client {}", owner_id);
                             engine.kill_process(pid);
                         }
                     }
