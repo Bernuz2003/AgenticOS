@@ -4,17 +4,19 @@ use candle_core::{DType, Device, Tensor};
 use candle_transformers::models::quantized_llama as model;
 use model::ModelWeights;
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokenizers::Tokenizer;
 
+// Importiamo il modulo Process
 use crate::process::{AgentProcess, ProcessState};
 
-/// Mantiene i dati del file caricati e gestisce i processi attivi.
+/// Mantiene il modello MASTER e gestisce i processi leggeri.
 pub struct LLMEngine {
-    // Dati grezzi del file GGUF condivisi (per risparmiare I/O, anche se la RAM è usata dai pesi)
-    file_content: Arc<Vec<u8>>,
+    // IL MASTER MODEL: Contiene i pesi condivisi (Arc)
+    // Usiamo Option per poterlo inizializzare dopo se necessario, ma qui sarà sempre Some dopo load
+    master_model: Option<ModelWeights>,
+
     pub tokenizer: Tokenizer,
     device: Device,
 
@@ -24,16 +26,21 @@ pub struct LLMEngine {
 }
 
 impl LLMEngine {
+    /// Carica il modello GGUF UNA VOLTA SOLA.
     pub fn load(path: &str) -> Result<Self> {
-        println!("ENGINE: Reading GGUF file into memory...");
+        println!("ENGINE: Loading Master Model from {}...", path);
+        println!("ENGINE: RAM Usage will spike now, but stay flat for new agents.");
 
-        // 1. Leggiamo tutto il file in un buffer (Arc<Vec<u8>>)
-        // Questo ci permette di creare cursori multipli per clonare il modello
-        let bytes = std::fs::read(path)?;
-        let file_content = Arc::new(bytes);
+        // 1. Setup Device
+        let device = Device::Cpu;
 
-        // 2. Setup Tokenizer (come prima)
-        let tokenizer_path = Path::new("models/tokenizer.json");
+        // 2. Load Weights (Standard Candle loading)
+        let mut file = std::fs::File::open(path)?;
+        let content = gguf_file::Content::read(&mut file)?;
+        let model = ModelWeights::from_gguf(content, &mut file, &device)?;
+
+        // 3. Load Tokenizer
+        let tokenizer_path = Path::new("tokenizer.json");
         let tokenizer = if tokenizer_path.exists() {
             Tokenizer::from_file(tokenizer_path).map_err(E::msg)?
         } else {
@@ -43,17 +50,19 @@ impl LLMEngine {
             Tokenizer::from_file(path).map_err(E::msg)?
         };
 
+        println!("ENGINE: Master Model Ready. Zero-Copy Cloning enabled.");
+
         Ok(Self {
-            file_content,
+            master_model: Some(model), // Salviamo il master
             tokenizer,
-            device: Device::Cpu,
+            device,
             processes: HashMap::new(),
             next_pid: 1,
         })
     }
 
-    /// Crea un nuovo PROCESSO (Agente)
-    /// Questo istanzia un nuovo ModelWeights (con la sua cache vuota)
+    /// Crea un nuovo PROCESSO (Agente) clonando il Master Model.
+    /// Operazione O(1) in termini di memoria pesi.
     pub fn spawn_process(
         &mut self,
         prompt: &str,
@@ -63,12 +72,21 @@ impl LLMEngine {
         let pid = self.next_pid;
         self.next_pid += 1;
 
-        println!("OS: Spawning Process PID {} for Owner {}", pid, owner_id);
+        println!(
+            "OS: Forking Agent Process PID {} for Owner {} (Zero-Copy)",
+            pid, owner_id
+        );
 
-        let mut cursor = Cursor::new(self.file_content.as_ref());
-        let content = gguf_file::Content::read(&mut cursor)?;
-        let model = ModelWeights::from_gguf(content, &mut cursor, &self.device)?;
+        // 1. CLONAZIONE LEGGERA
+        // Qui avviene la magia. Clone() sui tensori Candle incrementa solo il ref-count.
+        // I pesi (GB) NON vengono copiati. La cache interna viene ricreata vuota.
+        let model_clone = self
+            .master_model
+            .as_ref()
+            .ok_or(E::msg("Master model not loaded"))?
+            .clone();
 
+        // 2. Tokenizziamo il prompt
         let tokens = self
             .tokenizer
             .encode(prompt, true)
@@ -76,15 +94,15 @@ impl LLMEngine {
             .get_ids()
             .to_vec();
 
-        // Passiamo owner_id al costruttore
-        let process = AgentProcess::new(pid, owner_id, model, tokens, max_tokens);
+        // 3. Creiamo il processo con la sua copia privata (ma condivisa nei pesi) del modello
+        let process = AgentProcess::new(pid, owner_id, model_clone, tokens, max_tokens);
 
         self.processes.insert(pid, process);
+
         Ok(pid)
     }
 
     /// Esegue UN PASSO (Step) di un processo specifico.
-    /// Non blocca! Calcola 1 token e ritorna.
     pub fn step_process(&mut self, pid: u64) -> Result<Option<(String, usize)>> {
         let process = self
             .processes
@@ -96,21 +114,25 @@ impl LLMEngine {
         }
 
         process.state = ProcessState::Running;
-        let owner_id = process.owner_id; // Salviamo l'ID per ritornarlo
+        let owner_id = process.owner_id;
 
         let tokens = &mut process.tokens;
         let index_pos = process.index_pos;
+
         let context_size = if index_pos == 0 { tokens.len() } else { 1 };
         let start_pos = tokens.len().saturating_sub(context_size);
         let input_tokens = &tokens[start_pos..];
         let input_len = input_tokens.len();
 
         let input = Tensor::new(input_tokens, &self.device)?.unsqueeze(0)?;
+
+        // Forward pass sulla copia locale del modello (usa la cache locale automaticamente)
         let logits = process.model.forward(&input, index_pos)?;
         let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
 
         let next_token = process.logits_processor.sample(&logits)?;
         tokens.push(next_token);
+
         process.index_pos += input_len;
 
         if next_token == 2
@@ -121,7 +143,6 @@ impl LLMEngine {
             process.state = ProcessState::Finished;
         }
 
-        // Ritorniamo la tupla (Testo, OwnerID)
         if let Ok(t) = self.tokenizer.decode(&[next_token], true) {
             Ok(Some((t, owner_id)))
         } else {
@@ -129,7 +150,6 @@ impl LLMEngine {
         }
     }
 
-    // Ritorna la lista dei PID attivi
     pub fn list_active_pids(&self) -> Vec<u64> {
         self.processes.keys().cloned().collect()
     }

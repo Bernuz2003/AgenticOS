@@ -295,11 +295,13 @@ fn execute_command(
         OpCode::Ping => protocol::response_ok("PONG"),
         OpCode::Load => {
             let path = String::from_utf8_lossy(&payload).trim().to_string();
+            // Aggiungi un feedback utente
+            println!("CMD: Loading MASTER MODEL (Zero-Copy Base) from {}", path);
             match LLMEngine::load(&path) {
                 Ok(new_engine) => {
                     let mut lock = engine_state.lock().unwrap();
                     *lock = Some(new_engine);
-                    protocol::response_ok("Model Loaded")
+                    protocol::response_ok("Master Model Loaded. Ready to fork agents.")
                 }
                 Err(e) => protocol::response_err(&format!("Load Failed: {}", e)),
             }
