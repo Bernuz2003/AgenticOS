@@ -2,20 +2,22 @@ mod engine;
 mod memory;
 mod process;
 mod protocol;
-use engine::LLMEngine;
-use memory::{MemoryConfig, NeuralMemory};
-use mio::net::{TcpListener, TcpStream};
+
+use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
-use protocol::CommandHeader;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque}; // VecDeque per il buffer FIFO
 use std::io::{self, Read, Write};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use engine::LLMEngine;
+use memory::{MemoryConfig, NeuralMemory};
+use protocol::{CommandHeader, OpCode};
+
 const SERVER: Token = Token(0);
 
-// --- LA MACCHINA A STATI ---
+// Enum per la macchina a stati del protocollo (come prima)
 enum ClientState {
     WaitingForHeader,
     ReadingBody {
@@ -25,16 +27,18 @@ enum ClientState {
 }
 
 struct Client {
-    stream: TcpStream,
-    buffer: Vec<u8>,    // Accumulatore di dati grezzi
-    state: ClientState, // Cosa stiamo aspettando?
+    stream: mio::net::TcpStream,
+    buffer: Vec<u8>,             // Buffer INGRESSO (TCP -> Kernel)
+    output_buffer: VecDeque<u8>, // Buffer USCITA (Kernel -> TCP)
+    state: ClientState,
 }
 
 impl Client {
-    fn new(stream: TcpStream) -> Self {
+    fn new(stream: mio::net::TcpStream) -> Self {
         Client {
             stream,
             buffer: Vec::with_capacity(4096),
+            output_buffer: VecDeque::new(), // Inizialmente vuoto
             state: ClientState::WaitingForHeader,
         }
     }
@@ -55,29 +59,27 @@ fn main() -> io::Result<()> {
     let mut clients: HashMap<Token, Client> = HashMap::new();
     let mut unique_token = Token(SERVER.0 + 1);
 
+    // Init Memory Layer (Placeholder)
     let mem_config = MemoryConfig {
         block_size: 16,
         hidden_dim: 256,
-        total_memory_mb: 64, // 64MB bastano per il test
+        total_memory_mb: 64,
     };
+    let memory = Rc::new(RefCell::new(NeuralMemory::new(mem_config).unwrap()));
 
-    // Gestione errore inizializzazione Candle
-    let neural_mem = NeuralMemory::new(mem_config).expect("Failed to initialize Candle/GPU Memory");
-
-    let memory = Rc::new(RefCell::new(neural_mem));
-
-    // Lo stato globale dell'Engine IA. Inizialmente vuoto (None).
-    // Usiamo Arc<Mutex> per poterlo condividere (e in futuro passare a thread worker)
+    // Init AI Engine (Shared)
     let engine_state: Arc<Mutex<Option<LLMEngine>>> = Arc::new(Mutex::new(None));
 
-    println!("Agentic OS Kernel v0.5 (AI Inference) ready...");
+    println!(
+        "Agentic OS Kernel v0.7 (Async I/O Routing) ready on {}",
+        addr
+    );
 
     loop {
-        // 1. Networking Poll (Non bloccante o timeout cortissimo)
-        // Dobbiamo usare un timeout corto per permettere allo scheduler di girare
-        poll.poll(&mut events, Some(std::time::Duration::from_millis(10)))?;
+        // Timeout breve per permettere allo scheduler di girare
+        poll.poll(&mut events, Some(std::time::Duration::from_millis(5)))?;
 
-        // 2. Gestione Eventi Rete (Nuovi comandi)
+        // 1. GESTIONE EVENTI RETE (I/O)
         for event in events.iter() {
             match event.token() {
                 SERVER => loop {
@@ -95,60 +97,90 @@ fn main() -> io::Result<()> {
                     }
                 },
                 token => {
-                    let should_close = if let Some(client) = clients.get_mut(&token) {
-                        handle_client_io(client, &memory, &engine_state)
-                    } else {
-                        false
-                    };
+                    // Recupera il client
+                    if let Some(client) = clients.get_mut(&token) {
+                        let mut should_close = false;
 
-                    if should_close {
-                        println!("Connection closed.");
-                        clients.remove(&token);
+                        // SE È LEGGIBILE (Il client ha mandato dati)
+                        if event.is_readable() {
+                            if handle_read(client, &memory, &engine_state, token.0) {
+                                should_close = true;
+                            }
+                        }
+
+                        // SE È SCRIVIBILE (Il socket è pronto a ricevere dati dal buffer)
+                        if event.is_writable() {
+                            if handle_write(client) {
+                                should_close = true;
+                            } else {
+                                // Se abbiamo finito di scrivere, torniamo ad ascoltare solo READABLE
+                                // per non svegliare la CPU inutilmente
+                                if client.output_buffer.is_empty() {
+                                    poll.registry().reregister(
+                                        &mut client.stream,
+                                        token,
+                                        Interest::READABLE,
+                                    )?;
+                                }
+                            }
+                        }
+
+                        if should_close {
+                            println!("Connection closed client {}", token.0);
+                            clients.remove(&token);
+                        }
                     }
                 }
             }
         }
 
-        // 3. THE SCHEDULER (Round Robin)
-        // Blocca il mutex per un attimo per fare i calcoli
+        // 2. SCHEDULER (Round Robin sui processi)
         let mut lock = engine_state.lock().unwrap();
         if let Some(engine) = lock.as_mut() {
             let active_pids = engine.list_active_pids();
 
             for pid in active_pids {
-                // Esegui uno step (genera 1 token)
+                // Esegui uno step
                 match engine.step_process(pid) {
-                    Ok(Some(token)) => {
-                        // Stampa l'output con il prefisso del PID per vedere il multitasking!
-                        // Esempio: [P1] Ciao [P2] Hello [P1] Mondo
-                        use std::io::Write;
-                        print!("\x1b[32m[P{}]\x1b[0m{}", pid, token); // Colora il PID
-                        std::io::stdout().flush().unwrap();
+                    Ok(Some((text, owner_id))) => {
+                        // Routing: Trova il client proprietario
+                        let token = Token(owner_id);
+                        if let Some(client) = clients.get_mut(&token) {
+                            // 1. Scrivi nel buffer di memoria del client
+                            client.output_buffer.extend(text.as_bytes());
+
+                            // 2. Avvisa MIO che vogliamo scrivere su questo socket appena possibile
+                            // (Aggiungiamo Interest::WRITABLE)
+                            let _ = poll.registry().reregister(
+                                &mut client.stream,
+                                token,
+                                Interest::READABLE | Interest::WRITABLE,
+                            );
+                        } else {
+                            // Il client si è disconnesso ma il processo gira ancora -> Kill
+                            println!("Orphan process {}, killing.", pid);
+                            engine.kill_process(pid);
+                        }
                     }
-                    Ok(None) => {} // Nessun output (prefill o token vuoto)
+                    Ok(None) => {}
                     Err(e) => {
-                        eprintln!("\n[P{}] Crashed: {}", pid, e);
+                        eprintln!("Process {} Error: {}", pid, e);
                         engine.kill_process(pid);
                     }
                 }
-
-                // Se il processo ha finito, killiamolo per risparmiare RAM
-                // Nota: In un OS vero lo lasceremmo "Zombie" per far leggere l'output al client
-                // Qui puliamo per semplicità
-                // (Richiederebbe controllo stato process, facciamo semplificato)
             }
         }
     }
 }
 
-fn handle_client_io(
+// Gestione Lettura (TCP -> Kernel)
+fn handle_read(
     client: &mut Client,
     memory: &Rc<RefCell<NeuralMemory>>,
-    engine: &Arc<Mutex<Option<LLMEngine>>>,
+    engine_state: &Arc<Mutex<Option<LLMEngine>>>,
+    client_id: usize, // Passiamo l'ID per spawnare il processo
 ) -> bool {
     let mut chunk = [0; 4096];
-
-    // 1. Leggi dal socket e appendi al buffer
     loop {
         match client.stream.read(&mut chunk) {
             Ok(0) => return true, // EOF
@@ -156,41 +188,37 @@ fn handle_client_io(
                 client.buffer.extend_from_slice(&chunk[..n]);
                 break;
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return false, // Niente dati, torna al poll
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return false,
             Err(e) => {
-                eprintln!("IO Error: {}", e);
+                eprintln!("Read Err: {}", e);
                 return true;
             }
         }
     }
 
-    // 2. Processa il buffer in base allo stato
+    // Processa Buffer (Macchina a stati)
     loop {
         match &mut client.state {
             ClientState::WaitingForHeader => {
-                // Cerchiamo il carattere newline '\n'
                 if let Some(pos) = client.buffer.iter().position(|&b| b == b'\n') {
-                    // Estraiamo la linea di header
-                    let header_line_bytes = client.buffer.drain(..=pos).collect::<Vec<u8>>();
-                    let header_str = String::from_utf8_lossy(&header_line_bytes)
-                        .trim()
-                        .to_string();
-
+                    let header_bytes = client.buffer.drain(..=pos).collect::<Vec<u8>>();
+                    let header_str = String::from_utf8_lossy(&header_bytes).trim().to_string();
                     if header_str.is_empty() {
                         continue;
-                    } // Ignora righe vuote
-
-                    println!("DEBUG Header: '{}'", header_str);
+                    }
 
                     match CommandHeader::parse(&header_str) {
                         Ok(header) => {
                             if header.content_length == 0 {
-                                // Comando senza payload (es. PING), esegui subito
-                                execute_command(client, header, Vec::new(), memory, engine);
-                                // Rimaniamo in WaitingForHeader
+                                execute_command(
+                                    client,
+                                    header,
+                                    Vec::new(),
+                                    memory,
+                                    engine_state,
+                                    client_id,
+                                );
                             } else {
-                                // Passiamo a leggere il corpo
-                                println!("DEBUG Expecting body: {} bytes", header.content_length);
                                 client.state = ClientState::ReadingBody {
                                     header,
                                     body_so_far: 0,
@@ -198,49 +226,60 @@ fn handle_client_io(
                             }
                         }
                         Err(e) => {
-                            let _ = client
-                                .stream
-                                .write_all(protocol::response_err(&e).as_slice());
+                            // Rispondi errore (nel buffer di uscita)
+                            let msg = protocol::response_err(&e);
+                            client.output_buffer.extend(msg);
                         }
                     }
                 } else {
-                    // Header incompleto, aspettiamo altri pacchetti TCP
                     break;
                 }
             }
-
             ClientState::ReadingBody {
                 header,
                 body_so_far: _,
             } => {
-                // Abbiamo abbastanza dati nel buffer per soddisfare la richiesta?
                 if client.buffer.len() >= header.content_length {
-                    // Sì! Estraiamo il payload esatto
                     let payload = client
                         .buffer
                         .drain(..header.content_length)
                         .collect::<Vec<u8>>();
-
-                    // Clona l'header per passarlo all'esecuzione (perché `header` qui è un borrow mutabile)
+                    // Ricostruiamo header per passarlo (clone necessario)
                     let h = CommandHeader {
                         opcode: header.opcode.clone(),
                         agent_id: header.agent_id.clone(),
                         content_length: header.content_length,
                     };
 
-                    // Esegui
-                    execute_command(client, h, payload, memory, engine);
-
-                    // Reset stato
+                    execute_command(client, h, payload, memory, engine_state, client_id);
                     client.state = ClientState::WaitingForHeader;
                 } else {
-                    // Non ancora, aspettiamo altri dati
                     break;
                 }
             }
         }
     }
+    false
+}
 
+// Gestione Scrittura (Kernel -> TCP)
+fn handle_write(client: &mut Client) -> bool {
+    // Finché c'è roba nel buffer, prova a inviarla
+    while !client.output_buffer.is_empty() {
+        // Prendiamo la prima fetta contigua del buffer circolare
+        let (head, _) = client.output_buffer.as_slices();
+        match client.stream.write(head) {
+            Ok(n) => {
+                // Rimuoviamo i byte scritti
+                client.output_buffer.drain(..n);
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return false, // Buffer OS pieno, riprova dopo
+            Err(e) => {
+                eprintln!("Write Err: {}", e);
+                return true;
+            }
+        }
+    }
     false
 }
 
@@ -250,55 +289,38 @@ fn execute_command(
     payload: Vec<u8>,
     _memory: &Rc<RefCell<NeuralMemory>>,
     engine_state: &Arc<Mutex<Option<LLMEngine>>>,
+    client_id: usize, // <--- ID Proprietario
 ) {
-    use protocol::OpCode;
-
     let response = match header.opcode {
         OpCode::Ping => protocol::response_ok("PONG"),
-
-        // LOAD: Carica il modello GGUF specificato nel payload
         OpCode::Load => {
-            // Interpretiamo il payload come path del file
             let path = String::from_utf8_lossy(&payload).trim().to_string();
-
-            // Rispondiamo subito che stiamo caricando (operazione bloccante per ora)
-            println!("CMD: Loading Model from {}", path);
-
             match LLMEngine::load(&path) {
                 Ok(new_engine) => {
                     let mut lock = engine_state.lock().unwrap();
                     *lock = Some(new_engine);
-                    protocol::response_ok("Model Loaded Successfully")
+                    protocol::response_ok("Model Loaded")
                 }
                 Err(e) => protocol::response_err(&format!("Load Failed: {}", e)),
             }
         }
-
-        // EXEC: Esegue inferenza vera
         OpCode::Exec => {
             let prompt = String::from_utf8_lossy(&payload).to_string();
             let mut lock = engine_state.lock().unwrap();
 
             if let Some(engine) = lock.as_mut() {
-                // Invece di predict (bloccante), usiamo spawn_process
-                match engine.spawn_process(&prompt, 100) {
-                    // Max 100 token
-                    Ok(pid) => protocol::response_ok(&format!("Process Spawned PID: {}", pid)),
+                // Passiamo client_id allo spawn
+                match engine.spawn_process(&prompt, 150, client_id) {
+                    Ok(pid) => protocol::response_ok(&format!("Process Started PID: {}", pid)),
                     Err(e) => protocol::response_err(&format!("Spawn Failed: {}", e)),
                 }
             } else {
                 protocol::response_err("No Model Loaded")
             }
         }
-
-        // Manteniamo i comandi di memoria per debug
-        OpCode::MemoryWrite => {
-            // ... logica vecchia ...
-            protocol::response_ok("Memory Ops still supported")
-        }
-
         _ => protocol::response_err("Not Implemented"),
     };
 
-    let _ = client.stream.write_all(&response);
+    // Scrivi risposta nel buffer di uscita
+    client.output_buffer.extend(response);
 }

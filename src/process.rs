@@ -11,6 +11,7 @@ pub enum ProcessState {
 
 pub struct AgentProcess {
     pub id: u64,
+    pub owner_id: usize,
     pub state: ProcessState,
     
     // Il "Cervello" privato del processo (contiene la KV Cache)
@@ -25,12 +26,13 @@ pub struct AgentProcess {
 }
 
 impl AgentProcess {
-    pub fn new(id: u64, model: ModelWeights, prompt_tokens: Vec<u32>, max_gen: usize) -> Self {
+    pub fn new(id: u64, owner_id: usize, model: ModelWeights, prompt_tokens: Vec<u32>, max_gen: usize) -> Self {
         AgentProcess {
             id,
+            owner_id,
             state: ProcessState::Ready,
             model, // Questa istanza possiede la sua cache privata!
-            logits_processor: LogitsProcessor::new(299792458 + id, Some(0.7), Some(0.9)), // Seed diverso per ogni agente
+            logits_processor: LogitsProcessor::new(299792458 + id, Some(0.3), Some(0.9)), // Seed diverso per ogni agente
             tokens: prompt_tokens,
             index_pos: 0, // Inizierà elaborando il prompt (prefill)
             max_tokens: max_gen,
