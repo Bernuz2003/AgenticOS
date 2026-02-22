@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf; // Rimosso 'Path' che era inutilizzato
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -33,7 +33,6 @@ struct Client {
     stream: mio::net::TcpStream,
     buffer: Vec<u8>,
     output_buffer: VecDeque<u8>,
-    syscall_buffer: String,
     state: ClientState,
 }
 
@@ -43,7 +42,6 @@ impl Client {
             stream,
             buffer: Vec::with_capacity(4096),
             output_buffer: VecDeque::new(),
-            syscall_buffer: String::new(),
             state: ClientState::WaitingForHeader,
         }
     }
@@ -175,11 +173,6 @@ fn handle_syscall(command_block: &str) -> String {
 
 // --- HELPER PER IL FORMATO LLAMA 3 ---
 fn format_system_injection(content: &str) -> String {
-    // Usiamo i token speciali di Llama 3 per chiudere il turno precedente e aprire quello di sistema
-    // <|eot_id|> chiude l'assistant
-    // <|start_header_id|>system<|end_header_id|> apre il sistema
-    // ... contenuto ...
-    // <|eot_id|><|start_header_id|>assistant<|end_header_id|> riapre l'assistant
     format!(
         "<|eot_id|><|start_header_id|>system<|end_header_id|>\n\n{}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n",
         content
@@ -208,7 +201,7 @@ fn main() -> io::Result<()> {
     let engine_state: Arc<Mutex<Option<LLMEngine>>> = Arc::new(Mutex::new(None));
 
     println!(
-        "Agentic OS Kernel v1.2 (IPC & VFS with Llama3 Interrupt) ready on {}",
+        "Agentic OS Kernel v1.3 (Process-Centric SysCalls) ready on {}",
         addr
     );
 
@@ -239,6 +232,13 @@ fn main() -> io::Result<()> {
                                 should_close = true;
                             }
                         }
+                        if !should_close && !client.output_buffer.is_empty() {
+                            poll.registry().reregister(
+                                &mut client.stream,
+                                token,
+                                Interest::READABLE | Interest::WRITABLE,
+                            )?;
+                        }
                         if event.is_writable() {
                             if handle_write(client) {
                                 should_close = true;
@@ -263,126 +263,127 @@ fn main() -> io::Result<()> {
             let active_pids = engine.list_active_pids();
 
             for pid in active_pids {
-                match engine.step_process(pid) {
+                // 1. ESECUZIONE STEP (AI genera token)
+                let step_result = engine.step_process(pid);
+
+                match step_result {
                     Ok(Some((text, owner_id))) => {
-                        let token = Token(owner_id);
-                        if let Some(client) = clients.get_mut(&token) {
-                            client.output_buffer.extend(text.as_bytes());
-                            let _ = poll.registry().reregister(
-                                &mut client.stream,
-                                token,
-                                Interest::READABLE | Interest::WRITABLE,
+                        // --- FASE A: UPDATE BUFFER PROCESS (Scope Ristretto) ---
+                        // Usiamo una variabile per salvare l'eventuale comando da eseguire DOPO
+                        // aver rilasciato il borrow di `engine.processes`.
+                        let mut pending_syscall: Option<String> = None;
+
+                        if let Some(proc) = engine.processes.get_mut(&pid) {
+                            proc.syscall_buffer.push_str(&text);
+
+                            if let Some(start) = proc.syscall_buffer.find("[[") {
+                                if let Some(end_offset) = proc.syscall_buffer[start..].find("]]") {
+                                    let end = start + end_offset + 2;
+                                    let full_command = proc.syscall_buffer[start..end].to_string();
+
+                                    // Svuotiamo il buffer e salviamo il comando per l'esecuzione
+                                    proc.syscall_buffer.clear();
+                                    pending_syscall = Some(full_command);
+                                }
+                            }
+
+                            // Safety valve buffer size
+                            if proc.syscall_buffer.len() > 8000 {
+                                proc.syscall_buffer.clear();
+                            }
+                        }
+
+                        // --- FASE B: ESECUZIONE SYSCALL (Scope Libero) ---
+                        // Ora possiamo chiamare engine.spawn_process perché non abbiamo più
+                        // in mano il riferimento `proc`.
+                        if let Some(full_command) = pending_syscall {
+                            let content =
+                                full_command[2..full_command.len() - 2].trim().to_string();
+                            println!(
+                                "OS: SysCall from PID {} (Owner {}): {}",
+                                pid, owner_id, full_command
                             );
 
-                            client.syscall_buffer.push_str(&text);
-
-                            if let Some(start) = client.syscall_buffer.find("[[") {
-                                if let Some(end_offset) = client.syscall_buffer[start..].find("]]")
-                                {
-                                    let end = start + end_offset + 2;
-                                    let full_command =
-                                        client.syscall_buffer[start..end].to_string();
-                                    let content =
-                                        full_command[2..full_command.len() - 2].trim().to_string();
-
-                                    // --- LOGICA SYSCALL CON INTERRUPT ---
-
-                                    if content.starts_with("SPAWN:") {
-                                        println!("OS: SysCall SPAWN from PID {}", pid);
-                                        let prompt = content.trim_start_matches("SPAWN:").trim();
-                                        match engine.spawn_process(prompt, 500, owner_id) {
-                                            Ok(new_pid) => {
-                                                // Feedback in formato Llama 3
-                                                let msg = format!("PROCESS SPAWNED. PID: {}.\nSTATUS: READY.\nACTION REQUIRED: Use [[SEND: {} | message]] to instruct the worker.", new_pid, new_pid);
-                                                let feedback = format_system_injection(&msg);
-                                                let _ = engine.inject_context(pid, &feedback);
-                                            }
-                                            Err(e) => {
-                                                let feedback = format_system_injection(&format!(
-                                                    "ERROR: Spawn failed: {}",
-                                                    e
-                                                ));
-                                                let _ = engine.inject_context(pid, &feedback);
-                                            }
-                                        }
-                                        client.syscall_buffer.clear();
-                                    } else if content.starts_with("SEND:") {
-                                        println!("OS: SysCall SEND from PID {}", pid);
-                                        let parts: Vec<&str> = content
-                                            .trim_start_matches("SEND:")
-                                            .splitn(2, '|')
-                                            .collect();
-                                        if parts.len() == 2 {
-                                            let target_pid_str = parts[0].trim();
-                                            let message = parts[1].trim();
-                                            if let Ok(target_pid) = target_pid_str.parse::<u64>() {
-                                                // Iniettiamo nel target (Formato User Message per lui)
-                                                let msg_for_target = format!(
-                                                    "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n[Message from Parent PID {}]: {}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n",
-                                                    pid, message
-                                                );
-                                                match engine
-                                                    .inject_context(target_pid, &msg_for_target)
-                                                {
-                                                    Ok(_) => {
-                                                        let feedback = format_system_injection("Message sent successfully. Waiting for worker output...");
-                                                        let _ =
-                                                            engine.inject_context(pid, &feedback);
-                                                    }
-                                                    Err(_) => {
-                                                        let _ = engine.inject_context(
-                                                            pid,
-                                                            &format_system_injection(
-                                                                "ERROR: Target PID not found.",
-                                                            ),
-                                                        );
-                                                    }
-                                                }
-                                            } else {
+                            if content.starts_with("SPAWN:") {
+                                let prompt = content.trim_start_matches("SPAWN:").trim();
+                                // I figli nascono con owner_id 0 (Daemon/Background)
+                                match engine.spawn_process(prompt, 500, 0) {
+                                    Ok(new_pid) => {
+                                        let msg = format!("SUCCESS: Worker Created (PID {}).\nSTOP SPAWNING NEW PROCESSES.\nNEXT ACTION: Use [[SEND: {} | <your_question>]] immediately.", new_pid, new_pid);
+                                        let feedback = format_system_injection(&msg);
+                                        let _ = engine.inject_context(pid, &feedback);
+                                    }
+                                    Err(e) => {
+                                        let _ = engine.inject_context(
+                                            pid,
+                                            &format_system_injection(&format!("ERROR: {}", e)),
+                                        );
+                                    }
+                                }
+                            } else if content.starts_with("SEND:") {
+                                let parts: Vec<&str> =
+                                    content.trim_start_matches("SEND:").splitn(2, '|').collect();
+                                if parts.len() == 2 {
+                                    let message = parts[1].trim();
+                                    let target_pid_str = parts[0].trim();
+                                    if let Ok(target_pid) = parts[0].trim().parse::<u64>() {
+                                        // Inietta nel target
+                                        let msg_target = format!("<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n[Message from PID {}]: {}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n", pid, message);
+                                        match engine.inject_context(target_pid, &msg_target) {
+                                            Ok(_) => {
                                                 let _ = engine.inject_context(
                                                     pid,
-                                                    &format_system_injection(
-                                                        "ERROR: Invalid PID format.",
-                                                    ),
+                                                    &format_system_injection("MESSAGE SENT. Waiting for reply... (Do not send again)."),
                                                 );
                                             }
+                                            Err(_) => {
+                                                let _ = engine.inject_context(pid, &format_system_injection("ERROR: Target PID not found (Process does not exist)."));
+                                            }
                                         }
-                                        client.syscall_buffer.clear();
-                                    } else if content.starts_with("PYTHON:")
-                                        || content.starts_with("WRITE_FILE:")
-                                        || content.starts_with("READ_FILE:")
-                                        || content.starts_with("LS")
-                                        || content.starts_with("CALC:")
-                                    {
-                                        println!(
-                                            "OS: Intercepted Tool from PID {}: {}",
-                                            pid, full_command
+                                    } else {
+                                        let err_msg = format!("ERROR: Invalid PID format '{}'. You must use a numeric PID (e.g., [[SEND: 2 | ...]]).", target_pid_str);
+                                        let _ = engine.inject_context(
+                                            pid,
+                                            &format_system_injection(&err_msg),
                                         );
-                                        let result = handle_syscall(&content);
-                                        let feedback = format_system_injection(&format!(
-                                            "Tool Output:\n{}",
-                                            result
-                                        ));
-                                        let _ = engine.inject_context(pid, &feedback);
-                                        client.syscall_buffer.clear();
                                     }
                                 }
                             }
-                            if client.syscall_buffer.len() > 8000 {
-                                if let Some(start) = client.syscall_buffer.find("[[") {
-                                    let preserve = client.syscall_buffer[start..].to_string();
-                                    client.syscall_buffer = preserve;
-                                } else {
-                                    client.syscall_buffer.clear();
-                                }
+                            // TOOLS (Python, VFS...)
+                            else if content.starts_with("PYTHON:")
+                                || content.starts_with("WRITE_FILE:")
+                                || content.starts_with("READ_FILE:")
+                                || content.starts_with("LS")
+                                || content.starts_with("CALC:")
+                            {
+                                let result = handle_syscall(&content);
+                                let _ = engine.inject_context(
+                                    pid,
+                                    &format_system_injection(&format!("Output:\n{}", result)),
+                                );
+                            }
+                        }
+
+                        // --- FASE C: OUTPUT UTENTE ---
+                        // Inviamo al client SOLO se il processo ha un proprietario umano (id > 0)
+                        if owner_id > 0 {
+                            let token = Token(owner_id);
+                            if let Some(client) = clients.get_mut(&token) {
+                                client.output_buffer.extend(text.as_bytes());
+                                let _ = poll.registry().reregister(
+                                    &mut client.stream,
+                                    token,
+                                    Interest::READABLE | Interest::WRITABLE,
+                                );
                             }
                         } else {
-                            engine.kill_process(pid);
+                            // Processo Background: silenzioso su rete
+                            // print!("{}", text); // Decommentare per debug server-side
                         }
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        eprintln!("Process {} Error: {}", pid, e);
+                        eprintln!("Error PID {}: {}", pid, e);
                         engine.kill_process(pid);
                     }
                 }
@@ -406,8 +407,7 @@ fn handle_read(
                 client.buffer.extend_from_slice(&chunk[..n]);
                 break;
             }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return false,
-            Err(e) => return true,
+            Err(ref _e) => return false, // Fix warning 'e' unused
         }
     }
     loop {
@@ -478,7 +478,7 @@ fn handle_write(client: &mut Client) -> bool {
                 client.output_buffer.drain(..n);
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return false,
-            Err(e) => return true,
+            Err(_e) => return true,
         }
     }
     false

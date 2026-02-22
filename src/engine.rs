@@ -10,26 +10,23 @@ use tokenizers::Tokenizer;
 use crate::process::{AgentProcess, ProcessState};
 
 pub struct LLMEngine {
-    // IL MASTER MODEL: Contiene i pesi condivisi (Arc)
-    // Usiamo Option per poterlo inizializzare dopo se necessario, ma qui sarà sempre Some dopo load
     master_model: Option<ModelWeights>,
-
     pub tokenizer: Tokenizer,
     device: Device,
-
-    // Tabella dei Processi (PID -> Processo)
-    processes: HashMap<u64, AgentProcess>,
+    pub processes: HashMap<u64, AgentProcess>,
     next_pid: u64,
+
+    // Memorizziamo gli ID speciali all'avvio
+    eos_token_id: u32, // End of Sentence / Text (<|end_of_text|>)
+    eot_token_id: u32, // End of Turn (<|eot_id|>)
 }
 
 impl LLMEngine {
-    /// Carica il modello GGUF UNA VOLTA SOLA.
     pub fn load(path: &str) -> Result<Self> {
         println!("ENGINE: Loading Master Model from {}...", path);
 
         let device = Device::Cpu;
 
-        // Caricamento Pesi (Pesante)
         let mut file = std::fs::File::open(path)
             .map_err(|e| E::msg(format!("Failed to open model file: {}", e)))?;
         let content = gguf_file::Content::read(&mut file)?;
@@ -37,8 +34,6 @@ impl LLMEngine {
 
         println!("ENGINE: Weights loaded. Loading Tokenizer...");
 
-        // Caricamento Tokenizer (Intelligente)
-        // Cerca prima accanto al modello (es. models/tokenizer.json), poi nella root
         let model_path = Path::new(path);
         let parent_dir = model_path.parent().unwrap_or(Path::new("."));
         let local_tok_path = parent_dir.join("tokenizer.json");
@@ -51,14 +46,26 @@ impl LLMEngine {
             println!("ENGINE: Found tokenizer at root (tokenizer.json)");
             Tokenizer::from_file(root_tok_path).map_err(E::msg)?
         } else {
-            println!("ENGINE: Tokenizer not found locally. Downloading from HuggingFace (Meta-Llama-3-8B)...");
-            println!("WARNING: This might hang if internet is slow!");
+            // Fallback download...
             let api = hf_hub::api::sync::Api::new()?;
             let repo = api.model("meta-llama/Meta-Llama-3-8B-Instruct".to_string());
             let path = repo.get("tokenizer.json")?;
             Tokenizer::from_file(path).map_err(E::msg)?
         };
 
+        // Cerchiamo i token nel vocabolario caricato.
+        // Se non li trova, usiamo un fallback sicuro o 0.
+        let eos_token_id = tokenizer
+            .token_to_id("<|end_of_text|>")
+            .or_else(|| tokenizer.token_to_id("</s>")) // Fallback per Llama 2 / Mistral
+            .unwrap_or(2); // Fallback estremo standard
+
+        let eot_token_id = tokenizer.token_to_id("<|eot_id|>").unwrap_or(eos_token_id); // Se non c'è EOT, usa EOS come stop
+
+        println!(
+            "ENGINE: Special Tokens Identified -> EOS: {}, EOT: {}",
+            eos_token_id, eot_token_id
+        );
         println!("ENGINE: Master Model & Tokenizer Ready. Zero-Copy Cloning enabled.");
 
         Ok(Self {
@@ -67,11 +74,11 @@ impl LLMEngine {
             device,
             processes: HashMap::new(),
             next_pid: 1,
+            eos_token_id,
+            eot_token_id,
         })
     }
 
-    /// Crea un nuovo PROCESSO (Agente) clonando il Master Model.
-    /// Operazione O(1) in termini di memoria pesi.
     pub fn spawn_process(
         &mut self,
         prompt: &str,
@@ -86,16 +93,12 @@ impl LLMEngine {
             pid, owner_id
         );
 
-        // CLONAZIONE LEGGERA
-        // Clone() sui tensori Candle incrementa solo il ref-count.
-        // I pesi (GB) NON vengono copiati. La cache interna viene ricreata vuota.
         let model_clone = self
             .master_model
             .as_ref()
             .ok_or(E::msg("Master model not loaded"))?
             .clone();
 
-        // Tokenizziamo il prompt
         let tokens = self
             .tokenizer
             .encode(prompt, true)
@@ -103,15 +106,14 @@ impl LLMEngine {
             .get_ids()
             .to_vec();
 
-        // Creiamo il processo con la sua copia privata (ma condivisa nei pesi) del modello
         let process = AgentProcess::new(pid, owner_id, model_clone, tokens, max_tokens);
-
         self.processes.insert(pid, process);
 
         Ok(pid)
     }
 
-    /// Esegue UN PASSO (Step) di un processo specifico.
+    // src/engine.rs
+
     pub fn step_process(&mut self, pid: u64) -> Result<Option<(String, usize)>> {
         let process = self
             .processes
@@ -125,72 +127,81 @@ impl LLMEngine {
         process.state = ProcessState::Running;
         let owner_id = process.owner_id;
 
-        let tokens = &mut process.tokens;
-        let index_pos = process.index_pos;
+        // --- FIX LOOP DIGESTIONE ---
+        // Verifichiamo se ci sono token in sospeso (es. iniezione SysCall)
+        // Se process.tokens ha 100 elementi e index_pos è 60, dobbiamo processare 40 token.
+        // Lo facciamo sequenzialmente per evitare l'errore "Broadcast Error" sulle Attention Mask.
 
-        let context_size = if index_pos == 0 { tokens.len() } else { 1 };
-        let start_pos = tokens.len().saturating_sub(context_size);
-        let input_tokens = &tokens[start_pos..];
-        let input_len = input_tokens.len();
+        let mut next_token = 0;
 
-        let input = Tensor::new(input_tokens, &self.device)?.unsqueeze(0)?;
+        // Loop finché non siamo arrivati all'ultimo token conosciuto
+        while process.index_pos < process.tokens.len() {
+            let input_token = process.tokens[process.index_pos];
+            let input_tensor = Tensor::new(&[input_token], &self.device)?.unsqueeze(0)?;
 
-        // Forward pass sulla copia locale del modello (usa la cache locale automaticamente)
-        let logits = process.model.forward(&input, index_pos)?;
-        let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
+            // Forward Pass (aggiorna la KV Cache interna al modello)
+            let logits = process.model.forward(&input_tensor, process.index_pos)?;
 
-        let next_token = process.logits_processor.sample(&logits)?;
-        tokens.push(next_token);
+            // Avanziamo l'indice
+            process.index_pos += 1;
 
-        process.index_pos += input_len;
+            // Se abbiamo finito di processare lo storico (siamo allineati),
+            // usiamo questi logits per predire il PROSSIMO token nuovo.
+            if process.index_pos == process.tokens.len() {
+                let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
+                next_token = process.logits_processor.sample(&logits)?;
+            }
+        }
 
-        // Decode Output
-        // Decodifichiamo subito per poter controllare le condizioni di stop testuali
+        // Aggiungiamo il NUOVO token generato alla lista
+        process.tokens.push(next_token);
+        // (Nota: non incrementiamo index_pos qui, lo farà il prossimo giro del while
+        // oppure possiamo lasciarlo così, ma al prossimo giro il while vedrà 1 token da processare: quello appena aggiunto.
+        // Per efficienza, potremmo evitare il rientro, ma per pulizia architetturale lasciamo che il loop lo gestisca alla prossima chiamata,
+        // TUTTAVIA dobbiamo decodificarlo per l'utente ORA).
+
+        // Decode Output per l'utente
         let text_output = self.tokenizer.decode(&[next_token], true).ok();
 
-        // --- LOGICA DI STOP AVANZATA ---
+        // --- LOGICA DI STOP (Aggiornata con i tuoi ID dinamici) ---
         let mut should_stop = false;
 
-        // 1. Controllo ID Token (Stop standard Llama 3)
-        // 2 = EOS generico, 128001 = BOS (raro come stop), 128009 = EOT (End of Turn)
-        if next_token == 2 || next_token == 128001 || next_token == 128009 {
+        // 1. Controllo ID Token
+        if next_token == self.eos_token_id || next_token == self.eot_token_id || next_token == 2 {
             should_stop = true;
         }
 
-        // 2. Controllo Testuale (Fail-safe per Llama 3 e SysCalls)
-        // Fondamentale: Se vediamo "]]", fermiamo tutto per dare priorità al Kernel.
+        // 2. Controllo Testuale
         if let Some(ref t) = text_output {
-            if t.contains("<|eot_id|>") || t.contains("<|end_of_text|>") || t.contains("]]") {
+            if t.contains("]]") {
+                should_stop = true;
+            }
+            if t.contains("<|eot_id|>") || t.contains("<|end_of_text|>") {
                 should_stop = true;
             }
         }
 
-        // 3. Controllo Lunghezza Massima
-        if (tokens.len() - process.index_pos) >= process.max_tokens {
+        // 3. Controllo Max Tokens
+        if process.tokens.len() >= process.max_tokens {
             should_stop = true;
         }
 
-        // Applicazione dello Stop
         if should_stop {
             process.state = ProcessState::Finished;
         }
 
-        // Restituzione risultato
         if let Some(t) = text_output {
             Ok(Some((t, owner_id)))
         } else {
             Ok(None)
         }
     }
-    /// Permette al Kernel di inserire testo arbitrario nella memoria del processo.
-    /// Usato per restituire i risultati delle System Calls.
     pub fn inject_context(&mut self, pid: u64, text: &str) -> Result<()> {
         let process = self
             .processes
             .get_mut(&pid)
             .ok_or(E::msg("PID not found"))?;
 
-        // Aggiungiamo newline per pulizia visiva nel contesto dell'agente
         let formatted_text = format!("\n{}\n", text);
 
         let new_tokens = self

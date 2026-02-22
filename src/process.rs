@@ -18,6 +18,7 @@ pub struct AgentProcess {
     pub tokens: Vec<u32>,
     pub index_pos: usize,
     pub max_tokens: usize,
+    pub syscall_buffer: String,
 }
 
 impl AgentProcess {
@@ -37,6 +38,7 @@ impl AgentProcess {
             tokens: prompt_tokens,
             index_pos: 0,
             max_tokens: max_gen,
+            syscall_buffer: String::new(),
         }
     }
 }
