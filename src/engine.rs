@@ -221,6 +221,23 @@ impl LLMEngine {
         self.processes.keys().cloned().collect()
     }
 
+    pub fn process_owner_id(&self, pid: u64) -> Option<usize> {
+        self.processes.get(&pid).map(|p| p.owner_id)
+    }
+
+    pub fn list_finished_pids(&self) -> Vec<u64> {
+        self.processes
+            .iter()
+            .filter_map(|(pid, process)| {
+                if process.state == ProcessState::Finished {
+                    Some(*pid)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub fn kill_process(&mut self, pid: u64) {
         self.processes.remove(&pid);
     }

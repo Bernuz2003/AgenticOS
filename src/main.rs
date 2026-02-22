@@ -388,6 +388,25 @@ fn main() -> io::Result<()> {
                     }
                 }
             }
+
+            let finished_pids = engine.list_finished_pids();
+            for pid in finished_pids {
+                if let Some(owner_id) = engine.process_owner_id(pid) {
+                    if owner_id > 0 {
+                        let token = Token(owner_id);
+                        if let Some(client) = clients.get_mut(&token) {
+                            let end_msg = format!("\n[PROCESS_FINISHED pid={}]\n", pid);
+                            client.output_buffer.extend(end_msg.as_bytes());
+                            let _ = poll.registry().reregister(
+                                &mut client.stream,
+                                token,
+                                Interest::READABLE | Interest::WRITABLE,
+                            );
+                        }
+                    }
+                }
+                engine.kill_process(pid);
+            }
         }
     }
 }
@@ -407,7 +426,17 @@ fn handle_read(
                 client.buffer.extend_from_slice(&chunk[..n]);
                 break;
             }
-            Err(ref _e) => return false, // Fix warning 'e' unused
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return false,
+            Err(ref e)
+                if e.kind() == io::ErrorKind::ConnectionReset
+                    || e.kind() == io::ErrorKind::BrokenPipe =>
+            {
+                return true;
+            }
+            Err(e) => {
+                eprintln!("Read error: {}", e);
+                return true;
+            }
         }
     }
     loop {
