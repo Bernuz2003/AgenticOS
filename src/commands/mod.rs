@@ -1,75 +1,20 @@
+mod metrics;
+mod parsing;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::{infer_workload_class, parse_workload_hint, ModelCatalog};
-use crate::prompting::{GenerationConfig, PromptFamily};
+use crate::prompting::PromptFamily;
 use crate::protocol::{self, OpCode};
 use crate::transport::Client;
 
-#[derive(Default)]
-struct MetricsState {
-    total_commands: u64,
-    total_errors: u64,
-    total_exec_started: u64,
-    total_signals: u64,
-}
-
-fn metrics_state() -> &'static Mutex<MetricsState> {
-    static METRICS: std::sync::OnceLock<Mutex<MetricsState>> = std::sync::OnceLock::new();
-    METRICS.get_or_init(|| Mutex::new(MetricsState::default()))
-}
-
-fn metrics_start() -> &'static Instant {
-    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    START.get_or_init(Instant::now)
-}
-
-fn record_command(success: bool) {
-    let mut lock = metrics_state().lock().unwrap();
-    lock.total_commands += 1;
-    if !success {
-        lock.total_errors += 1;
-    }
-}
-
-fn inc_exec_started() {
-    let mut lock = metrics_state().lock().unwrap();
-    lock.total_exec_started += 1;
-}
-
-fn inc_signal_count() {
-    let mut lock = metrics_state().lock().unwrap();
-    lock.total_signals += 1;
-}
-
-fn snapshot_metrics() -> (u64, u64, u64, u64, u64) {
-    let lock = metrics_state().lock().unwrap();
-    (
-        metrics_start().elapsed().as_secs(),
-        lock.total_commands,
-        lock.total_errors,
-        lock.total_exec_started,
-        lock.total_signals,
-    )
-}
-
-fn log_event(event: &str, client_id: usize, pid: Option<u64>, detail: &str) {
-    let pid_text = pid
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "-".to_string());
-    eprintln!(
-        "event={} client_id={} pid={} detail=\"{}\"",
-        event,
-        client_id,
-        pid_text,
-        detail.replace('"', "'")
-    );
-}
+use self::metrics::{inc_exec_started, inc_signal_count, log_event, record_command, snapshot_metrics};
+use self::parsing::{parse_generation_payload, parse_memw_payload};
 
 pub fn execute_command(
     client: &mut Client,
@@ -117,9 +62,7 @@ pub fn execute_command(
                                 resolved_path.display()
                             ))
                         }
-                        Err(e) => {
-                            protocol::response_err_code("LOAD_FAILED", &format!("{}", e))
-                        }
+                        Err(e) => protocol::response_err_code("LOAD_FAILED", &format!("{}", e)),
                     }
                 }
                 Err(e) => protocol::response_err_code("MODEL_SELECTOR", &e),
@@ -420,96 +363,4 @@ pub fn execute_command(
     }
 
     client.output_buffer.extend(response);
-}
-
-fn parse_memw_payload(payload: &[u8]) -> Result<(u64, Vec<u8>), String> {
-    if payload.is_empty() {
-        return Err("MEMW payload empty. Use '<pid>\\n<raw-bytes>' or '<pid>|<text>'".to_string());
-    }
-
-    if let Some(pos) = payload.iter().position(|b| *b == b'\n') {
-        let pid_str = String::from_utf8_lossy(&payload[..pos]).trim().to_string();
-        let pid: u64 = pid_str
-            .parse()
-            .map_err(|_| format!("Invalid PID '{}'.", pid_str))?;
-        let raw = payload[pos + 1..].to_vec();
-        if raw.is_empty() {
-            return Err("MEMW raw bytes are empty after PID header".to_string());
-        }
-        return Ok((pid, raw));
-    }
-
-    let text = String::from_utf8(payload.to_vec())
-        .map_err(|_| "MEMW payload must be valid UTF-8 when using pipe format".to_string())?;
-    let mut parts = text.splitn(2, '|');
-    let pid_str = parts.next().unwrap_or("").trim();
-    let body = parts
-        .next()
-        .ok_or_else(|| "MEMW pipe format requires '<pid>|<text>'".to_string())?;
-
-    let pid: u64 = pid_str
-        .parse()
-        .map_err(|_| format!("Invalid PID '{}'.", pid_str))?;
-
-    Ok((pid, body.as_bytes().to_vec()))
-}
-
-fn parse_generation_payload(payload: &str, base: GenerationConfig) -> Result<GenerationConfig, String> {
-    if payload.is_empty() {
-        return Err("SET_GEN payload is empty. Use key=value pairs.".to_string());
-    }
-
-    let mut cfg = base;
-
-    for pair in payload.split([',', ';']) {
-        let item = pair.trim();
-        if item.is_empty() {
-            continue;
-        }
-
-        let mut it = item.splitn(2, '=');
-        let key = it.next().unwrap_or("").trim().to_lowercase();
-        let value = it
-            .next()
-            .ok_or_else(|| format!("Invalid item '{}'. Expected key=value", item))?
-            .trim();
-
-        match key.as_str() {
-            "temperature" | "temp" => {
-                let parsed: f64 = value
-                    .parse()
-                    .map_err(|_| format!("Invalid temperature '{}'.", value))?;
-                if !(0.0..=2.0).contains(&parsed) {
-                    return Err("temperature must be in [0.0, 2.0]".to_string());
-                }
-                cfg.temperature = parsed;
-            }
-            "top_p" | "topp" => {
-                let parsed: f64 = value
-                    .parse()
-                    .map_err(|_| format!("Invalid top_p '{}'.", value))?;
-                if !(0.0..=1.0).contains(&parsed) {
-                    return Err("top_p must be in [0.0, 1.0]".to_string());
-                }
-                cfg.top_p = parsed;
-            }
-            "seed" => {
-                cfg.seed = value
-                    .parse()
-                    .map_err(|_| format!("Invalid seed '{}'.", value))?;
-            }
-            "max_tokens" | "max_new_tokens" => {
-                let parsed: usize = value
-                    .parse()
-                    .map_err(|_| format!("Invalid max_tokens '{}'.", value))?;
-                if parsed == 0 {
-                    return Err("max_tokens must be > 0".to_string());
-                }
-                cfg.max_tokens = parsed;
-            }
-            _ => return Err(format!("Unknown SET_GEN key '{}'.", key)),
-        }
-    }
-
-    Ok(cfg)
 }

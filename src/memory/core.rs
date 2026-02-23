@@ -1,8 +1,6 @@
 use candle_core::{DType, Device, Tensor};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs;
-use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -68,7 +66,6 @@ struct PhysicalBlock {
 
 impl PhysicalBlock {
     fn new(size_elements: usize, device: &Device) -> Result<Self, String> {
-        // Creiamo un tensore vuoto (zeri) sul dispositivo (CPU/GPU)
         let t = Tensor::zeros((size_elements,), DType::F32, device)
             .map_err(|e| format!("Candle alloc error: {}", e))?;
 
@@ -78,7 +75,7 @@ impl PhysicalBlock {
 
 pub struct NeuralMemory {
     config: MemoryConfig,
-    device: Device, // CPU, Cuda, o Metal
+    device: Device,
 
     physical_blocks: Vec<PhysicalBlock>,
     free_blocks: VecDeque<BlockIndex>,
@@ -103,12 +100,10 @@ pub struct NeuralMemory {
 
 impl NeuralMemory {
     pub fn new(config: MemoryConfig) -> Result<Self, String> {
-        // Seleziona Hardware.
-        // In futuro qui logic per Device::Cuda(0) o Device::Metal
         let device = Device::Cpu;
 
         let elements_per_block = config.block_size * config.hidden_dim;
-        let bytes_per_element = 4; // f32
+        let bytes_per_element = 4;
         let total_bytes = config.total_memory_mb * 1024 * 1024;
         let bytes_per_block = elements_per_block * bytes_per_element;
         let num_blocks = total_bytes / bytes_per_block;
@@ -194,13 +189,11 @@ impl NeuralMemory {
                             success: true,
                             detail: msg,
                         },
-                        Err(err) => {
-                            SwapResult {
-                                pid: job.pid,
-                                success: false,
-                                detail: format!("swap failed pid={}: {}", job.pid, err),
-                            }
-                        }
+                        Err(err) => SwapResult {
+                            pid: job.pid,
+                            success: false,
+                            detail: format!("swap failed pid={}: {}", job.pid, err),
+                        },
                     };
 
                     if tx_result.send(event).is_err() {
@@ -217,80 +210,11 @@ impl NeuralMemory {
     }
 
     fn resolve_valid_swap_dir(requested: Option<PathBuf>) -> Result<PathBuf, String> {
-        let cwd = std::env::current_dir().map_err(|e| format!("Cannot read current dir: {}", e))?;
-        let workspace_root = cwd.join("workspace");
-        fs::create_dir_all(&workspace_root)
-            .map_err(|e| format!("Cannot create workspace dir {:?}: {}", workspace_root, e))?;
-
-        let candidate = requested.unwrap_or_else(|| workspace_root.join("swap"));
-
-        if !candidate.is_absolute() {
-            for comp in candidate.components() {
-                if matches!(comp, Component::ParentDir | Component::RootDir | Component::Prefix(_)) {
-                    return Err(format!(
-                        "Invalid swap path {:?}: traversal or absolute components are not allowed for relative paths",
-                        candidate
-                    ));
-                }
-            }
-        }
-
-        let candidate_abs = if candidate.is_absolute() {
-            candidate
-        } else {
-            cwd.join(candidate)
-        };
-
-        fs::create_dir_all(&candidate_abs)
-            .map_err(|e| format!("Failed to create swap dir {:?}: {}", candidate_abs, e))?;
-
-        let workspace_canon = fs::canonicalize(&workspace_root)
-            .map_err(|e| format!("Failed to canonicalize workspace dir {:?}: {}", workspace_root, e))?;
-        let candidate_canon = fs::canonicalize(&candidate_abs)
-            .map_err(|e| format!("Failed to canonicalize swap dir {:?}: {}", candidate_abs, e))?;
-
-        if !candidate_canon.starts_with(&workspace_canon) {
-            return Err(format!(
-                "Swap directory must be inside workspace root (workspace={:?}, requested={:?})",
-                workspace_canon, candidate_canon
-            ));
-        }
-
-        Ok(candidate_canon)
+        super::swap_io::resolve_valid_swap_dir(requested)
     }
 
     fn persist_swap_payload(base_dir: &Path, file_stem: &str, payload: &[u8]) -> Result<PathBuf, String> {
-        let tmp_path = base_dir.join(format!("{}.tmp", file_stem));
-        let final_path = base_dir.join(format!("{}.swap", file_stem));
-
-        if tmp_path.parent() != Some(base_dir) || final_path.parent() != Some(base_dir) {
-            return Err("Swap path safety violation: computed file path escaped base dir".to_string());
-        }
-
-        let mut tmp_file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)
-            .map_err(|e| format!("tmp open failed: {}", e))?;
-
-        if let Err(e) = tmp_file.write_all(payload) {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(format!("tmp write failed: {}", e));
-        }
-
-        if let Err(e) = tmp_file.sync_all() {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(format!("tmp fsync failed: {}", e));
-        }
-
-        drop(tmp_file);
-
-        if let Err(e) = fs::rename(&tmp_path, &final_path) {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(format!("atomic rename failed: {}", e));
-        }
-
-        Ok(final_path)
+        super::swap_io::persist_swap_payload(base_dir, file_stem, payload)
     }
 
     pub fn set_active(&mut self, active: bool) {
@@ -474,10 +398,7 @@ impl NeuralMemory {
         id
     }
 
-    /// Legge un tensore ricostruendo i dati dai blocchi fisici sparsi.
-    /// Operazione lenta (Device -> Host), usata solo per debug o salvataggio.
     pub fn read(&self, id: TensorId) -> Result<Vec<f32>, String> {
-        // 1. Recupera la lista delle pagine
         let pages = self
             .page_table
             .get(&id)
@@ -485,12 +406,8 @@ impl NeuralMemory {
 
         let mut output = Vec::new();
 
-        // Itera su ogni blocco fisico
         for &block_idx in pages {
             let block = &self.physical_blocks[block_idx];
-
-            // Converte il Tensore Candle in Vec<f32> standard
-            // to_vec1() scarica i dati dalla GPU/Tensor alla CPU se necessario
             let chunk: Vec<f32> = block
                 .tensor
                 .to_vec1()
@@ -502,7 +419,6 @@ impl NeuralMemory {
         Ok(output)
     }
 
-    /// Scrittura reale: Prende byte grezzi, li converte in Tensor e li salva nei blocchi
     pub fn write_from_bytes(&mut self, id: TensorId, raw_data: &[u8]) -> Result<String, String> {
         if !self.active {
             return Ok(format!(
@@ -518,8 +434,6 @@ impl NeuralMemory {
 
         self.clear_tensor_pages(id, true);
 
-        // Converti bytes -> f32 (assumiamo Little Endian per ora)
-        // Nota: In produzione questo è unsafe cast per velocità, qui safe copy
         let f32_data: Vec<f32> = raw_data
             .chunks_exact(4)
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
@@ -549,22 +463,12 @@ impl NeuralMemory {
 
         for _ in 0..blocks_needed {
             let block_idx = self.free_blocks.pop_front().unwrap();
-
-            // Logica di slice dei dati
             let end = std::cmp::min(data_offset + elements_per_block, f32_data.len());
             let chunk_data = &f32_data[data_offset..end];
 
-            // Creiamo un tensore temporaneo dai dati
             let temp_tensor = Tensor::from_slice(chunk_data, (chunk_data.len(),), &self.device)
                 .map_err(|e| e.to_string())?;
 
-            // Scriviamo nel blocco fisico (Sostituzione parziale o totale)
-            // Nota: Candle non ha "copy_into" mutabile facile sui tensori base.
-            // Sostituiamo direttamente il tensore nel blocco per semplicità o usiamo slice_assign in futuro.
-            // Qui facciamo una semplificazione: se il blocco è pieno, lo sovrascriviamo.
-            // Se è parziale, dovremmo fare padding.
-
-            // Per ora: Padding con zeri se il chunk è più piccolo del blocco
             let final_tensor = if chunk_data.len() < elements_per_block {
                 let pad_size = elements_per_block - chunk_data.len();
                 let zeros = Tensor::zeros((pad_size,), DType::F32, &self.device)
@@ -576,7 +480,6 @@ impl NeuralMemory {
 
             self.physical_blocks[block_idx].tensor = final_tensor;
 
-            // Update Page Table
             if let Some(pages) = self.page_table.get_mut(&id) {
                 pages.push(block_idx);
             }
@@ -620,10 +523,7 @@ impl NeuralMemory {
 
         self.lru_order.retain(|&t| t != id);
 
-        Ok(format!(
-            "Released tensor {} ({} blocks)",
-            id, released_blocks
-        ))
+        Ok(format!("Released tensor {} ({} blocks)", id, released_blocks))
     }
 
     pub fn compute_test(&self, id: TensorId, multiplier: f32) -> Result<String, String> {
@@ -633,8 +533,6 @@ impl NeuralMemory {
 
         for (i, &block_idx) in pages.iter().enumerate() {
             let block_tensor = &self.physical_blocks[block_idx].tensor;
-
-            // Calcolo (Inference)
             let res = (block_tensor * (multiplier as f64)).map_err(|e| e.to_string())?;
 
             let max_val: f32 = res
@@ -649,8 +547,6 @@ impl NeuralMemory {
                 .to_scalar()
                 .map_err(|e| e.to_string())?;
 
-            // Peek (Anteprima): Estraiamo i primi 5 valori per vederli con i nostri occhi
-            // Appiattiamo il tensore e prendiamo i primi valori
             let vec: Vec<f32> = res
                 .flatten_all()
                 .map_err(|e| e.to_string())?
