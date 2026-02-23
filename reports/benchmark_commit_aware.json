@@ -1,0 +1,88 @@
+{
+  "benchmark_id": "20260222-190553-55abd9a",
+  "host": "127.0.0.1",
+  "port": 6379,
+  "model_path": "models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf",
+  "timestamp": "2026-02-22 19:05:53",
+  "git": {
+    "commit": "55abd9a",
+    "branch": "main",
+    "dirty": true
+  },
+  "ping": {
+    "verb": "PING",
+    "ok": false,
+    "code": "MALFORMED",
+    "response": "",
+    "duration_s": 3.0026964330008923
+  },
+  "load": {
+    "verb": "LOAD",
+    "ok": true,
+    "code": "GENERIC",
+    "response": "Master Model Loaded. family=Llama path=models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf",
+    "duration_s": 53.53708252999968
+  },
+  "runs": [
+    {
+      "name": "brief_italian#run1",
+      "prompt": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a precise and concise assistant.\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nSpiegami in 3 frasi cosa fa un kernel event-driven.\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+      "ok": false,
+      "first_chunk_s": null,
+      "total_s": 20.33068585500041,
+      "bytes_received": 0,
+      "output_preview": "",
+      "output_tail": "",
+      "raw_output": "",
+      "control_code": "MISSING"
+    },
+    {
+      "name": "structured_reasoning#run1",
+      "prompt": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a precise and concise assistant.\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nDammi 5 punti chiari su come progettare un protocollo TCP robusto.\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+      "ok": false,
+      "first_chunk_s": null,
+      "total_s": 20.334743134000746,
+      "bytes_received": 0,
+      "output_preview": "",
+      "output_tail": "",
+      "raw_output": "",
+      "control_code": "MISSING"
+    },
+    {
+      "name": "syscall_calc#run1",
+      "prompt": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a precise and concise assistant.\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nCalcola 37*19 usando questo formato tool: [[CALC: 37*19]] e poi spiegami il risultato in 1 frase.\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+      "ok": false,
+      "first_chunk_s": null,
+      "total_s": 20.33375782099938,
+      "bytes_received": 0,
+      "output_preview": "",
+      "output_tail": "",
+      "raw_output": "",
+      "control_code": "MISSING"
+    },
+    {
+      "name": "syscall_ls#run1",
+      "prompt": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a precise and concise assistant.\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nUsa [[LS]] e riassumi i file trovati in massimo 2 righe.\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+      "ok": false,
+      "first_chunk_s": null,
+      "total_s": 20.329037585999686,
+      "bytes_received": 0,
+      "output_preview": "",
+      "output_tail": "",
+      "raw_output": "",
+      "control_code": "MISSING"
+    }
+  ],
+  "thresholds": {
+    "load_ok": true,
+    "first_chunk_max_s": 30.0,
+    "min_bytes_each_run": 30,
+    "max_total_s": 90.0,
+    "max_failed_runs": 1
+  },
+  "evaluation": {
+    "pass": false,
+    "failed_runs": 4,
+    "total_runs": 4
+  }
+}

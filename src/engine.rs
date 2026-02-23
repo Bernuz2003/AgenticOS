@@ -1,20 +1,21 @@
 use anyhow::{Error as E, Result};
-use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, Tensor};
-use candle_transformers::models::quantized_llama as model;
-use model::ModelWeights;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
+use crate::backend::RuntimeModel;
 use crate::process::{AgentProcess, ProcessState};
+use crate::prompting::{should_stop_on_text, GenerationConfig, PromptFamily};
 
 pub struct LLMEngine {
-    master_model: Option<ModelWeights>,
+    master_model: Option<RuntimeModel>,
     pub tokenizer: Tokenizer,
     device: Device,
     pub processes: HashMap<u64, AgentProcess>,
     next_pid: u64,
+    family: PromptFamily,
+    generation: GenerationConfig,
 
     // Memorizziamo gli ID speciali all'avvio
     eos_token_id: u32, // End of Sentence / Text (<|end_of_text|>)
@@ -22,36 +23,18 @@ pub struct LLMEngine {
 }
 
 impl LLMEngine {
-    pub fn load(path: &str) -> Result<Self> {
+    pub fn load(path: &str, family: PromptFamily, tokenizer_hint: Option<PathBuf>) -> Result<Self> {
         println!("ENGINE: Loading Master Model from {}...", path);
 
         let device = Device::Cpu;
-
-        let mut file = std::fs::File::open(path)
-            .map_err(|e| E::msg(format!("Failed to open model file: {}", e)))?;
-        let content = gguf_file::Content::read(&mut file)?;
-        let model = ModelWeights::from_gguf(content, &mut file, &device)?;
+        let model = RuntimeModel::load_from_gguf(path, family, &device)?;
 
         println!("ENGINE: Weights loaded. Loading Tokenizer...");
 
-        let model_path = Path::new(path);
-        let parent_dir = model_path.parent().unwrap_or(Path::new("."));
-        let local_tok_path = parent_dir.join("tokenizer.json");
-        let root_tok_path = Path::new("tokenizer.json");
-
-        let tokenizer = if local_tok_path.exists() {
-            println!("ENGINE: Found tokenizer at {:?}", local_tok_path);
-            Tokenizer::from_file(local_tok_path).map_err(E::msg)?
-        } else if root_tok_path.exists() {
-            println!("ENGINE: Found tokenizer at root (tokenizer.json)");
-            Tokenizer::from_file(root_tok_path).map_err(E::msg)?
-        } else {
-            // Fallback download...
-            let api = hf_hub::api::sync::Api::new()?;
-            let repo = api.model("meta-llama/Meta-Llama-3-8B-Instruct".to_string());
-            let path = repo.get("tokenizer.json")?;
-            Tokenizer::from_file(path).map_err(E::msg)?
-        };
+        let tokenizer_path = resolve_tokenizer_path(path, tokenizer_hint)
+            .ok_or_else(|| E::msg("Tokenizer not found for selected model (fail-fast policy)."))?;
+        println!("ENGINE: Using tokenizer at {:?}", tokenizer_path);
+        let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(E::msg)?;
 
         // Cerchiamo i token nel vocabolario caricato.
         // Se non li trova, usiamo un fallback sicuro o 0.
@@ -66,7 +49,9 @@ impl LLMEngine {
             "ENGINE: Special Tokens Identified -> EOS: {}, EOT: {}",
             eos_token_id, eot_token_id
         );
-        println!("ENGINE: Master Model & Tokenizer Ready. Zero-Copy Cloning enabled.");
+        println!(
+            "ENGINE: Master Model & Tokenizer Ready. Backend abstraction enabled."
+        );
 
         Ok(Self {
             master_model: Some(model),
@@ -74,6 +59,8 @@ impl LLMEngine {
             device,
             processes: HashMap::new(),
             next_pid: 1,
+            family,
+            generation: GenerationConfig::defaults_for(family),
             eos_token_id,
             eot_token_id,
         })
@@ -82,7 +69,7 @@ impl LLMEngine {
     pub fn spawn_process(
         &mut self,
         prompt: &str,
-        max_tokens: usize,
+        _max_tokens: usize,
         owner_id: usize,
     ) -> Result<u64> {
         let pid = self.next_pid;
@@ -106,7 +93,7 @@ impl LLMEngine {
             .get_ids()
             .to_vec();
 
-        let process = AgentProcess::new(pid, owner_id, model_clone, tokens, max_tokens);
+        let process = AgentProcess::new(pid, owner_id, model_clone, tokens, self.generation);
         self.processes.insert(pid, process);
 
         Ok(pid)
@@ -173,10 +160,7 @@ impl LLMEngine {
 
         // 2. Controllo Testuale
         if let Some(ref t) = text_output {
-            if t.contains("]]") {
-                should_stop = true;
-            }
-            if t.contains("<|eot_id|>") || t.contains("<|end_of_text|>") {
+            if should_stop_on_text(self.family, t) {
                 should_stop = true;
             }
         }
@@ -241,4 +225,39 @@ impl LLMEngine {
     pub fn kill_process(&mut self, pid: u64) {
         self.processes.remove(&pid);
     }
+
+    pub fn set_generation_config(&mut self, cfg: GenerationConfig) {
+        self.generation = cfg;
+    }
+
+    pub fn generation_config(&self) -> GenerationConfig {
+        self.generation
+    }
+}
+
+fn resolve_tokenizer_path(model_path: &str, tokenizer_hint: Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(hint) = tokenizer_hint {
+        if hint.exists() {
+            return Some(hint);
+        }
+    }
+
+    let model_path = Path::new(model_path);
+    let parent_dir = model_path.parent().unwrap_or(Path::new("."));
+    let local_tok_path = parent_dir.join("tokenizer.json");
+    if local_tok_path.exists() {
+        return Some(local_tok_path);
+    }
+
+    let root_tok_path = Path::new("tokenizer.json");
+    if root_tok_path.exists() {
+        return Some(root_tok_path.to_path_buf());
+    }
+
+    let models_tok_path = Path::new("models").join("tokenizer.json");
+    if models_tok_path.exists() {
+        return Some(models_tok_path);
+    }
+
+    None
 }

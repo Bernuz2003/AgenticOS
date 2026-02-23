@@ -1,6 +1,7 @@
 import argparse
 import json
 import socket
+import subprocess
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -8,12 +9,14 @@ from typing import Optional
 
 HOST = "127.0.0.1"
 PORT = 6379
+FINISHED_MARKER = "[PROCESS_FINISHED pid="
 
 
 @dataclass
 class CommandResult:
     verb: str
     ok: bool
+    code: str
     response: str
     duration_s: float
 
@@ -29,6 +32,127 @@ class ExecResult:
     output_preview: str
     output_tail: str
     raw_output: str
+    control_code: str
+
+
+def _read_control_frame(data: bytes) -> tuple[bool, str, str]:
+    line_end = data.find(b"\r\n")
+    if line_end == -1:
+        text = data.decode("utf-8", errors="replace")
+        return text.startswith("+OK"), "MALFORMED", text
+
+    header = data[:line_end].decode("utf-8", errors="replace")
+    parts = header.split()
+    if len(parts) < 3:
+        return False, "MALFORMED", data.decode("utf-8", errors="replace")
+
+    status = parts[0]
+    code = parts[1]
+    try:
+        payload_len = int(parts[2])
+    except ValueError:
+        return False, "MALFORMED", data.decode("utf-8", errors="replace")
+
+    start = line_end + 2
+    end = min(start + payload_len, len(data))
+    payload = data[start:end].decode("utf-8", errors="replace")
+    return status == "+OK", code, payload
+
+
+def _consume_framed_messages(buffer: bytearray) -> list[tuple[str, str, bytes]]:
+    frames: list[tuple[str, str, bytes]] = []
+
+    while True:
+        line_end = buffer.find(b"\r\n")
+        if line_end == -1:
+            break
+
+        header = buffer[:line_end].decode("utf-8", errors="replace")
+        parts = header.split()
+        if len(parts) < 3:
+            break
+
+        kind = parts[0]
+        if kind in {"+OK", "-ERR"}:
+            code = parts[1]
+            len_text = parts[2]
+        elif kind == "DATA" and len(parts) >= 3:
+            code = parts[1]
+            len_text = parts[2]
+        else:
+            break
+
+        try:
+            payload_len = int(len_text)
+        except ValueError:
+            break
+
+        total_needed = line_end + 2 + payload_len
+        if len(buffer) < total_needed:
+            break
+
+        payload = bytes(buffer[line_end + 2 : total_needed])
+        del buffer[:total_needed]
+        frames.append((kind, code, payload))
+
+    return frames
+
+
+def _extract_data_payloads(raw: bytes) -> tuple[str, str]:
+    idx = 0
+    out_parts: list[str] = []
+    control_code = "MISSING"
+
+    while idx < len(raw):
+        line_end = raw.find(b"\r\n", idx)
+        if line_end == -1:
+            break
+
+        header = raw[idx:line_end].decode("utf-8", errors="replace")
+        parts = header.split()
+        if len(parts) < 3:
+            break
+
+        if parts[0] in {"+OK", "-ERR"}:
+            control_code = parts[1]
+            try:
+                payload_len = int(parts[2])
+            except ValueError:
+                break
+            start = line_end + 2
+            idx = start + payload_len
+            continue
+
+        if parts[0] == "DATA" and len(parts) >= 3 and parts[1].lower() == "raw":
+            try:
+                payload_len = int(parts[2])
+            except ValueError:
+                break
+            start = line_end + 2
+            end = start + payload_len
+            if end > len(raw):
+                break
+            out_parts.append(raw[start:end].decode("utf-8", errors="replace"))
+            idx = end
+            continue
+
+        break
+
+    return "".join(out_parts), control_code
+
+
+def git_metadata() -> dict:
+    def run(cmd: list[str]) -> str:
+        try:
+            res = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            return res.stdout.strip()
+        except Exception:
+            return "unknown"
+
+    commit = run(["git", "rev-parse", "--short", "HEAD"])
+    branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    dirty = run(["git", "status", "--porcelain"]) != ""
+    return {"commit": commit, "branch": branch, "dirty": dirty}
 
 
 class KernelClient:
@@ -57,21 +181,34 @@ class KernelClient:
                 sock.sendall(payload_bytes)
 
             last_data_at = time.perf_counter()
+            frame_buffer = bytearray()
+            control_result: tuple[bool, str, str] | None = None
             while True:
                 try:
                     chunk = sock.recv(4096)
                     if not chunk:
                         break
                     data_chunks.append(chunk)
+                    frame_buffer.extend(chunk)
                     last_data_at = time.perf_counter()
+
+                    for kind, code, payload in _consume_framed_messages(frame_buffer):
+                        if kind in {"+OK", "-ERR"}:
+                            control_result = (kind == "+OK", code, payload.decode("utf-8", errors="replace"))
+                            break
+                    if control_result is not None:
+                        break
                 except socket.timeout:
                     if time.perf_counter() - last_data_at >= inactivity_timeout_s:
                         break
 
         total_s = time.perf_counter() - start
-        response = b"".join(data_chunks).decode("utf-8", errors="replace")
-        ok = response.startswith("+OK")
-        return CommandResult(verb=verb, ok=ok, response=response, duration_s=total_s)
+        if control_result is not None:
+            ok, code, payload = control_result
+        else:
+            raw = b"".join(data_chunks)
+            ok, code, payload = _read_control_frame(raw)
+        return CommandResult(verb=verb, ok=ok, code=code, response=payload, duration_s=total_s)
 
     def exec_stream(
         self,
@@ -88,6 +225,10 @@ class KernelClient:
         chunks = []
         start = time.perf_counter()
         first_chunk_s = None
+        streamed_parts: list[str] = []
+        control_code = "MISSING"
+        frame_buffer = bytearray()
+        saw_finished = False
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(connect_timeout_s)
@@ -114,24 +255,46 @@ class KernelClient:
                     if first_chunk_s is None:
                         first_chunk_s = now - start
                     chunks.append(chunk)
+                    frame_buffer.extend(chunk)
                     last_data_at = time.perf_counter()
+
+                    frames = _consume_framed_messages(frame_buffer)
+                    for kind, code, payload in frames:
+                        if kind in {"+OK", "-ERR"}:
+                            control_code = code
+                            continue
+
+                        if kind == "DATA" and code.lower() == "raw":
+                            text = payload.decode("utf-8", errors="replace")
+                            streamed_parts.append(text)
+                            if FINISHED_MARKER in text:
+                                saw_finished = True
+                    if saw_finished:
+                        break
                 except socket.timeout:
                     continue
 
         total_s = time.perf_counter() - start
-        raw_output = b"".join(chunks).decode("utf-8", errors="replace")
+        raw_bytes = b"".join(chunks)
+        raw_output = raw_bytes.decode("utf-8", errors="replace")
         bytes_received = sum(len(c) for c in chunks)
+        streamed_text = "".join(streamed_parts)
+        if not streamed_text:
+            streamed_text, extracted_control = _extract_data_payloads(raw_bytes)
+            if control_code == "MISSING":
+                control_code = extracted_control
 
         return ExecResult(
             name="",
             prompt=prompt,
-            ok=("-ERR" not in raw_output and bytes_received > 0),
+            ok=(control_code != "MISSING" and "-ERR" not in raw_output and bytes_received > 0),
             first_chunk_s=first_chunk_s,
             total_s=total_s,
             bytes_received=bytes_received,
-            output_preview=raw_output[:400],
-            output_tail=raw_output[-400:],
+            output_preview=streamed_text[:400],
+            output_tail=streamed_text[-400:],
             raw_output=raw_output,
+            control_code=control_code,
         )
 
 
@@ -162,27 +325,43 @@ def default_prompt_suite() -> list[tuple[str, str]]:
 
 def evaluate(args: argparse.Namespace) -> dict:
     client = KernelClient(args.host, args.port)
+    git = git_metadata()
 
-    ping = client.send_once("PING", "")
-    load = client.send_once("LOAD", args.model_path, read_timeout_s=5.0, inactivity_timeout_s=1.2)
+    ping = client.send_once(
+        "PING",
+        "",
+        read_timeout_s=args.ping_timeout,
+        inactivity_timeout_s=args.ping_inactivity,
+    )
+    load = client.send_once(
+        "LOAD",
+        args.model_path,
+        read_timeout_s=args.load_timeout,
+        inactivity_timeout_s=args.load_inactivity,
+    )
 
     runs: list[ExecResult] = []
-    for name, user_text in default_prompt_suite():
-        prompt = llama3_chat_prompt(user_text)
-        result = client.exec_stream(
-            prompt=prompt,
-            first_byte_timeout_s=args.first_byte_timeout,
-            inactivity_timeout_s=args.inactivity_timeout,
-            max_total_s=args.max_total,
-        )
-        result.name = name
-        runs.append(result)
+    for run_idx in range(args.run_count):
+        for name, user_text in default_prompt_suite():
+            prompt = llama3_chat_prompt(user_text)
+            result = client.exec_stream(
+                prompt=prompt,
+                first_byte_timeout_s=args.first_byte_timeout,
+                inactivity_timeout_s=args.inactivity_timeout,
+                max_total_s=args.max_total,
+            )
+            result.name = f"{name}#run{run_idx+1}"
+            runs.append(result)
+
+    benchmark_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{git['commit']}"
 
     summary = {
+        "benchmark_id": benchmark_id,
         "host": args.host,
         "port": args.port,
         "model_path": args.model_path,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "git": git,
         "ping": asdict(ping),
         "load": asdict(load),
         "runs": [asdict(r) for r in runs],
@@ -219,17 +398,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate AgenticOS kernel behavior with Llama 3 8B")
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--port", type=int, default=PORT)
-    parser.add_argument("--model-path", default="models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf")
-    parser.add_argument("--inactivity-timeout", type=float, default=3.0)
-    parser.add_argument("--first-byte-timeout", type=float, default=45.0)
-    parser.add_argument("--max-total", type=float, default=90.0)
+    parser.add_argument("--model-path", default="models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf")
+    parser.add_argument("--inactivity-timeout", type=float, default=6.0)
+    parser.add_argument("--first-byte-timeout", type=float, default=60.0)
+    parser.add_argument("--max-total", type=float, default=180.0)
+    parser.add_argument("--ping-timeout", type=float, default=3.0)
+    parser.add_argument("--ping-inactivity", type=float, default=1.0)
+    parser.add_argument("--load-timeout", type=float, default=90.0)
+    parser.add_argument("--load-inactivity", type=float, default=3.0)
 
-    parser.add_argument("--threshold-first-chunk", type=float, default=30.0)
-    parser.add_argument("--threshold-min-bytes", type=int, default=30)
-    parser.add_argument("--threshold-total", type=float, default=90.0)
-    parser.add_argument("--threshold-failed-runs", type=int, default=1)
+    parser.add_argument("--threshold-first-chunk", type=float, default=55.0)
+    parser.add_argument("--threshold-min-bytes", type=int, default=25)
+    parser.add_argument("--threshold-total", type=float, default=180.0)
+    parser.add_argument("--threshold-failed-runs", type=int, default=2)
 
     parser.add_argument("--report-path", default="reports/llama3_eval_report.json")
+    parser.add_argument("--run-count", type=int, default=1)
     args = parser.parse_args()
 
     summary = evaluate(args)

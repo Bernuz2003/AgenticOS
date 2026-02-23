@@ -1,76 +1,88 @@
 {
+  "benchmark_id": "20260222-193724-55abd9a",
   "host": "127.0.0.1",
   "port": 6379,
-  "model_path": "models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf",
-  "timestamp": "2026-02-22 12:37:56",
+  "model_path": "models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+  "timestamp": "2026-02-22 19:37:24",
+  "git": {
+    "commit": "55abd9a",
+    "branch": "main",
+    "dirty": true
+  },
   "ping": {
     "verb": "PING",
     "ok": true,
-    "response": "+OK PONG\r\n",
-    "duration_s": 2.001826541000355
+    "code": "PING",
+    "response": "PONG",
+    "duration_s": 0.00045021900041319896
   },
   "load": {
     "verb": "LOAD",
     "ok": true,
-    "response": "+OK Master Model Loaded.\r\n",
-    "duration_s": 9.308849980000105
+    "code": "GENERIC",
+    "response": "Master Model Loaded. family=Llama path=models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+    "duration_s": 8.413824690000183
   },
   "runs": [
     {
-      "name": "brief_italian",
+      "name": "brief_italian#run1",
       "prompt": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a precise and concise assistant.\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nSpiegami in 3 frasi cosa fa un kernel event-driven.\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
       "ok": true,
-      "first_chunk_s": 21.024595301000318,
-      "total_s": 84.5797047660003,
-      "bytes_received": 619,
-      "output_preview": "+OK Process Started PID: 1\r\nHere are three concise sentences explaining what an event-driven kernel does:\n\n1. An event-driven kernel is a type of operating system kernel that responds to system events, such as hardware interrupts, by executing specific code paths to handle the events.\n2. It manages the system's resources and schedules tasks based on the occurrence of events, allowing for efficient",
-      "output_tail": "interrupts, by executing specific code paths to handle the events.\n2. It manages the system's resources and schedules tasks based on the occurrence of events, allowing for efficient and flexible system management.\n3. By decoupling system functionality from the underlying hardware, an event-driven kernel enables developers to write device-independent code, improving portability and maintainability.",
-      "raw_output": "+OK Process Started PID: 1\r\nHere are three concise sentences explaining what an event-driven kernel does:\n\n1. An event-driven kernel is a type of operating system kernel that responds to system events, such as hardware interrupts, by executing specific code paths to handle the events.\n2. It manages the system's resources and schedules tasks based on the occurrence of events, allowing for efficient and flexible system management.\n3. By decoupling system functionality from the underlying hardware, an event-driven kernel enables developers to write device-independent code, improving portability and maintainability."
+      "first_chunk_s": 23.837349817998984,
+      "total_s": 101.51308106999932,
+      "bytes_received": 1909,
+      "output_preview": "Un kernel event-driven (kernel basato su eventi) è un tipo di kernel operativo che gestisce gli eventi di sistema in modo asincrono e non bloccante. In pratica, il kernel si occupa di gestire gli eventi in arrivo, come ad esempio la pressione di un tasto, l'arrivo di un pacchetto di rete o la richiesta di I/O, senza bloccare il sistema. Ciò consente di migliorare la prestazioni e la risposta rapid",
+      "output_tail": " eventi) è un tipo di kernel operativo che gestisce gli eventi di sistema in modo asincrono e non bloccante. In pratica, il kernel si occupa di gestire gli eventi in arrivo, come ad esempio la pressione di un tasto, l'arrivo di un pacchetto di rete o la richiesta di I/O, senza bloccare il sistema. Ciò consente di migliorare la prestazioni e la risposta rapida dei sistemi.\n[PROCESS_FINISHED pid=1]\n",
+      "raw_output": "+OK GENERIC 22\r\nProcess Started PID: 1DATA raw 2\r\nUnDATA raw 7\r\n kernelDATA raw 6\r\n eventDATA raw 7\r\n-drivenDATA raw 2\r\n (DATA raw 6\r\nkernelDATA raw 4\r\n basDATA raw 3\r\natoDATA raw 3\r\n suDATA raw 6\r\n eventDATA raw 1\r\niDATA raw 1\r\n)DATA raw 3\r\n èDATA raw 3\r\n unDATA raw 5\r\n tipoDATA raw 3\r\n diDATA raw 7\r\n kernelDATA raw 5\r\n operDATA raw 5\r\nativoDATA raw 4\r\n cheDATA raw 5\r\n gestDATA raw 4\r\nisceDATA raw 4\r\n gliDATA raw 6\r\n eventDATA raw 1\r\niDATA raw 3\r\n diDATA raw 8\r\n sistemaDATA raw 3\r\n inDATA raw 5\r\n modoDATA raw 3\r\n asDATA raw 3\r\nincDATA raw 3\r\nronDATA raw 1\r\noDATA raw 2\r\n eDATA raw 4\r\n nonDATA raw 4\r\n bloDATA raw 2\r\nccDATA raw 4\r\nanteDATA raw 1\r\n.DATA raw 3\r\n InDATA raw 3\r\n prDATA raw 5\r\naticaDATA raw 1\r\n,DATA raw 3\r\n ilDATA raw 7\r\n kernelDATA raw 3\r\n siDATA raw 6\r\n occupDATA raw 1\r\naDATA raw 3\r\n diDATA raw 5\r\n gestDATA raw 3\r\nireDATA raw 4\r\n gliDATA raw 6\r\n eventDATA raw 1\r\niDATA raw 3\r\n inDATA raw 4\r\n arrDATA raw 3\r\nivoDATA raw 1\r\n,DATA raw 5\r\n comeDATA raw 3\r\n adDATA raw 3\r\n esDATA raw 3\r\nempDATA raw 2\r\nioDATA raw 3\r\n laDATA raw 6\r\n pressDATA raw 4\r\nioneDATA raw 3\r\n diDATA raw 3\r\n unDATA raw 2\r\n tDATA raw 4\r\nastoDATA raw 1\r\n,DATA raw 2\r\n lDATA raw 1\r\n'DATA raw 3\r\narrDATA raw 3\r\nivoDATA raw 3\r\n diDATA raw 3\r\n unDATA raw 4\r\n pacDATA raw 4\r\nchetDATA raw 2\r\ntoDATA raw 3\r\n diDATA raw 3\r\n reDATA raw 2\r\nteDATA raw 2\r\n oDATA raw 3\r\n laDATA raw 5\r\n richDATA raw 5\r\niestaDATA raw 3\r\n diDATA raw 2\r\n IDATA raw 2\r\n/ODATA raw 1\r\n,DATA raw 6\r\n senzaDATA raw 4\r\n bloDATA raw 2\r\nccDATA raw 3\r\nareDATA raw 3\r\n ilDATA raw 8\r\n sistemaDATA raw 1\r\n.DATA raw 3\r\n CiDATA raw 2\r\nòDATA raw 5\r\n consDATA raw 4\r\nenteDATA raw 3\r\n diDATA raw 8\r\n migliorDATA raw 3\r\nareDATA raw 3\r\n laDATA raw 6\r\n prestDATA raw 6\r\nazioniDATA raw 2\r\n eDATA raw 3\r\n laDATA raw 4\r\n risDATA raw 5\r\npostaDATA raw 4\r\n rapDATA raw 3\r\nidaDATA raw 4\r\n deiDATA raw 8\r\n sistemiDATA raw 1\r\n.DATA raw 0\r\nDATA raw 26\r\n\n[PROCESS_FINISHED pid=1]\n",
+      "control_code": "GENERIC"
     },
     {
-      "name": "structured_reasoning",
+      "name": "structured_reasoning#run1",
       "prompt": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a precise and concise assistant.\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nDammi 5 punti chiari su come progettare un protocollo TCP robusto.\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
       "ok": true,
-      "first_chunk_s": 23.132744773000013,
-      "total_s": 150.09028087099978,
-      "bytes_received": 1188,
-      "output_preview": "+OK Process Started PID: 2\r\nHere are 5 key points to design a robust TCP protocol:\n\n1. **Connection Establishment**: Ensure a secure connection establishment process, including:\n\t* A reliable three-way handshake (SYN, SYN-ACK, ACK) to prevent spoofing and ensure the connection is initiated by the correct party.\n\t* Use of a random initial sequence number (ISN) to prevent prediction and sequence num",
-      "output_tail": ".\n\n3. **Acknowledgment and Retransmission**: Implement a reliable acknowledgment mechanism to:\n\t* Ensure timely acknowledgment of received packets: use a timer-based mechanism to retransmit packets if acknowledgment is not received within a certain time frame.\n\t* Prevent packet duplication: use a sequence number and an acknowledgment number to prevent duplicate packets from being retransmitted.\n\n4",
-      "raw_output": "+OK Process Started PID: 2\r\nHere are 5 key points to design a robust TCP protocol:\n\n1. **Connection Establishment**: Ensure a secure connection establishment process, including:\n\t* A reliable three-way handshake (SYN, SYN-ACK, ACK) to prevent spoofing and ensure the connection is initiated by the correct party.\n\t* Use of a random initial sequence number (ISN) to prevent prediction and sequence number attacks.\n\n2. **Sequence Number Management**: Implement a robust sequence number management system to prevent:\n\t* Sequence number wraparound attacks: use a 32-bit sequence number and implement a sliding window mechanism to prevent wraparound.\n\t* Sequence number prediction attacks: use a pseudo-random number generator to generate ISNs and ensure the sequence numbers are unpredictable.\n\n3. **Acknowledgment and Retransmission**: Implement a reliable acknowledgment mechanism to:\n\t* Ensure timely acknowledgment of received packets: use a timer-based mechanism to retransmit packets if acknowledgment is not received within a certain time frame.\n\t* Prevent packet duplication: use a sequence number and an acknowledgment number to prevent duplicate packets from being retransmitted.\n\n4"
+      "first_chunk_s": 24.535506717998942,
+      "total_s": 180.01434411099945,
+      "bytes_received": 3556,
+      "output_preview": "Ecco 5 punti chiari su come progettare un protocollo TCP robusto:\n\n1. **Correttore di errore**: il protocollo TCP utilizza un meccanismo di correzione degli errori di trasmissione, come il checksum, per verificare che i dati siano stati trasmessi correttamente. Se il checksum non è corretto, il ricevitore richiede la ripetizione della trasmissione dei dati.\n\n2. **Congestion Avoidance**: il protoco",
+      "output_tail": " di congestion avoidance per evitare la congestione della rete. Ciò significa che se la rete è congestionata, il protocollo riduce la velocità di trasmissione per evitare di congestionare la rete ulteriormente.\n\n3. **Riconoscimento della connessione**: il protocollo TCP utilizza un meccanismo di riconoscimento della connessione per verificare se la connessione è ancora attiva. Ciò significa che se",
+      "raw_output": "+OK GENERIC 22\r\nProcess Started PID: 2DATA raw 1\r\nEDATA raw 3\r\nccoDATA raw 1\r\n DATA raw 1\r\n5DATA raw 5\r\n puntDATA raw 1\r\niDATA raw 4\r\n chiDATA raw 3\r\nariDATA raw 3\r\n suDATA raw 5\r\n comeDATA raw 4\r\n proDATA raw 4\r\ngettDATA raw 3\r\nareDATA raw 3\r\n unDATA raw 9\r\n protocolDATA raw 2\r\nloDATA raw 4\r\n TCPDATA raw 7\r\n robustDATA raw 1\r\noDATA raw 3\r\n:\n\nDATA raw 1\r\n1DATA raw 1\r\n.DATA raw 3\r\n **DATA raw 3\r\nCorDATA raw 4\r\nrettDATA raw 3\r\noreDATA raw 3\r\n diDATA raw 5\r\n erroDATA raw 2\r\nreDATA raw 3\r\n**:DATA raw 3\r\n ilDATA raw 9\r\n protocolDATA raw 2\r\nloDATA raw 4\r\n TCPDATA raw 5\r\n utilDATA raw 4\r\nizzaDATA raw 3\r\n unDATA raw 3\r\n meDATA raw 2\r\nccDATA raw 2\r\nanDATA raw 4\r\nismoDATA raw 3\r\n diDATA raw 6\r\n correDATA raw 5\r\nzioneDATA raw 6\r\n degliDATA raw 6\r\n errorDATA raw 1\r\niDATA raw 3\r\n diDATA raw 5\r\n trasDATA raw 7\r\nmissionDATA raw 1\r\neDATA raw 1\r\n,DATA raw 5\r\n comeDATA raw 3\r\n ilDATA raw 9\r\n checksumDATA raw 1\r\n,DATA raw 4\r\n perDATA raw 4\r\n verDATA raw 4\r\nificDATA raw 3\r\nareDATA raw 4\r\n cheDATA raw 2\r\n iDATA raw 5\r\n datiDATA raw 2\r\n sDATA raw 4\r\nianoDATA raw 6\r\n statiDATA raw 3\r\n trDATA raw 3\r\nasmDATA raw 3\r\nessDATA raw 1\r\niDATA raw 4\r\n corDATA raw 4\r\nrettDATA raw 6\r\namenteDATA raw 1\r\n.DATA raw 3\r\n SeDATA raw 3\r\n ilDATA raw 9\r\n checksumDATA raw 4\r\n nonDATA raw 3\r\n èDATA raw 4\r\n corDATA raw 3\r\nretDATA raw 2\r\ntoDATA raw 1\r\n,DATA raw 3\r\n ilDATA raw 5\r\n riceDATA raw 3\r\nvitDATA raw 3\r\noreDATA raw 5\r\n richDATA raw 3\r\niedDATA raw 1\r\neDATA raw 3\r\n laDATA raw 4\r\n ripDATA raw 2\r\netDATA raw 6\r\nizioneDATA raw 6\r\n dellaDATA raw 5\r\n trasDATA raw 7\r\nmissionDATA raw 1\r\neDATA raw 4\r\n deiDATA raw 5\r\n datiDATA raw 3\r\n.\n\nDATA raw 1\r\n2DATA raw 1\r\n.DATA raw 3\r\n **DATA raw 4\r\nCongDATA raw 6\r\nestionDATA raw 6\r\n AvoidDATA raw 4\r\nanceDATA raw 3\r\n**:DATA raw 3\r\n ilDATA raw 9\r\n protocolDATA raw 2\r\nloDATA raw 4\r\n TCPDATA raw 5\r\n utilDATA raw 4\r\nizzaDATA raw 3\r\n ilDATA raw 3\r\n meDATA raw 2\r\nccDATA raw 2\r\nanDATA raw 4\r\nismoDATA raw 3\r\n diDATA raw 11\r\n congestionDATA raw 10\r\n avoidanceDATA raw 4\r\n perDATA raw 3\r\n evDATA raw 2\r\nitDATA raw 3\r\nareDATA raw 3\r\n laDATA raw 8\r\n congestDATA raw 4\r\nioneDATA raw 6\r\n dellaDATA raw 3\r\n reDATA raw 2\r\nteDATA raw 1\r\n.DATA raw 3\r\n CiDATA raw 2\r\nòDATA raw 10\r\n significaDATA raw 4\r\n cheDATA raw 3\r\n seDATA raw 3\r\n laDATA raw 3\r\n reDATA raw 2\r\nteDATA raw 3\r\n èDATA raw 11\r\n congestionDATA raw 3\r\nataDATA raw 1\r\n,DATA raw 3\r\n ilDATA raw 9\r\n protocolDATA raw 2\r\nloDATA raw 4\r\n ridDATA raw 3\r\nuceDATA raw 3\r\n laDATA raw 6\r\n velocDATA raw 4\r\nitàDATA raw 3\r\n diDATA raw 5\r\n trasDATA raw 7\r\nmissionDATA raw 1\r\neDATA raw 4\r\n perDATA raw 3\r\n evDATA raw 2\r\nitDATA raw 3\r\nareDATA raw 3\r\n diDATA raw 11\r\n congestionDATA raw 3\r\nareDATA raw 3\r\n laDATA raw 3\r\n reDATA raw 2\r\nteDATA raw 3\r\n ulDATA raw 6\r\nteriorDATA raw 5\r\nmenteDATA raw 3\r\n.\n\nDATA raw 1\r\n3DATA raw 1\r\n.DATA raw 3\r\n **DATA raw 1\r\nRDATA raw 4\r\niconDATA raw 3\r\noscDATA raw 6\r\nimentoDATA raw 6\r\n dellaDATA raw 5\r\n connDATA raw 6\r\nessionDATA raw 1\r\neDATA raw 3\r\n**:DATA raw 3\r\n ilDATA raw 9\r\n protocolDATA raw 2\r\nloDATA raw 4\r\n TCPDATA raw 5\r\n utilDATA raw 4\r\nizzaDATA raw 3\r\n unDATA raw 3\r\n meDATA raw 2\r\nccDATA raw 2\r\nanDATA raw 4\r\nismoDATA raw 3\r\n diDATA raw 2\r\n rDATA raw 4\r\niconDATA raw 3\r\noscDATA raw 6\r\nimentoDATA raw 6\r\n dellaDATA raw 5\r\n connDATA raw 6\r\nessionDATA raw 1\r\neDATA raw 4\r\n perDATA raw 4\r\n verDATA raw 4\r\nificDATA raw 3\r\nareDATA raw 3\r\n seDATA raw 3\r\n laDATA raw 5\r\n connDATA raw 6\r\nessionDATA raw 1\r\neDATA raw 3\r\n èDATA raw 7\r\n ancoraDATA raw 4\r\n attDATA raw 3\r\nivaDATA raw 1\r\n.DATA raw 3\r\n CiDATA raw 2\r\nòDATA raw 10\r\n significaDATA raw 4\r\n cheDATA raw 3\r\n se",
+      "control_code": "GENERIC"
     },
     {
-      "name": "syscall_calc",
+      "name": "syscall_calc#run1",
       "prompt": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a precise and concise assistant.\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nCalcola 37*19 usando questo formato tool: [[CALC: 37*19]] e poi spiegami il risultato in 1 frase.\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
       "ok": true,
-      "first_chunk_s": 32.949455108000166,
-      "total_s": 47.77525540800025,
-      "bytes_received": 43,
-      "output_preview": "+OK Process Started PID: 3\r\n[[CALC: 37*19]]",
-      "output_tail": "+OK Process Started PID: 3\r\n[[CALC: 37*19]]",
-      "raw_output": "+OK Process Started PID: 3\r\n[[CALC: 37*19]]"
+      "first_chunk_s": 36.44471915199938,
+      "total_s": 46.99165577699932,
+      "bytes_received": 193,
+      "output_preview": "Il risultato è: 703\n[PROCESS_FINISHED pid=3]\n",
+      "output_tail": "Il risultato è: 703\n[PROCESS_FINISHED pid=3]\n",
+      "raw_output": "+OK GENERIC 22\r\nProcess Started PID: 3DATA raw 2\r\nIlDATA raw 7\r\n risultDATA raw 3\r\natoDATA raw 3\r\n èDATA raw 1\r\n:DATA raw 1\r\n DATA raw 3\r\n703DATA raw 0\r\nDATA raw 26\r\n\n[PROCESS_FINISHED pid=3]\n",
+      "control_code": "GENERIC"
     },
     {
-      "name": "syscall_ls",
+      "name": "syscall_ls#run1",
       "prompt": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a precise and concise assistant.\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nUsa [[LS]] e riassumi i file trovati in massimo 2 righe.\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
       "ok": true,
-      "first_chunk_s": 30.836866580999867,
-      "total_s": 46.465174925000156,
-      "bytes_received": 60,
-      "output_preview": "+OK Process Started PID: 4\r\nI'm ready to summarize the files",
-      "output_tail": "+OK Process Started PID: 4\r\nI'm ready to summarize the files",
-      "raw_output": "+OK Process Started PID: 4\r\nI'm ready to summarize the files"
+      "first_chunk_s": 28.034597226000187,
+      "total_s": 89.48881425099898,
+      "bytes_received": 756,
+      "output_preview": "Non sono riuscito a comprendere cosa intendi per \"LS\" e cosa intendi per \"file\". Puoi fornire ulteriori informazioni o specificare di cosa hai bisogno?\n[PROCESS_FINISHED pid=4]\n",
+      "output_tail": "Non sono riuscito a comprendere cosa intendi per \"LS\" e cosa intendi per \"file\". Puoi fornire ulteriori informazioni o specificare di cosa hai bisogno?\n[PROCESS_FINISHED pid=4]\n",
+      "raw_output": "+OK GENERIC 22\r\nProcess Started PID: 4DATA raw 3\r\nNonDATA raw 5\r\n sonoDATA raw 2\r\n rDATA raw 3\r\niusDATA raw 1\r\ncDATA raw 3\r\nitoDATA raw 2\r\n aDATA raw 9\r\n comprendDATA raw 3\r\nereDATA raw 5\r\n cosaDATA raw 7\r\n intendDATA raw 1\r\niDATA raw 4\r\n perDATA raw 2\r\n \"DATA raw 2\r\nLSDATA raw 1\r\n\"DATA raw 2\r\n eDATA raw 5\r\n cosaDATA raw 7\r\n intendDATA raw 1\r\niDATA raw 4\r\n perDATA raw 2\r\n \"DATA raw 4\r\nfileDATA raw 2\r\n\".DATA raw 3\r\n PuDATA raw 2\r\noiDATA raw 5\r\n fornDATA raw 3\r\nireDATA raw 3\r\n ulDATA raw 6\r\nteriorDATA raw 1\r\niDATA raw 7\r\n informDATA raw 6\r\nazioniDATA raw 2\r\n oDATA raw 9\r\n specificDATA raw 3\r\nareDATA raw 3\r\n diDATA raw 5\r\n cosaDATA raw 4\r\n haiDATA raw 4\r\n bisDATA raw 2\r\nogDATA raw 2\r\nnoDATA raw 1\r\n?DATA raw 0\r\nDATA raw 26\r\n\n[PROCESS_FINISHED pid=4]\n",
+      "control_code": "GENERIC"
     }
   ],
   "thresholds": {
     "load_ok": true,
-    "first_chunk_max_s": 30.0,
-    "min_bytes_each_run": 30,
-    "max_total_s": 90.0,
-    "max_failed_runs": 1
+    "first_chunk_max_s": 55.0,
+    "min_bytes_each_run": 25,
+    "max_total_s": 180.0,
+    "max_failed_runs": 2
   },
   "evaluation": {
-    "pass": false,
-    "failed_runs": 3,
+    "pass": true,
+    "failed_runs": 1,
     "total_runs": 4
   }
 }
