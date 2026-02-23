@@ -114,7 +114,10 @@ impl LLMEngine {
             .get_mut(&pid)
             .ok_or(E::msg("PID not found"))?;
 
-        if process.state == ProcessState::Finished {
+        if process.state == ProcessState::Finished
+            || process.state == ProcessState::WaitingForMemory
+            || process.state == ProcessState::Paused
+        {
             return Ok(None);
         }
 
@@ -209,7 +212,29 @@ impl LLMEngine {
     }
 
     pub fn list_active_pids(&self) -> Vec<u64> {
-        self.processes.keys().cloned().collect()
+        self.processes
+            .iter()
+            .filter_map(|(pid, proc)| {
+                if proc.state != ProcessState::Finished {
+                    Some(*pid)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn list_waiting_pids(&self) -> Vec<u64> {
+        self.processes
+            .iter()
+            .filter_map(|(pid, proc)| {
+                if proc.state == ProcessState::WaitingForMemory {
+                    Some(*pid)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn process_owner_id(&self, pid: u64) -> Option<usize> {
@@ -242,6 +267,26 @@ impl LLMEngine {
         }
     }
 
+    pub fn set_process_waiting_for_memory(&mut self, pid: u64) -> bool {
+        if let Some(proc) = self.processes.get_mut(&pid) {
+            if proc.state != ProcessState::Finished {
+                proc.state = ProcessState::WaitingForMemory;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn set_process_ready_if_waiting(&mut self, pid: u64) -> bool {
+        if let Some(proc) = self.processes.get_mut(&pid) {
+            if proc.state == ProcessState::WaitingForMemory {
+                proc.state = ProcessState::Ready;
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn process_status_line(&self, pid: u64) -> Option<String> {
         self.processes.get(&pid).map(|p| {
             format!(
@@ -254,6 +299,10 @@ impl LLMEngine {
                 p.max_tokens
             )
         })
+    }
+
+    pub fn process_max_tokens(&self, pid: u64) -> Option<usize> {
+        self.processes.get(&pid).map(|p| p.max_tokens)
     }
 
     pub fn set_generation_config(&mut self, cfg: GenerationConfig) {

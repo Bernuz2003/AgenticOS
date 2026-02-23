@@ -75,7 +75,7 @@ pub fn execute_command(
     client: &mut Client,
     header: crate::protocol::CommandHeader,
     payload: Vec<u8>,
-    _memory: &Rc<RefCell<NeuralMemory>>,
+    memory: &Rc<RefCell<NeuralMemory>>,
     engine_state: &Arc<Mutex<Option<LLMEngine>>>,
     model_catalog: &mut ModelCatalog,
     active_family: &mut PromptFamily,
@@ -212,6 +212,16 @@ pub fn execute_command(
             if let Some(engine) = lock.as_mut() {
                 match engine.spawn_process(&prompt, 0, client_id) {
                     Ok(pid) => {
+                        if let Some(token_slots) = engine.process_max_tokens(pid) {
+                            if let Err(e) = memory.borrow_mut().register_process(pid, token_slots) {
+                                engine.kill_process(pid);
+                                return client.output_buffer.extend(protocol::response_err_code(
+                                    "MEMORY_ADMISSION",
+                                    &e,
+                                ));
+                            }
+                        }
+
                         inc_exec_started();
                         log_event(
                             "process_spawn",
@@ -235,22 +245,39 @@ pub fn execute_command(
             if let Some(engine) = lock.as_ref() {
                 if requested.is_empty() {
                     let active = engine.list_active_pids();
+                    let waiting = engine.list_waiting_pids();
                     let cfg = engine.generation_config();
+                    let mem = memory.borrow().snapshot();
                     protocol::response_ok_code(
                         "STATUS",
                         &format!(
-                            "uptime_s={} total_commands={} total_errors={} total_exec_started={} total_signals={} active_processes={} active_pids={:?} generation=temperature:{} top_p:{} seed:{} max_tokens:{}",
+                            "uptime_s={} total_commands={} total_errors={} total_exec_started={} total_signals={} active_processes={} waiting_processes={} active_pids={:?} waiting_pids={:?} generation=temperature:{} top_p:{} seed:{} max_tokens:{} mem_active={} mem_total_blocks={} mem_free_blocks={} mem_tracked_pids={} mem_allocated_tensors={} mem_alloc_bytes={} mem_evictions={} mem_swap_count={} mem_swap_faults={} mem_swap_failures={} mem_pending_swaps={} mem_waiting_pids={} mem_oom_events={}",
                             uptime_s,
                             total_cmd,
                             total_err,
                             total_exec,
                             total_signals,
                             active.len(),
+                            waiting.len(),
                             active,
+                            waiting,
                             cfg.temperature,
                             cfg.top_p,
                             cfg.seed,
-                            cfg.max_tokens
+                            cfg.max_tokens,
+                            mem.active,
+                            mem.total_blocks,
+                            mem.free_blocks,
+                            mem.tracked_pids,
+                            mem.allocated_tensors,
+                            mem.alloc_bytes,
+                            mem.evictions,
+                            mem.swap_count,
+                            mem.swap_faults,
+                            mem.swap_failures,
+                            mem.pending_swaps,
+                            mem.waiting_pids,
+                            mem.oom_events
                         ),
                     )
                 } else if let Ok(pid) = requested.parse::<u64>() {
@@ -286,6 +313,7 @@ pub fn execute_command(
                 let mut lock = engine_state.lock().unwrap();
                 if let Some(engine) = lock.as_mut() {
                     if engine.terminate_process(pid) {
+                        let _ = memory.borrow_mut().release_process(pid);
                         inc_signal_count();
                         log_event("process_term", client_id, Some(pid), "graceful_termination_requested");
                         protocol::response_ok_code("TERM", &format!("Termination requested for PID {}", pid))
@@ -307,6 +335,7 @@ pub fn execute_command(
                 let mut lock = engine_state.lock().unwrap();
                 if let Some(engine) = lock.as_mut() {
                     engine.kill_process(pid);
+                    let _ = memory.borrow_mut().release_process(pid);
                     inc_signal_count();
                     log_event("process_kill", client_id, Some(pid), "killed_immediately");
                     protocol::response_ok_code("KILL", &format!("Killed PID {}", pid))
@@ -359,7 +388,29 @@ pub fn execute_command(
                 protocol::response_err_code("NO_MODEL", "No Model Loaded")
             }
         }
-        _ => protocol::response_err_code("NOT_IMPLEMENTED", "Not Implemented"),
+        OpCode::MemoryWrite => match parse_memw_payload(&payload) {
+            Ok((pid, raw)) => {
+                let mut mem = memory.borrow_mut();
+                match mem.write_for_pid_bytes(pid, &raw) {
+                    Ok(msg) => {
+                        let is_waiting = mem.is_pid_waiting_for_memory(pid);
+                        drop(mem);
+
+                        if is_waiting {
+                            let mut lock = engine_state.lock().unwrap();
+                            if let Some(engine) = lock.as_mut() {
+                                let _ = engine.set_process_waiting_for_memory(pid);
+                            }
+                            protocol::response_ok_code("MEMW_QUEUED", &msg)
+                        } else {
+                            protocol::response_ok_code("MEMW", &msg)
+                        }
+                    }
+                    Err(e) => protocol::response_err_code("MEMW_FAILED", &e),
+                }
+            }
+            Err(e) => protocol::response_err_code("MEMW_INVALID", &e),
+        },
     };
 
     if response.starts_with(b"+OK") {
@@ -369,6 +420,38 @@ pub fn execute_command(
     }
 
     client.output_buffer.extend(response);
+}
+
+fn parse_memw_payload(payload: &[u8]) -> Result<(u64, Vec<u8>), String> {
+    if payload.is_empty() {
+        return Err("MEMW payload empty. Use '<pid>\\n<raw-bytes>' or '<pid>|<text>'".to_string());
+    }
+
+    if let Some(pos) = payload.iter().position(|b| *b == b'\n') {
+        let pid_str = String::from_utf8_lossy(&payload[..pos]).trim().to_string();
+        let pid: u64 = pid_str
+            .parse()
+            .map_err(|_| format!("Invalid PID '{}'.", pid_str))?;
+        let raw = payload[pos + 1..].to_vec();
+        if raw.is_empty() {
+            return Err("MEMW raw bytes are empty after PID header".to_string());
+        }
+        return Ok((pid, raw));
+    }
+
+    let text = String::from_utf8(payload.to_vec())
+        .map_err(|_| "MEMW payload must be valid UTF-8 when using pipe format".to_string())?;
+    let mut parts = text.splitn(2, '|');
+    let pid_str = parts.next().unwrap_or("").trim();
+    let body = parts
+        .next()
+        .ok_or_else(|| "MEMW pipe format requires '<pid>|<text>'".to_string())?;
+
+    let pid: u64 = pid_str
+        .parse()
+        .map_err(|_| format!("Invalid PID '{}'.", pid_str))?;
+
+    Ok((pid, body.as_bytes().to_vec()))
 }
 
 fn parse_generation_payload(payload: &str, base: GenerationConfig) -> Result<GenerationConfig, String> {

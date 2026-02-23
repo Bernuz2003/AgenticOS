@@ -237,6 +237,35 @@ mod tests {
         )
     }
 
+    fn setup_shared_state_with_memory_mb(
+        total_memory_mb: usize,
+    ) -> (
+        Rc<RefCell<NeuralMemory>>,
+        Arc<Mutex<Option<LLMEngine>>>,
+        ModelCatalog,
+        PromptFamily,
+        Arc<AtomicBool>,
+    ) {
+        let memory = Rc::new(RefCell::new(
+            NeuralMemory::new(MemoryConfig {
+                block_size: 16,
+                hidden_dim: 256,
+                total_memory_mb,
+            })
+            .expect("memory init"),
+        ));
+        let engine_state: Arc<Mutex<Option<LLMEngine>>> = Arc::new(Mutex::new(None));
+        let catalog = ModelCatalog::discover("models").expect("catalog discover");
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        (
+            memory,
+            engine_state,
+            catalog,
+            PromptFamily::Llama,
+            shutdown_requested,
+        )
+    }
+
     #[test]
     fn partial_header_waits_for_newline() {
         let mut state = ClientState::WaitingForHeader;
@@ -533,5 +562,87 @@ mod tests {
         let resp = String::from_utf8_lossy(&out[..n]);
         assert!(resp.starts_with("+OK SHUTDOWN"));
         assert!(shutdown_requested.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn tcp_pressure_memw_queued_does_not_block_ping() {
+        let (mut client, mut peer) = setup_client_and_peer();
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested) =
+            setup_shared_state_with_memory_mb(0);
+
+        let swap_dir = format!(
+            "workspace/test_transport_swap_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        {
+            let mut mem = memory.borrow_mut();
+            mem.configure_async_swap(true, Some(std::path::PathBuf::from(&swap_dir)))
+                .expect("enable swap");
+            mem.set_token_slot_quota_per_pid(4096);
+            mem.register_process(77, 512).expect("register process");
+        }
+
+        let memw_bytes = 16usize;
+        let mut memw_payload = Vec::with_capacity(3 + memw_bytes);
+        memw_payload.extend_from_slice(b"77\n");
+        memw_payload.extend(vec![0u8; memw_bytes]);
+        let memw_header = format!("MEMW 1 {}\n", memw_payload.len());
+
+        peer.write_all(memw_header.as_bytes())
+            .expect("write memw header");
+        peer.write_all(&memw_payload).expect("write memw payload");
+
+        let mut should_close_memw = false;
+        for _ in 0..8 {
+            should_close_memw = handle_read(
+                &mut client,
+                &memory,
+                &engine_state,
+                &mut catalog,
+                &mut family,
+                1,
+                &shutdown_requested,
+            );
+            if should_close_memw || !client.output_buffer.is_empty() {
+                break;
+            }
+        }
+        assert!(!should_close_memw);
+        assert!(
+            !client.output_buffer.is_empty(),
+            "expected MEMW response after chunked reads"
+        );
+        let _ = handle_write(&mut client);
+
+        let mut out_memw = [0u8; 1024];
+        let n_memw = peer.read(&mut out_memw).expect("read memw response");
+        let memw_resp = String::from_utf8_lossy(&out_memw[..n_memw]);
+        assert!(memw_resp.contains("+OK MEMW_QUEUED"));
+
+        peer.write_all(b"PING 1 0\n").expect("write ping");
+        let should_close_ping = handle_read(
+            &mut client,
+            &memory,
+            &engine_state,
+            &mut catalog,
+            &mut family,
+            1,
+            &shutdown_requested,
+        );
+        assert!(!should_close_ping);
+        let _ = handle_write(&mut client);
+
+        let mut out_ping = [0u8; 256];
+        let n_ping = peer.read(&mut out_ping).expect("read ping response");
+        let ping_resp = String::from_utf8_lossy(&out_ping[..n_ping]);
+        assert!(ping_resp.contains("+OK PING 4\r\nPONG"));
+
+        let waiting = memory.borrow().snapshot().pending_swaps;
+        assert!(waiting >= 1, "expected at least one pending swap job");
+
+        let _ = std::fs::remove_dir_all(swap_dir);
     }
 }

@@ -187,18 +187,41 @@ Questo file è la fonte unica di verità per il piano immediato del progetto.
 ---
 
 ### 8) Integrazione NeuralMemory nel runtime
-**Status:** `TODO`
+**Status:** `DONE` ✅
 
 **Obiettivi**
 - Rendere `memory.rs` parte attiva del ciclo `engine/runtime`.
 - Introdurre tracciamento pressione memoria per processo (`PID`) e globale.
 - Preparare paging KV/state con politiche di eviction configurabili.
 
+**Strategia approvata (aggiornata)**
+- **8a (MVP RAM-only, immediata):** integrazione lifecycle + quote + metriche senza swap su disco.
+- **8b (estensione successiva):** swap RAM↔disco **asincrono** con worker dedicati (mai bloccare event loop `mio`).
+- Quote memoria MVP basate su **token slots** (non bytes stimati) per comportamento deterministico.
+- Cambio modello/family bloccato quando ci sono PID attivi (sicurezza stato processo).
+
+**Non obiettivi del primo rilascio (8a)**
+- Niente paging su disco sincrono nel loop runtime.
+- Niente `mmap` nel primo step (valutazione dopo stabilizzazione).
+
 **DoD (target)**
-- [ ] API memoria stabilizzate (`alloc`, `map`, `evict`, `swap`) integrate in `engine`.
-- [ ] Metriche memoria disponibili (`alloc_bytes`, `evictions`, `swap_count`, `oom_events`).
-- [ ] Test su scenari memory pressure (N processi concorrenti) verdi.
-- [ ] Modalità fallback sicura quando paging è disattivato.
+- [x] **8a.1** API memoria stabilizzate e integrate in `engine` (`alloc`, `release`, `map`, `evict`) con ownership per PID.
+- [x] **8a.2** Quote per PID in token slots con enforcement e `oom_events`.
+- [x] **8a.3** Metriche memoria esposte in `STATUS` (globale + per processo minimo).
+- [x] **8a.4** Comando `MEMW` attivo e validato su path runtime.
+- [x] **8a.5** Test memory pressure (N processi concorrenti) verdi + regressione transport/protocol verde.
+- [x] **8a.6** Fallback sicuro (feature flag/no-op) quando integrazione memoria attiva è disabilitata.
+- [x] **8b.1** Swap su disco asincrono (worker queue) con stato processo `WaitingForMemory`.
+- [x] **8b.2** Policy eviction LRU minima + contatori swap/fault.
+- [x] **8b.3** Hardening I/O swap (write-temp + rename atomico, path safety dedicata).
+- [x] **8b.4** Test e2e sotto pressure senza blocco event loop.
+
+**Piano operativo (task piccoli)**
+- [x] Piano d'attacco definito e validato (fasi, rischi, rollback gate).
+- [x] Implementare 8a.1–8a.3 (`memory.rs`, `engine.rs`, `runtime.rs`, `commands.rs`).
+- [x] Implementare 8a.4 (`MEMW`) + test unit/integration dedicati.
+- [x] Chiudere 8a con benchmark smoke e aggiornamento roadmap.
+- [x] Avviare 8b con worker swap asincrono e test di non-blocco loop.
 
 ---
 
@@ -249,6 +272,13 @@ Questo file è la fonte unica di verità per il piano immediato del progetto.
 | 2026-02-23 | 6     | DONE         | Osservabilità + segnali kernel-level completati: opcodes `STATUS/TERM/KILL/SHUTDOWN`, metriche runtime aggregate, logging strutturato eventi (`client_id/pid`), shutdown graceful via flag atomica con loop termination. Test transport aggiornati e verdi. |
 | 2026-02-23 | 7     | IN_PROGRESS  | Task 1 completato: backend Qwen runtime abilitato (`quantized_qwen2`), fail-fast tokenizer/template per-family in load engine (Llama/Qwen), stop policy Qwen validata con test unit. Nota: smoke E2E `LOAD/EXEC` su Qwen richiede un modello `.gguf` Qwen presente in `models/`. |
 | 2026-02-23 | 7     | DONE         | Chiuso refactoring multi-LLM: scheduler capability-aware v1 su `EXEC` (hint `capability=` + inferenza workload + auto-switch family), catalogo ricorsivo stabile per modelli in sottocartelle, backend Qwen runtime operativo. Suite test aggiornata e verde (`cargo test --release`: 27/27). |
+| 2026-02-23 | 8     | IN_PROGRESS  | Piano Punto 8 formalizzato: split 8a (RAM-only) + 8b (swap async), quote in token slots, blocco model-switch con PID attivi, rollback gate e DoD dettagliate definite. |
+| 2026-02-23 | 8     | IN_PROGRESS  | Implementati 8a.1–8a.4: ownership memoria per PID, quota token-slot + `oom_events`, metriche memoria in `STATUS`, comando `MEMW` attivo. Cleanup memoria agganciato a runtime/TERM/KILL. Test verdi (`cargo test --release`: 29/29). |
+| 2026-02-23 | 8     | IN_PROGRESS  | Completati 8a.5–8a.6: test pressure multi-PID (`oom_events`) e fallback no-op con feature flag `AGENTIC_MEMORY_ACTIVE`. Suite aggiornata verde (`cargo test --release`: 31/31). |
+| 2026-02-23 | 8     | IN_PROGRESS  | Completato 8b.1: introdotta worker queue swap asincrona (`workspace/swap`), polling non-bloccante nel runtime e stato processo `WaitingForMemory` con resume automatico a completamento swap. Suite verde (`cargo test --release`: 32/32). |
+| 2026-02-23 | 8     | IN_PROGRESS  | Completato 8b.2: eviction LRU minima in `memory.rs` (reclaim prima dell'OOM), nuovo contatore `swap_faults` e metriche `STATUS` aggiornate (`mem_swap_faults`). Aggiunto test dedicato su pressure+LRU; suite verde (`cargo test --release`: 33/33). |
+| 2026-02-23 | 8     | IN_PROGRESS  | Completato 8b.3: hardening I/O swap con validazione path dedicata (solo sotto `workspace/`, blocco traversal/escape), persistenza robusta (`create_new` + `sync_all` + rename atomico) e cleanup tmp su errore. Aggiunti test su path safety e atomic write; suite verde (`cargo test --release`: 36/36). |
+| 2026-02-23 | 8     | DONE         | Completato 8b.4: test e2e transport sotto pressure (`MEMW_QUEUED`) con verifica non-blocco loop (`PING` immediato su stesso stream). Punto 8 chiuso; suite verde (`cargo test --release`: 37/37). |
 
 ---
 

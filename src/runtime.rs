@@ -1,8 +1,11 @@
 use mio::{Interest, Poll, Token};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::engine::LLMEngine;
+use crate::memory::NeuralMemory;
 use crate::prompting::{format_interprocess_user_message, format_system_injection, PromptFamily};
 use crate::protocol;
 use crate::tools::handle_syscall;
@@ -10,12 +13,30 @@ use crate::transport::Client;
 
 pub fn run_engine_tick(
     engine_state: &Arc<Mutex<Option<LLMEngine>>>,
+    memory: &Rc<RefCell<NeuralMemory>>,
     clients: &mut HashMap<Token, Client>,
     poll: &Poll,
     active_family: PromptFamily,
 ) {
     let mut lock = engine_state.lock().unwrap();
     if let Some(engine) = lock.as_mut() {
+        let swap_events = memory.borrow_mut().poll_swap_events();
+        for event in swap_events {
+            if event.success {
+                let resumed = engine.set_process_ready_if_waiting(event.pid);
+                println!(
+                    "MEMORY: swap complete pid={} resumed={} detail={}",
+                    event.pid, resumed, event.detail
+                );
+            } else {
+                let resumed = engine.set_process_ready_if_waiting(event.pid);
+                eprintln!(
+                    "MEMORY: swap failed pid={} resumed={} detail={}",
+                    event.pid, resumed, event.detail
+                );
+            }
+        }
+
         let active_pids = engine.list_active_pids();
 
         for pid in active_pids {
@@ -121,6 +142,7 @@ pub fn run_engine_tick(
                                 ),
                             );
                             if outcome.should_kill_process {
+                                let _ = memory.borrow_mut().release_process(pid);
                                 engine.kill_process(pid);
                             }
                         }
@@ -143,6 +165,7 @@ pub fn run_engine_tick(
                 Ok(None) => {}
                 Err(e) => {
                     eprintln!("Error PID {}: {}", pid, e);
+                    let _ = memory.borrow_mut().release_process(pid);
                     engine.kill_process(pid);
                 }
             }
@@ -166,6 +189,7 @@ pub fn run_engine_tick(
                     }
                 }
             }
+            let _ = memory.borrow_mut().release_process(pid);
             engine.kill_process(pid);
         }
     }

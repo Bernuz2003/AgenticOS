@@ -8,6 +8,7 @@ pub enum ProcessState {
     Ready,
     Running,
     Paused,
+    WaitingForMemory,
     Finished,
 }
 

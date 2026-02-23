@@ -28,6 +28,18 @@ use transport::{handle_read, handle_write, needs_writable_interest, writable_int
 
 const SERVER: Token = Token(0);
 
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
+}
+
 fn main() -> io::Result<()> {
     env_logger::init();
     let mut poll = Poll::new()?;
@@ -46,6 +58,18 @@ fn main() -> io::Result<()> {
         total_memory_mb: 64,
     };
     let memory = Rc::new(RefCell::new(NeuralMemory::new(mem_config).unwrap()));
+    let memory_active = env_bool("AGENTIC_MEMORY_ACTIVE", true);
+    let memory_swap_async = env_bool("AGENTIC_MEMORY_SWAP_ASYNC", true);
+    let memory_swap_dir = std::env::var("AGENTIC_MEMORY_SWAP_DIR").ok();
+    memory.borrow_mut().set_active(memory_active);
+    if let Err(e) = memory.borrow_mut().configure_async_swap(
+        memory_swap_async,
+        memory_swap_dir
+            .as_ref()
+            .map(|v| std::path::PathBuf::from(v.as_str())),
+    ) {
+        eprintln!("Failed to configure async swap worker: {}", e);
+    }
     let engine_state: Arc<Mutex<Option<LLMEngine>>> = Arc::new(Mutex::new(None));
     let shutdown_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let mut model_catalog =
@@ -55,6 +79,17 @@ fn main() -> io::Result<()> {
     println!(
         "Agentic OS Kernel v1.3 (Process-Centric SysCalls) ready on {}",
         addr
+    );
+    println!(
+        "NeuralMemory integration active: {} (set AGENTIC_MEMORY_ACTIVE=0 to disable)",
+        memory_active
+    );
+    println!(
+        "NeuralMemory async swap worker: {} (AGENTIC_MEMORY_SWAP_ASYNC, dir={})",
+        memory_swap_async,
+        memory_swap_dir
+            .as_deref()
+            .unwrap_or("workspace/swap")
     );
 
     loop {
@@ -124,7 +159,7 @@ fn main() -> io::Result<()> {
             }
         }
 
-        run_engine_tick(&engine_state, &mut clients, &poll, active_family);
+        run_engine_tick(&engine_state, &memory, &mut clients, &poll, active_family);
     }
 
     Ok(())
