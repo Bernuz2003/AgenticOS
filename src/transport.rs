@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use crate::commands::execute_command;
@@ -50,6 +51,7 @@ pub fn handle_read(
     model_catalog: &mut ModelCatalog,
     active_family: &mut PromptFamily,
     client_id: usize,
+    shutdown_requested: &Arc<AtomicBool>,
 ) -> bool {
     let mut chunk = [0; 4096];
     loop {
@@ -85,6 +87,7 @@ pub fn handle_read(
                 model_catalog,
                 active_family,
                 client_id,
+                shutdown_requested,
             ),
             ParsedCommand::Err(e) => {
                 client
@@ -177,6 +180,8 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::rc::Rc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -210,6 +215,7 @@ mod tests {
         Arc<Mutex<Option<LLMEngine>>>,
         ModelCatalog,
         PromptFamily,
+        Arc<AtomicBool>,
     ) {
         let memory = Rc::new(RefCell::new(
             NeuralMemory::new(MemoryConfig {
@@ -221,7 +227,14 @@ mod tests {
         ));
         let engine_state: Arc<Mutex<Option<LLMEngine>>> = Arc::new(Mutex::new(None));
         let catalog = ModelCatalog::discover("models").expect("catalog discover");
-        (memory, engine_state, catalog, PromptFamily::Llama)
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        (
+            memory,
+            engine_state,
+            catalog,
+            PromptFamily::Llama,
+            shutdown_requested,
+        )
     }
 
     #[test]
@@ -279,7 +292,8 @@ mod tests {
     #[test]
     fn tcp_ping_roundtrip_on_transport_layer() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family) = setup_shared_state();
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested) =
+            setup_shared_state();
 
         peer.write_all(b"PING 1 0\n").expect("write ping");
 
@@ -290,6 +304,7 @@ mod tests {
             &mut catalog,
             &mut family,
             1,
+            &shutdown_requested,
         );
         assert!(!should_close);
         assert!(!client.output_buffer.is_empty());
@@ -307,7 +322,8 @@ mod tests {
     #[test]
     fn tcp_partial_header_then_complete_header() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family) = setup_shared_state();
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested) =
+            setup_shared_state();
 
         peer.write_all(b"PING 1").expect("write chunk1");
         let _ = handle_read(
@@ -317,6 +333,7 @@ mod tests {
             &mut catalog,
             &mut family,
             1,
+            &shutdown_requested,
         );
         assert!(client.output_buffer.is_empty());
 
@@ -328,6 +345,7 @@ mod tests {
             &mut catalog,
             &mut family,
             1,
+            &shutdown_requested,
         );
         let _ = handle_write(&mut client);
 
@@ -341,7 +359,8 @@ mod tests {
     #[test]
     fn tcp_invalid_header_then_valid_ping_same_stream() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family) = setup_shared_state();
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested) =
+            setup_shared_state();
 
         peer.write_all(b"WHAT 1 0\nPING 1 0\n")
             .expect("write invalid+valid");
@@ -352,6 +371,7 @@ mod tests {
             &mut catalog,
             &mut family,
             1,
+            &shutdown_requested,
         );
         let _ = handle_write(&mut client);
 
@@ -365,7 +385,8 @@ mod tests {
     #[test]
     fn tcp_disconnect_requests_close() {
         let (mut client, peer) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family) = setup_shared_state();
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested) =
+            setup_shared_state();
 
         drop(peer);
 
@@ -376,6 +397,7 @@ mod tests {
             &mut catalog,
             &mut family,
             1,
+            &shutdown_requested,
         );
         assert!(should_close);
     }
@@ -384,7 +406,8 @@ mod tests {
     fn tcp_multi_client_isolated_buffers() {
         let (mut client_a, mut peer_a) = setup_client_and_peer();
         let (mut client_b, mut peer_b) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family) = setup_shared_state();
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested) =
+            setup_shared_state();
 
         peer_a.write_all(b"PING 1 0\n").expect("write ping a");
         peer_b.write_all(b"PING 2 0\n").expect("write ping b");
@@ -396,6 +419,7 @@ mod tests {
             &mut catalog,
             &mut family,
             1,
+            &shutdown_requested,
         );
         let _ = handle_read(
             &mut client_b,
@@ -404,6 +428,7 @@ mod tests {
             &mut catalog,
             &mut family,
             2,
+            &shutdown_requested,
         );
 
         let _ = handle_write(&mut client_a);
@@ -422,7 +447,8 @@ mod tests {
 
     #[test]
     fn tcp_reconnect_after_disconnect_still_works() {
-        let (memory, engine_state, mut catalog, mut family) = setup_shared_state();
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested) =
+            setup_shared_state();
 
         let (mut client1, peer1) = setup_client_and_peer();
         drop(peer1);
@@ -433,6 +459,7 @@ mod tests {
             &mut catalog,
             &mut family,
             1,
+            &shutdown_requested,
         );
         assert!(should_close);
 
@@ -445,6 +472,7 @@ mod tests {
             &mut catalog,
             &mut family,
             9,
+            &shutdown_requested,
         );
         assert!(!should_close_2);
         let _ = handle_write(&mut client2);
@@ -453,5 +481,57 @@ mod tests {
         let n = peer2.read(&mut out).expect("read reconnect response");
         let resp = String::from_utf8_lossy(&out[..n]);
         assert!(resp.contains("+OK PING 4\r\nPONG"));
+    }
+
+    #[test]
+    fn tcp_status_returns_kernel_metrics_snapshot() {
+        let (mut client, mut peer) = setup_client_and_peer();
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested) =
+            setup_shared_state();
+
+        peer.write_all(b"STATUS 1 0\n").expect("write status");
+        let should_close = handle_read(
+            &mut client,
+            &memory,
+            &engine_state,
+            &mut catalog,
+            &mut family,
+            1,
+            &shutdown_requested,
+        );
+        assert!(!should_close);
+
+        let _ = handle_write(&mut client);
+        let mut out = [0u8; 512];
+        let n = peer.read(&mut out).expect("read status response");
+        let resp = String::from_utf8_lossy(&out[..n]);
+        assert!(resp.starts_with("+OK STATUS"));
+        assert!(resp.contains("total_commands="));
+    }
+
+    #[test]
+    fn tcp_shutdown_sets_flag() {
+        let (mut client, mut peer) = setup_client_and_peer();
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested) =
+            setup_shared_state();
+
+        peer.write_all(b"SHUTDOWN 1 0\n").expect("write shutdown");
+        let should_close = handle_read(
+            &mut client,
+            &memory,
+            &engine_state,
+            &mut catalog,
+            &mut family,
+            1,
+            &shutdown_requested,
+        );
+        assert!(!should_close);
+
+        let _ = handle_write(&mut client);
+        let mut out = [0u8; 512];
+        let n = peer.read(&mut out).expect("read shutdown response");
+        let resp = String::from_utf8_lossy(&out[..n]);
+        assert!(resp.starts_with("+OK SHUTDOWN"));
+        assert!(shutdown_requested.load(Ordering::SeqCst));
     }
 }

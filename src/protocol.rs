@@ -5,7 +5,10 @@ pub enum OpCode {
     Ping,           // Ping-Pong
     Load,           // Carica modello
     Exec,           // Esegui inferenza
-    Unload,         // Libera memoria
+    Kill,           // Termina processo immediatamente
+    Term,           // Richiede terminazione graceful
+    Status,         // Stato kernel/processo
+    Shutdown,       // Shutdown kernel
     MemoryWrite,    // Scrivi tensore in VRAM
     ListModels,     // Lista modelli disponibili
     SelectModel,    // Seleziona modello di default
@@ -40,7 +43,10 @@ impl CommandHeader {
             "PING" => OpCode::Ping,
             "LOAD" => OpCode::Load,
             "EXEC" => OpCode::Exec,
-            "KILL" => OpCode::Unload,
+            "KILL" => OpCode::Kill,
+            "TERM" => OpCode::Term,
+            "STATUS" => OpCode::Status,
+            "SHUTDOWN" => OpCode::Shutdown,
             "MEMW" => OpCode::MemoryWrite,
             "LIST_MODELS" => OpCode::ListModels,
             "SELECT_MODEL" => OpCode::SelectModel,
@@ -106,6 +112,19 @@ mod tests {
 
         let load = CommandHeader::parse("LOAD 1 10").expect("LOAD should parse");
         assert!(matches!(load.opcode, OpCode::Load));
+
+        let status = CommandHeader::parse("STATUS 1 0").expect("STATUS should parse");
+        assert!(matches!(status.opcode, OpCode::Status));
+
+        let term = CommandHeader::parse("TERM 1 1").expect("TERM should parse");
+        assert!(matches!(term.opcode, OpCode::Term));
+
+        let kill = CommandHeader::parse("KILL 1 1").expect("KILL should parse");
+        assert!(matches!(kill.opcode, OpCode::Kill));
+
+        let shutdown =
+            CommandHeader::parse("SHUTDOWN 1 0").expect("SHUTDOWN should parse");
+        assert!(matches!(shutdown.opcode, OpCode::Shutdown));
     }
 
     #[test]

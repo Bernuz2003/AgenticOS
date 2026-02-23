@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::LLMEngine;
@@ -46,9 +47,10 @@ fn main() -> io::Result<()> {
     };
     let memory = Rc::new(RefCell::new(NeuralMemory::new(mem_config).unwrap()));
     let engine_state: Arc<Mutex<Option<LLMEngine>>> = Arc::new(Mutex::new(None));
+    let shutdown_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let mut model_catalog =
         ModelCatalog::discover("models").map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    let mut active_family = PromptFamily::Llama;
+    let mut active_family: PromptFamily = PromptFamily::Llama;
 
     println!(
         "Agentic OS Kernel v1.3 (Process-Centric SysCalls) ready on {}",
@@ -56,6 +58,11 @@ fn main() -> io::Result<()> {
     );
 
     loop {
+        if shutdown_requested.load(Ordering::SeqCst) {
+            println!("Kernel graceful shutdown requested. Closing event loop.");
+            break;
+        }
+
         poll.poll(&mut events, Some(std::time::Duration::from_millis(5)))?;
 
         for event in events.iter() {
@@ -86,6 +93,7 @@ fn main() -> io::Result<()> {
                                 &mut model_catalog,
                                 &mut active_family,
                                 token.0,
+                                &shutdown_requested,
                             )
                         {
                             should_close = true;
@@ -118,4 +126,6 @@ fn main() -> io::Result<()> {
 
         run_engine_tick(&engine_state, &mut clients, &poll, active_family);
     }
+
+    Ok(())
 }

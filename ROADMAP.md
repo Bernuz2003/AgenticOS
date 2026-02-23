@@ -12,10 +12,47 @@ Questo file è la fonte unica di verità per il piano immediato del progetto.
 
 ## Stato attuale (snapshot)
 
-- Data snapshot: **2026-02-22**
+- Data snapshot: **2026-02-23**
 - Modello target: `models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf`
 - Runtime: server TCP event-driven (`mio`) + engine LLM process-centric
 - Verificato: `PING`, `LOAD`, `EXEC` funzionanti end-to-end
+
+---
+
+## Pianificazione per tempi e modalità
+
+### Breve termine (0-4 settimane)
+
+- **Priorità 1 — SysCall sandboxing**: passare da esecuzione host diretta a isolamento minimo obbligatorio (`timeout`, limiti risorse, workspace confinement).
+- **Priorità 2 — Osservabilità base**: metriche e log strutturati per PID/client-id con eventi runtime principali.
+- **Priorità 3 — Segnali kernel minimi**: introdurre controllo lifecycle processi (`KILL`, `TERM`, `STATUS`) per interrompere loop o runaway agents.
+
+**Modalità operative**
+- Feature flag incrementali (`unsafe_tools=false` di default in produzione).
+- Ogni milestone chiude con: unit test + integration test + benchmark smoke.
+- Nessun merge senza DoD verificato nel registro avanzamento.
+
+### Medio termine (1-3 mesi)
+
+- **NeuralMemory attiva nel runtime**: integrare `memory.rs` nel ciclo engine/runtime (allocazioni, mapping, pressure tracking).
+- **Paging state/KV cache (fase 1)**: politiche di eviction e meccanismi di swap RAM↔disk per processi inattivi.
+- **Swarm multi-modello (fase 1)**: policy scheduler per routing task su modelli diversi in base a costo/capability.
+
+**Modalità operative**
+- Introduzione per step con fallback sicuro a path corrente.
+- Benchmark comparativi prima/dopo su latenza, stabilità e memoria.
+- Gate di regressione su scenari multi-client e multi-processo.
+
+### Lungo termine (3-12 mesi)
+
+- **NeuralMemory avanzata**: paging KV multi-tier (RAM/disk e successiva estensione GPU/CPU-aware).
+- **Swarm multi-modello completo**: scheduling dinamico QoS-aware con priorità e quote risorse per PID.
+- **Kernel agentico production-grade**: segnali completi, policy sicurezza mature, osservabilità operativa piena.
+
+**Modalità operative**
+- Design docs versionati per subsystem critici (memory, scheduler, sandbox).
+- Test e2e con fault injection (OOM, timeout, disconnect, syscall storm).
+- Quality gates CI/CD su test + benchmark + profili memoria.
 
 ---
 
@@ -37,7 +74,7 @@ Questo file è la fonte unica di verità per il piano immediato del progetto.
 - [x] Marker di completamento processo inviato al client.
 - [x] Build `release` senza errori.
 
-**Note implementative**
+## Note implementative correnti
 - `main.rs`: flush/reregister + cleanup finished PID + marker `[PROCESS_FINISHED ...]`.
 - `engine.rs`: helper per owner lookup + lista processi finiti.
 
@@ -75,17 +112,20 @@ Questo file è la fonte unica di verità per il piano immediato del progetto.
 ---
 
 ### 4) Hardening subsystem SysCall
-**Status:** `TODO`
+**Status:** `DONE` ✅
 
 **Obiettivi**
-- Esecuzione Python con timeout/isolamento minimo.
+- Esecuzione Python con timeout/isolamento reale (non host diretto).
 - Path safety robusta nel workspace.
 - Logging strutturato su invocazioni tool.
+- Policy permessi SysCall (allowlist comandi e limiti per PID).
 
 **DoD (target)**
-- [ ] Timeout processo esterno + gestione error path.
-- [ ] Verifica anti path traversal robusta.
-- [ ] Audit log syscall con outcome e durata.
+- [x] Timeout processo esterno + gestione error path.
+- [x] Verifica anti path traversal robusta.
+- [x] Audit log syscall con outcome e durata.
+- [x] Backend sandbox selezionabile (`container` o `wasm`) con fallback disabilitabile.
+- [x] Rate limit SysCall per processo e kill automatico su abuso/error burst.
 
 ---
 
@@ -105,22 +145,24 @@ Questo file è la fonte unica di verità per il piano immediato del progetto.
 ---
 
 ### 6) Osservabilità operativa
-**Status:** `TODO`
+**Status:** `DONE` ✅
 
 **Obiettivi**
 - Metriche minime runtime (latency/error/throughput).
 - Logging strutturato con PID/client-id.
 - Graceful shutdown.
+- Segnali kernel-level per lifecycle processi (`TERM`, `KILL`, `STATUS`).
 
 **DoD (target)**
-- [ ] Metriche base esportabili/stampabili.
-- [ ] Log con campi consistenti per debugging.
-- [ ] Shutdown senza perdita stato critica.
+- [x] Metriche base esportabili/stampabili.
+- [x] Log con campi consistenti per debugging.
+- [x] Shutdown senza perdita stato critica.
+- [x] Comandi/segnali di controllo processo disponibili e coperti da test.
 
 ---
 
 ### 7) Refactoring modulare multi-LLM
-**Status:** `IN_PROGRESS` 🚧
+**Status:** `DONE` ✅
 
 **Obiettivi**
 - Separare responsabilità per evitare crescita incontrollata dei file core.
@@ -138,8 +180,40 @@ Questo file è la fonte unica di verità per il piano immediato del progetto.
 - [x] Split task-specific dei moduli core (`main`, `commands`, `transport`, `runtime`, `tools`).
 - [x] Moduli Rust sotto soglia `< 300` righe (snapshot corrente).
 - [x] Test incrementali transport/framing (partial header/body, concatenated commands, error recovery).
-- [ ] Supporto backend Qwen runtime.
-- [ ] Suite test incrementale multi-livello completa (unit/integration/e2e).
+- [x] Supporto backend Qwen runtime.
+- [x] Policy scheduler capability-aware per scegliere modello in base al task.
+- [x] Suite test incrementale multi-livello completa (unit/integration/e2e).
+
+---
+
+### 8) Integrazione NeuralMemory nel runtime
+**Status:** `TODO`
+
+**Obiettivi**
+- Rendere `memory.rs` parte attiva del ciclo `engine/runtime`.
+- Introdurre tracciamento pressione memoria per processo (`PID`) e globale.
+- Preparare paging KV/state con politiche di eviction configurabili.
+
+**DoD (target)**
+- [ ] API memoria stabilizzate (`alloc`, `map`, `evict`, `swap`) integrate in `engine`.
+- [ ] Metriche memoria disponibili (`alloc_bytes`, `evictions`, `swap_count`, `oom_events`).
+- [ ] Test su scenari memory pressure (N processi concorrenti) verdi.
+- [ ] Modalità fallback sicura quando paging è disattivato.
+
+---
+
+### 9) Scheduler & risorse condivise (Swarm)
+**Status:** `TODO`
+
+**Obiettivi**
+- Assegnare processi a modelli diversi in base a capability/costo.
+- Gestire quote risorse e priorità per processo.
+- Migliorare isolamento tra processi ad alto consumo.
+
+**DoD (target)**
+- [ ] Policy scheduler documentata e applicata (small-model routing vs heavy-reasoning routing).
+- [ ] Quote base per PID (CPU-time/memoria/syscall-budget) con enforcement runtime.
+- [ ] Benchmark comparativo swarm vs single-model con regressione controllata.
 
 **Note implementative**
 - `src/model_catalog.rs`: discovery, selezione, info e risoluzione target di load.
@@ -170,6 +244,11 @@ Questo file è la fonte unica di verità per il piano immediato del progetto.
 | 2026-02-22 | 5     | DONE         | Chiuso punto test/regressione: benchmark commit-aware integrato e report JSON ripetibile generato. |
 | 2026-02-22 | 3     | IN_PROGRESS  | Avviata qualità inferenza model-agnostic: policy stop per-family + configurazione sampling runtime (`GET_GEN`/`SET_GEN`). |
 | 2026-02-22 | 3     | DONE         | Baseline Meta-Llama-3.1 calibrata (timeout/soglie realistiche), parser stream framed robusto e stop su `PROCESS_FINISHED`; report aggiornato in `reports/llama3_eval_report.json`. |
+| 2026-02-23 | roadmap | UPDATED      | Inserita pianificazione per tempi/modalità e aggiunti assi strategici: sandbox SysCall, integrazione NeuralMemory, scheduler swarm, segnali kernel-level. |
+| 2026-02-23 | 4     | DONE         | Hardening SysCall completato: timeout enforced, path safety robusta, audit log (`workspace/syscall_audit.log`), sandbox mode (`host/container/wasm` + fallback policy), rate-limit e kill automatico su abuso/error burst. |
+| 2026-02-23 | 6     | DONE         | Osservabilità + segnali kernel-level completati: opcodes `STATUS/TERM/KILL/SHUTDOWN`, metriche runtime aggregate, logging strutturato eventi (`client_id/pid`), shutdown graceful via flag atomica con loop termination. Test transport aggiornati e verdi. |
+| 2026-02-23 | 7     | IN_PROGRESS  | Task 1 completato: backend Qwen runtime abilitato (`quantized_qwen2`), fail-fast tokenizer/template per-family in load engine (Llama/Qwen), stop policy Qwen validata con test unit. Nota: smoke E2E `LOAD/EXEC` su Qwen richiede un modello `.gguf` Qwen presente in `models/`. |
+| 2026-02-23 | 7     | DONE         | Chiuso refactoring multi-LLM: scheduler capability-aware v1 su `EXEC` (hint `capability=` + inferenza workload + auto-switch family), catalogo ricorsivo stabile per modelli in sottocartelle, backend Qwen runtime operativo. Suite test aggiornata e verde (`cargo test --release`: 27/27). |
 
 ---
 

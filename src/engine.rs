@@ -10,6 +10,7 @@ use crate::prompting::{should_stop_on_text, GenerationConfig, PromptFamily};
 
 pub struct LLMEngine {
     master_model: Option<RuntimeModel>,
+    model_path: String,
     pub tokenizer: Tokenizer,
     device: Device,
     pub processes: HashMap<u64, AgentProcess>,
@@ -36,14 +37,8 @@ impl LLMEngine {
         println!("ENGINE: Using tokenizer at {:?}", tokenizer_path);
         let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(E::msg)?;
 
-        // Cerchiamo i token nel vocabolario caricato.
-        // Se non li trova, usiamo un fallback sicuro o 0.
-        let eos_token_id = tokenizer
-            .token_to_id("<|end_of_text|>")
-            .or_else(|| tokenizer.token_to_id("</s>")) // Fallback per Llama 2 / Mistral
-            .unwrap_or(2); // Fallback estremo standard
-
-        let eot_token_id = tokenizer.token_to_id("<|eot_id|>").unwrap_or(eos_token_id); // Se non c'è EOT, usa EOS come stop
+        let (eos_token_id, eot_token_id) =
+            resolve_special_tokens(&tokenizer, family).map_err(E::msg)?;
 
         println!(
             "ENGINE: Special Tokens Identified -> EOS: {}, EOT: {}",
@@ -55,6 +50,7 @@ impl LLMEngine {
 
         Ok(Self {
             master_model: Some(model),
+            model_path: path.to_string(),
             tokenizer,
             device,
             processes: HashMap::new(),
@@ -80,11 +76,22 @@ impl LLMEngine {
             pid, owner_id
         );
 
-        let model_clone = self
-            .master_model
-            .as_ref()
-            .ok_or(E::msg("Master model not loaded"))?
-            .clone();
+        let model_clone = {
+            let master = self
+                .master_model
+                .as_ref()
+                .ok_or(E::msg("Master model not loaded"))?;
+
+            if let Some(dup) = master.duplicate_if_supported() {
+                dup
+            } else {
+                println!(
+                    "ENGINE: Runtime backend for {:?} is not cloneable; spawning PID {} by reloading model instance.",
+                    self.family, pid
+                );
+                RuntimeModel::load_from_gguf(&self.model_path, self.family, &self.device)?
+            }
+        };
 
         let tokens = self
             .tokenizer
@@ -226,6 +233,29 @@ impl LLMEngine {
         self.processes.remove(&pid);
     }
 
+    pub fn terminate_process(&mut self, pid: u64) -> bool {
+        if let Some(proc) = self.processes.get_mut(&pid) {
+            proc.state = ProcessState::Finished;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn process_status_line(&self, pid: u64) -> Option<String> {
+        self.processes.get(&pid).map(|p| {
+            format!(
+                "pid={} owner_id={} state={:?} tokens={} index_pos={} max_tokens={}",
+                pid,
+                p.owner_id,
+                p.state,
+                p.tokens.len(),
+                p.index_pos,
+                p.max_tokens
+            )
+        })
+    }
+
     pub fn set_generation_config(&mut self, cfg: GenerationConfig) {
         self.generation = cfg;
     }
@@ -260,4 +290,78 @@ fn resolve_tokenizer_path(model_path: &str, tokenizer_hint: Option<PathBuf>) -> 
     }
 
     None
+}
+
+fn resolve_special_tokens(tokenizer: &Tokenizer, family: PromptFamily) -> Result<(u32, u32), String> {
+    match family {
+        PromptFamily::Llama => {
+            let eos = tokenizer
+                .token_to_id("<|end_of_text|>")
+                .or_else(|| tokenizer.token_to_id("</s>"))
+                .ok_or_else(|| {
+                    "Tokenizer/model incompatibility: Llama requires <|end_of_text|> or </s>."
+                        .to_string()
+                })?;
+
+            let eot = tokenizer
+                .token_to_id("<|eot_id|>")
+                .ok_or_else(|| {
+                    "Tokenizer/model incompatibility: Llama template requires <|eot_id|>."
+                        .to_string()
+                })?;
+
+            let has_headers = tokenizer.token_to_id("<|start_header_id|>").is_some()
+                && tokenizer.token_to_id("<|end_header_id|>").is_some();
+            if !has_headers {
+                return Err(
+                    "Tokenizer/model incompatibility: missing Llama chat header tokens (<|start_header_id|>, <|end_header_id|>).".to_string(),
+                );
+            }
+
+            Ok((eos, eot))
+        }
+        PromptFamily::Qwen => {
+            let eos = tokenizer
+                .token_to_id("<|endoftext|>")
+                .or_else(|| tokenizer.token_to_id("</s>"))
+                .ok_or_else(|| {
+                    "Tokenizer/model incompatibility: Qwen requires <|endoftext|> or </s>."
+                        .to_string()
+                })?;
+
+            let eot = tokenizer
+                .token_to_id("<|im_end|>")
+                .ok_or_else(|| {
+                    "Tokenizer/model incompatibility: Qwen template requires <|im_end|>."
+                        .to_string()
+                })?;
+
+            if tokenizer.token_to_id("<|im_start|>").is_none() {
+                return Err(
+                    "Tokenizer/model incompatibility: Qwen template requires <|im_start|>."
+                        .to_string(),
+                );
+            }
+
+            Ok((eos, eot))
+        }
+        PromptFamily::Mistral => {
+            let eos = tokenizer
+                .token_to_id("</s>")
+                .or_else(|| tokenizer.token_to_id("<|end_of_text|>"))
+                .ok_or_else(|| {
+                    "Tokenizer/model incompatibility: Mistral requires </s> or <|end_of_text|>."
+                        .to_string()
+                })?;
+            Ok((eos, eos))
+        }
+        PromptFamily::Unknown => {
+            let eos = tokenizer
+                .token_to_id("<|end_of_text|>")
+                .or_else(|| tokenizer.token_to_id("</s>"))
+                .or_else(|| tokenizer.token_to_id("<|endoftext|>"))
+                .unwrap_or(2);
+            Ok((eos, eos))
+        }
+    }
 }

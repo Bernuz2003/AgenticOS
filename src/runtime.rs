@@ -112,14 +112,17 @@ pub fn run_engine_tick(
                             || content.starts_with("LS")
                             || content.starts_with("CALC:")
                         {
-                            let result = handle_syscall(&content);
+                            let outcome = handle_syscall(&content, pid);
                             let _ = engine.inject_context(
                                 pid,
                                 &format_system_injection(
-                                    &format!("Output:\n{}", result),
+                                    &format!("Output:\n{}", outcome.output),
                                     active_family,
                                 ),
                             );
+                            if outcome.should_kill_process {
+                                engine.kill_process(pid);
+                            }
                         }
                     }
 

@@ -91,3 +91,26 @@ pub fn format_interprocess_user_message(from_pid: u64, message: &str, family: Pr
         PromptFamily::Unknown => format!("\n[user]\n[Message from PID {}]: {}\n[/user]\n", from_pid, message),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{format_system_injection, should_stop_on_text, PromptFamily};
+
+    #[test]
+    fn qwen_stop_markers_are_detected() {
+        assert!(should_stop_on_text(PromptFamily::Qwen, "...<|im_end|>..."));
+        assert!(should_stop_on_text(PromptFamily::Qwen, "...<|endoftext|>..."));
+        assert!(!should_stop_on_text(PromptFamily::Qwen, "plain text without stop marker"));
+    }
+
+    #[test]
+    fn llama_and_qwen_system_templates_include_expected_tokens() {
+        let llama = format_system_injection("hello", PromptFamily::Llama);
+        assert!(llama.contains("<|start_header_id|>system<|end_header_id|>"));
+        assert!(llama.contains("<|eot_id|>"));
+
+        let qwen = format_system_injection("hello", PromptFamily::Qwen);
+        assert!(qwen.contains("<|im_start|>system"));
+        assert!(qwen.contains("<|im_end|>"));
+    }
+}
