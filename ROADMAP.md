@@ -243,12 +243,44 @@ Questo file è la fonte unica di verità per il piano immediato del progetto.
 - `src/prompting.rs`: formattazione system/user per famiglia modello.
 - `src/protocol.rs`: opcodes estesi e fix parsing `MEMW` case-insensitive.
 - `src/main.rs`: bootstrap e wiring del loop eventi (ridotto a ~120 righe).
-- `src/commands.rs`: dispatch ed esecuzione opcodes protocollo.
-- `src/transport.rs`: client state machine + read/write non bloccante.
+- `src/commands/mod.rs`: dispatch ed esecuzione opcodes protocollo.
+- `src/transport/mod.rs`: orchestrazione transport + submoduli `client/framing/io`.
 - `src/runtime.rs`: scheduler processi + routing syscall/output streaming.
 - `src/tools.rs`: tool syscall filesystem/python/calc.
 - `src/backend.rs`: runtime backend astratto (`RuntimeModel`) con dispatch per famiglia.
-- `src/engine.rs` + `src/process.rs`: refactor su backend astratto (no type coupling diretto sparso a Llama).
+- `src/engine/mod.rs` + `src/process.rs`: refactor su backend astratto (no type coupling diretto sparso a Llama).
+
+---
+
+### 10) GUI desktop operativa (Control + Observability)
+**Status:** `DONE` ✅
+
+**Obiettivi**
+- Fornire interfaccia desktop intuitiva e reattiva per interagire col kernel.
+- Esporre controllo operativo rapido (kernel lifecycle, processi, modelli, generation).
+- Mostrare osservabilità "dietro le quinte" unificando metriche, eventi runtime e audit syscall.
+
+**Scelte tecniche approvate**
+- Stack: **Python + PySide6 (Qt)**.
+- Focus MVP: **bilanciato** (controllo + osservabilità).
+- Sorgenti osservabilità: `STATUS` polling + eventi `stdout/stderr` kernel + tail `workspace/syscall_audit.log`.
+- Gestione kernel integrata direttamente dalla GUI (`start/stop` processo kernel).
+
+**DoD (target)**
+- [x] **10.1** Scaffold GUI con architettura modulare (`protocol client`, `kernel manager`, `UI app`).
+- [x] **10.2** Pannello controllo kernel (`Start/Stop`, `PING`, `STATUS`) + stato connessione.
+- [x] **10.3** Pannello interazione (`EXEC` streaming) + azioni processo (`TERM`/`KILL`).
+- [x] **10.4** Pannello osservabilità con `STATUS` periodico + eventi runtime + syscall audit tail.
+- [x] **10.5** Pannello modelli/generation completo (`LIST_MODELS`, `MODEL_INFO`, `SELECT_MODEL`, `LOAD`, `GET_GEN`/`SET_GEN`) con UX guidata.
+- [x] **10.6** Hardening UX (retry/reconnect policy, filtri eventi, export snapshot diagnostico).
+- [x] **10.7** Smoke test manuale end-to-end documentato (runbook GUI).
+
+**Piano operativo (task piccoli)**
+- [x] Implementare MVP GUI desktop con protocol framing robusto e worker thread non bloccanti.
+- [x] Integrare lifecycle kernel (start/stop) e stream output processi.
+- [x] Integrare vista osservabilità con triple source logs/metrics.
+- [x] Chiudere pannello model/generation guidato e validazioni UX.
+- [x] Concludere hardening UX + runbook operativo e chiusura punto.
 
 ---
 
@@ -279,6 +311,9 @@ Questo file è la fonte unica di verità per il piano immediato del progetto.
 | 2026-02-23 | 8     | IN_PROGRESS  | Completato 8b.2: eviction LRU minima in `memory.rs` (reclaim prima dell'OOM), nuovo contatore `swap_faults` e metriche `STATUS` aggiornate (`mem_swap_faults`). Aggiunto test dedicato su pressure+LRU; suite verde (`cargo test --release`: 33/33). |
 | 2026-02-23 | 8     | IN_PROGRESS  | Completato 8b.3: hardening I/O swap con validazione path dedicata (solo sotto `workspace/`, blocco traversal/escape), persistenza robusta (`create_new` + `sync_all` + rename atomico) e cleanup tmp su errore. Aggiunti test su path safety e atomic write; suite verde (`cargo test --release`: 36/36). |
 | 2026-02-23 | 8     | DONE         | Completato 8b.4: test e2e transport sotto pressure (`MEMW_QUEUED`) con verifica non-blocco loop (`PING` immediato su stesso stream). Punto 8 chiuso; suite verde (`cargo test --release`: 37/37). |
+| 2026-02-23 | 10    | IN_PROGRESS  | Avviato task GUI desktop: creato pacchetto `gui/` con `protocol_client.py`, `kernel_manager.py`, `app.py` (PySide6) e README operativo. MVP già copre start/stop kernel, comandi base, `EXEC` streaming, `TERM/KILL`, status polling, eventi runtime e tail `workspace/syscall_audit.log`. |
+| 2026-02-23 | 10    | IN_PROGRESS  | Completato 10.5: aggiunto pannello guidato Modelli/Generation in GUI (`LIST_MODELS`, selezione model-id, `MODEL_INFO`, `SELECT_MODEL`, `LOAD` selected/path, `GET_GEN`/`SET_GEN` con campi dedicati e parsing automatico risposta). |
+| 2026-02-23 | 10    | DONE         | Completati 10.6–10.7: hardening UX GUI (retry/reconnect richieste, filtri eventi kernel/syscall, export snapshot diagnostico in `reports/`) e runbook smoke E2E documentato in `gui/README.md`. |
 
 ---
 
