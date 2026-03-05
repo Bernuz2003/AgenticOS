@@ -1,5 +1,6 @@
 mod core;
 mod eviction;
+pub(crate) mod swap;
 mod swap_io;
 mod types;
 

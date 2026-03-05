@@ -92,7 +92,7 @@ gui/
 ## Roadmap attiva — Fase 2: Consolidamento + Orchestrazione
 
 ### 13) Swap extraction — `memory/swap.rs`
-**Status:** `TODO`
+**Status:** `DONE` ✅
 
 **Obiettivi**
 - Estrarre la logica swap worker da `memory/core.rs` in modulo dedicato `memory/swap.rs`.
@@ -100,13 +100,16 @@ gui/
 - Nessun cambio funzionale: puro refactoring strutturale.
 
 **DoD**
-- [ ] Modulo `memory/swap.rs` creato con: `SwapWorker`, `SwapQueue`, metodi `enqueue_swap`, `poll_completions`, `drain`.
-- [ ] `memory/core.rs` sotto 450 righe, con `use swap::*` per delegare.
-- [ ] `memory/mod.rs` aggiornato con re-export.
-- [ ] Suite test invariata e verde (67/67).
-- [ ] Clippy pulito.
+- [x] Modulo `memory/swap.rs` creato con: `SwapManager` (configure, enqueue, poll_events, is_pid_waiting, remove_waiting, persist_payload).
+- [x] `memory/core.rs` produzione sotto 450 righe (424), con `SwapManager` come campo `swap`.
+- [x] `memory/mod.rs` aggiornato con `pub(crate) mod swap`.
+- [x] Suite test invariata e verde (67/67).
+- [x] Clippy pulito.
 
-**Stima:** ~1-2h
+**Esito**
+- `core.rs`: 809 → 673 righe (424 produzione + 249 test). Rimossi: `SwapJob`, `SwapResult`, `configure_async_swap` body, `poll_swap_events` body, `enqueue_swap`, campi raw swap.
+- `swap.rs`: 236 righe — `SwapManager` struct con stato swap encapsulato, worker thread spawn, job queue, completion polling con `SwapCounterDeltas`.
+- Cambio architetturale: `NeuralMemory.swap: SwapManager` sostituisce 5 campi sparsi (`swap_enabled`, `swap_dir`, `swap_tx`, `swap_rx`, `waiting_for_memory`).
 
 ---
 
@@ -295,6 +298,7 @@ Fase 3 — Intelligenza agentica (aprile 2026)
 | 2026-03-04 | M12 | DONE | Hardening: thiserror error hierarchy, tracing logging, struct Kernel, eviction.rs, CI |
 | 2026-03-04 | M12.1 | DONE | Migrazione errori: CatalogError, ProtocolError, EngineError::Backend, 54 test |
 | 2026-03-04 | M9 | DONE | Scheduler: ProcessPriority, ProcessQuota, enforcement runtime, 3 nuovi opcodes, 67 test |
+| 2026-03-05 | M13 | DONE | Swap extraction: `memory/swap.rs` (236 righe) con `SwapManager`. `core.rs` 809→673 (424 prod). Suite invariata 67/67, clippy pulito. |
 
 ---
 

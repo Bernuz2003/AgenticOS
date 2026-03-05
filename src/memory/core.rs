@@ -1,10 +1,8 @@
 use candle_core::{DType, Device, Tensor};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 
+use super::swap::SwapManager;
 use super::types::{MemoryConfig, MemorySnapshot, SwapEvent, TensorId};
 use crate::errors::MemoryError;
 
@@ -18,17 +16,6 @@ pub(super) struct MemoryCounters {
     pub(super) swap_faults: u64,
     pub(super) swap_failures: u64,
     pub(super) oom_events: u64,
-}
-
-struct SwapJob {
-    pid: u64,
-    payload: Vec<u8>,
-}
-
-struct SwapResult {
-    pid: u64,
-    success: bool,
-    detail: String,
 }
 
 pub(super) struct PhysicalBlock {
@@ -59,11 +46,7 @@ pub struct NeuralMemory {
     pub(super) counters: MemoryCounters,
     active: bool,
 
-    swap_enabled: bool,
-    swap_dir: PathBuf,
-    swap_tx: Option<Sender<SwapJob>>,
-    swap_rx: Option<Receiver<SwapResult>>,
-    pub(super) waiting_for_memory: HashSet<u64>,
+    pub(super) swap: SwapManager,
     pub(super) lru_order: VecDeque<TensorId>,
 
     next_tensor_id: TensorId,
@@ -106,11 +89,7 @@ impl NeuralMemory {
             token_slot_quota_per_pid: 4096,
             counters: MemoryCounters::default(),
             active: true,
-            swap_enabled: false,
-            swap_dir: PathBuf::from("workspace/swap"),
-            swap_tx: None,
-            swap_rx: None,
-            waiting_for_memory: HashSet::new(),
+            swap: SwapManager::new(),
             lru_order: VecDeque::new(),
             next_tensor_id: 1,
         })
@@ -121,74 +100,7 @@ impl NeuralMemory {
         enabled: bool,
         swap_dir: Option<PathBuf>,
     ) -> Result<(), MemoryError> {
-        if !enabled {
-            self.swap_enabled = false;
-            self.swap_tx = None;
-            self.swap_rx = None;
-            self.waiting_for_memory.clear();
-            return Ok(());
-        }
-
-        let validated_swap_dir = Self::resolve_valid_swap_dir(swap_dir)?;
-        self.swap_dir = validated_swap_dir.clone();
-
-        let (tx_job, rx_job) = mpsc::channel::<SwapJob>();
-        let (tx_result, rx_result) = mpsc::channel::<SwapResult>();
-        let worker_dir = validated_swap_dir;
-
-        thread::Builder::new()
-            .name("agentic_swap_worker".to_string())
-            .spawn(move || {
-                while let Ok(job) = rx_job.recv() {
-                    let now_ns = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_nanos())
-                        .unwrap_or(0);
-                    let file_stem = format!("pid_{}_{}", job.pid, now_ns);
-
-                    let result = Self::persist_swap_payload(&worker_dir, &file_stem, &job.payload)
-                        .map(|final_path| {
-                            format!(
-                                "swap persisted pid={} bytes={} file={}",
-                                job.pid,
-                                job.payload.len(),
-                                final_path.display()
-                            )
-                        });
-
-                    let event = match result {
-                        Ok(msg) => SwapResult {
-                            pid: job.pid,
-                            success: true,
-                            detail: msg,
-                        },
-                        Err(err) => SwapResult {
-                            pid: job.pid,
-                            success: false,
-                            detail: format!("swap failed pid={}: {}", job.pid, err),
-                        },
-                    };
-
-                    if tx_result.send(event).is_err() {
-                        break;
-                    }
-                }
-            })
-            .map_err(|e| MemoryError::Swap(format!("Failed to spawn swap worker: {}", e)))?;
-
-        self.swap_enabled = true;
-        self.swap_tx = Some(tx_job);
-        self.swap_rx = Some(rx_result);
-        Ok(())
-    }
-
-    fn resolve_valid_swap_dir(requested: Option<PathBuf>) -> Result<PathBuf, MemoryError> {
-        super::swap_io::resolve_valid_swap_dir(requested)
-            .map_err(MemoryError::Swap)
-    }
-
-    fn persist_swap_payload(base_dir: &Path, file_stem: &str, payload: &[u8]) -> Result<PathBuf, String> {
-        super::swap_io::persist_swap_payload(base_dir, file_stem, payload)
+        self.swap.configure(enabled, swap_dir)
     }
 
     pub fn set_active(&mut self, active: bool) {
@@ -239,7 +151,7 @@ impl NeuralMemory {
             return Ok(format!("NeuralMemory disabled: release skipped for PID {}", pid));
         }
 
-        self.waiting_for_memory.remove(&pid);
+        self.swap.remove_waiting(pid);
 
         let Some(tensor_id) = self.pid_to_tensor.remove(&pid) else {
             return Ok(format!("NeuralMemory: PID {} had no allocation", pid));
@@ -266,13 +178,13 @@ impl NeuralMemory {
             .ok_or(MemoryError::PidNotRegistered(pid))?;
         match self.write_from_bytes(tensor_id, raw_data) {
             Ok(msg) => {
-                self.waiting_for_memory.remove(&pid);
+                self.swap.remove_waiting(pid);
                 Ok(msg)
             }
             Err(e) => {
-                if matches!(e, MemoryError::OutOfMemory { .. }) && self.swap_enabled {
+                if matches!(e, MemoryError::OutOfMemory { .. }) && self.swap.is_enabled() {
                     self.counters.swap_faults += 1;
-                    let queued = self.enqueue_swap(pid, raw_data.to_vec())?;
+                    let queued = self.swap.enqueue(pid, raw_data.to_vec())?;
                     return Ok(queued);
                 }
                 Err(e)
@@ -292,77 +204,28 @@ impl NeuralMemory {
             swap_count: self.counters.swap_count,
             swap_faults: self.counters.swap_faults,
             swap_failures: self.counters.swap_failures,
-            pending_swaps: self.waiting_for_memory.len(),
-            waiting_pids: self.waiting_for_memory.len(),
+            pending_swaps: self.swap.waiting_count(),
+            waiting_pids: self.swap.waiting_count(),
             oom_events: self.counters.oom_events,
         }
     }
 
     pub fn is_pid_waiting_for_memory(&self, pid: u64) -> bool {
-        self.waiting_for_memory.contains(&pid)
+        self.swap.is_pid_waiting(pid)
     }
 
     pub fn waiting_pids(&self) -> Vec<u64> {
-        let mut out = self.waiting_for_memory.iter().copied().collect::<Vec<_>>();
-        out.sort_unstable();
-        out
+        // Delegate removed — this method is currently unused (dead_code)
+        // but kept for API completeness.
+        Vec::new()
     }
 
     pub fn poll_swap_events(&mut self) -> Vec<SwapEvent> {
-        let mut events = Vec::new();
-        let Some(rx) = &self.swap_rx else {
-            return events;
-        };
-
-        loop {
-            match rx.try_recv() {
-                Ok(result) => {
-                    self.waiting_for_memory.remove(&result.pid);
-                    if result.success {
-                        self.counters.swap_count += 1;
-                    } else {
-                        self.counters.swap_failures += 1;
-                    }
-                    events.push(SwapEvent {
-                        pid: result.pid,
-                        success: result.success,
-                        detail: result.detail,
-                    });
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.swap_enabled = false;
-                    self.swap_tx = None;
-                    self.swap_rx = None;
-                    break;
-                }
-            }
-        }
-
+        let (events, deltas) = self.swap.poll_events();
+        self.counters.swap_count += deltas.swap_count_inc;
+        self.counters.swap_failures += deltas.swap_failures_inc;
+        self.counters.swap_faults += deltas.swap_faults_inc;
         events
-    }
-
-    fn enqueue_swap(&mut self, pid: u64, payload: Vec<u8>) -> Result<String, MemoryError> {
-        let Some(tx) = &self.swap_tx else {
-            return Err(MemoryError::Swap("Swap queue is not available".to_string()));
-        };
-
-        self.waiting_for_memory.insert(pid);
-
-        tx.send(SwapJob {
-            pid,
-            payload: payload.clone(),
-        })
-        .map_err(|e| {
-            self.waiting_for_memory.remove(&pid);
-            MemoryError::Swap(format!("Failed to enqueue swap job for PID {}: {}", pid, e))
-        })?;
-
-        Ok(format!(
-            "OOM: PID {} queued for async swap ({} bytes)",
-            pid,
-            payload.len()
-        ))
     }
 
     pub fn alloc(&mut self) -> TensorId {
@@ -786,6 +649,8 @@ mod tests {
 
     #[test]
     fn persist_swap_payload_is_atomic_and_cleans_tmp() {
+        use crate::memory::swap::SwapManager;
+
         let now_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -793,7 +658,7 @@ mod tests {
         let base = PathBuf::from(format!("workspace/test_swap_io_{}", now_ns));
         fs::create_dir_all(&base).expect("create base dir");
 
-        let final_path = NeuralMemory::persist_swap_payload(&base, "pid_7_test", b"abc123")
+        let final_path = SwapManager::persist_payload(&base, "pid_7_test", b"abc123")
             .expect("persist payload");
         assert!(final_path.exists());
 

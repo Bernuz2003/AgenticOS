@@ -122,3 +122,7 @@ ts_ms=1772699436122 pid=10 mode=Host success=false kill=false duration_ms=0 cmd=
 ts_ms=1772699436122 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
 ts_ms=1772699436124 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- swap\n- test_transport_swap_1771867102763912241\n- syscall_audit.log\n- test_transport_swap_1771867135617818793\n- test_swap_1772699436118508805"
 ts_ms=1772699436124 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
+ts_ms=1772700999190 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
+ts_ms=1772700999190 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
+ts_ms=1772700999191 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- swap\n- test_swap_1772700999182586849\n- test_transport_swap_1771867102763912241\n- syscall_audit.log\n- test_transport_swap_1771867135617818793"
+ts_ms=1772700999191 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
