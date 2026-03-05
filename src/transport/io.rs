@@ -10,37 +10,37 @@ use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::prompting::PromptFamily;
 use crate::protocol;
+use crate::scheduler::ProcessScheduler;
 
 use super::{parse_available_commands, Client, ParsedCommand};
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_read(
     client: &mut Client,
     memory: &Rc<RefCell<NeuralMemory>>,
     engine_state: &Arc<Mutex<Option<LLMEngine>>>,
     model_catalog: &mut ModelCatalog,
     active_family: &mut PromptFamily,
+    scheduler: &mut ProcessScheduler,
     client_id: usize,
     shutdown_requested: &Arc<AtomicBool>,
 ) -> bool {
     let mut chunk = [0; 4096];
-    loop {
-        match client.stream.read(&mut chunk) {
-            Ok(0) => return true,
-            Ok(n) => {
-                client.buffer.extend_from_slice(&chunk[..n]);
-                break;
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return false,
-            Err(ref e)
-                if e.kind() == io::ErrorKind::ConnectionReset
-                    || e.kind() == io::ErrorKind::BrokenPipe =>
-            {
-                return true;
-            }
-            Err(e) => {
-                eprintln!("Read error: {}", e);
-                return true;
-            }
+    match client.stream.read(&mut chunk) {
+        Ok(0) => return true,
+        Ok(n) => {
+            client.buffer.extend_from_slice(&chunk[..n]);
+        }
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return false,
+        Err(ref e)
+            if e.kind() == io::ErrorKind::ConnectionReset
+                || e.kind() == io::ErrorKind::BrokenPipe =>
+        {
+            return true;
+        }
+        Err(e) => {
+            tracing::error!(%e, "Read error");
+            return true;
         }
     }
 
@@ -55,6 +55,7 @@ pub fn handle_read(
                 engine_state,
                 model_catalog,
                 active_family,
+                scheduler,
                 client_id,
                 shutdown_requested,
             ),

@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::errors::CatalogError;
 use crate::prompting::PromptFamily;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +28,7 @@ pub struct ModelCatalog {
 }
 
 impl ModelCatalog {
-    pub fn discover(models_dir: impl Into<PathBuf>) -> Result<Self, String> {
+    pub fn discover(models_dir: impl Into<PathBuf>) -> Result<Self, CatalogError> {
         let models_dir = models_dir.into();
         let mut entries = Vec::new();
 
@@ -62,7 +63,7 @@ impl ModelCatalog {
         })
     }
 
-    pub fn refresh(&mut self) -> Result<(), String> {
+    pub fn refresh(&mut self) -> Result<(), CatalogError> {
         let selected = self.selected_id.clone();
         let mut newer = ModelCatalog::discover(self.models_dir.clone())?;
         if let Some(sel) = selected {
@@ -74,12 +75,12 @@ impl ModelCatalog {
         Ok(())
     }
 
-    pub fn set_selected(&mut self, model_id: &str) -> Result<(), String> {
+    pub fn set_selected(&mut self, model_id: &str) -> Result<(), CatalogError> {
         if self.entries.iter().any(|m| m.id == model_id) {
             self.selected_id = Some(model_id.to_string());
             Ok(())
         } else {
-            Err(format!("Model '{}' not found in catalog", model_id))
+            Err(CatalogError::ModelNotFound(model_id.to_string()))
         }
     }
 
@@ -93,14 +94,14 @@ impl ModelCatalog {
         self.entries.iter().find(|m| m.id == model_id)
     }
 
-    pub fn resolve_load_target(&self, payload: &str) -> Result<(PathBuf, PromptFamily), String> {
+    pub fn resolve_load_target(&self, payload: &str) -> Result<(PathBuf, PromptFamily), CatalogError> {
         let raw = payload.trim();
 
         if raw.is_empty() {
             if let Some(entry) = self.selected_entry() {
                 return Ok((entry.path.clone(), entry.family));
             }
-            return Err("No model selected. Use SELECT_MODEL first or pass a model path/id to LOAD.".to_string());
+            return Err(CatalogError::NoModelSelected);
         }
 
         if let Some(entry) = self.find_by_id(raw) {
@@ -110,7 +111,7 @@ impl ModelCatalog {
         if raw.ends_with(".gguf") || raw.contains('/') || raw.contains('\\') {
             let path = PathBuf::from(raw);
             if !path.exists() {
-                return Err(format!("Model path not found: {}", path.display()));
+                return Err(CatalogError::PathNotFound(path.display().to_string()));
             }
             let fallback_family = path
                 .file_stem()
@@ -120,10 +121,7 @@ impl ModelCatalog {
             return Ok((path, fallback_family));
         }
 
-        Err(format!(
-            "Invalid model selector '{}'. Use model id from LIST_MODELS or provide .gguf path.",
-            raw
-        ))
+        Err(CatalogError::InvalidSelector(raw.to_string()))
     }
 
     pub fn format_list(&self) -> String {
@@ -151,10 +149,10 @@ impl ModelCatalog {
         lines.join("\n")
     }
 
-    pub fn format_info(&self, model_id: &str) -> Result<String, String> {
+    pub fn format_info(&self, model_id: &str) -> Result<String, CatalogError> {
         let entry = self
             .find_by_id(model_id)
-            .ok_or_else(|| format!("Model '{}' not found", model_id))?;
+            .ok_or_else(|| CatalogError::ModelNotFound(model_id.to_string()))?;
 
         Ok(format!(
             "id={}\nfamily={:?}\npath={}\ntokenizer={}",
@@ -294,13 +292,19 @@ fn infer_family_from_filename(name: &str) -> PromptFamily {
     }
 }
 
-fn collect_gguf_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+fn collect_gguf_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CatalogError> {
     let entries = fs::read_dir(dir)
-        .map_err(|e| format!("Model directory read failed '{}': {}", dir.display(), e))?;
+        .map_err(|e| CatalogError::DirectoryReadFailed {
+            path: dir.display().to_string(),
+            detail: e.to_string(),
+        })?;
 
     for entry in entries {
         let path = entry
-            .map_err(|e| format!("Model directory entry read failed '{}': {}", dir.display(), e))?
+            .map_err(|e| CatalogError::DirectoryReadFailed {
+                path: dir.display().to_string(),
+                detail: e.to_string(),
+            })?
             .path();
 
         if path.is_dir() {

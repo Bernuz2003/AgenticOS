@@ -26,7 +26,7 @@ pub fn parse_available_commands(buffer: &mut Vec<u8>, state: &mut ClientState) -
                                 *state = ClientState::ReadingBody { header };
                             }
                         }
-                        Err(e) => parsed.push(ParsedCommand::Err(e)),
+                        Err(e) => parsed.push(ParsedCommand::Err(e.to_string())),
                     }
                 } else {
                     break;

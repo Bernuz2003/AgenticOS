@@ -11,11 +11,15 @@ use crate::memory::NeuralMemory;
 use crate::model_catalog::{infer_workload_class, parse_workload_hint, ModelCatalog};
 use crate::prompting::PromptFamily;
 use crate::protocol::{self, OpCode};
+use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::transport::Client;
 
 use self::metrics::{inc_exec_started, inc_signal_count, log_event, record_command, snapshot_metrics};
 use self::parsing::{parse_generation_payload, parse_memw_payload};
 
+use crate::config::env_bool;
+
+#[allow(clippy::too_many_arguments)]
 pub fn execute_command(
     client: &mut Client,
     header: crate::protocol::CommandHeader,
@@ -24,6 +28,7 @@ pub fn execute_command(
     engine_state: &Arc<Mutex<Option<LLMEngine>>>,
     model_catalog: &mut ModelCatalog,
     active_family: &mut PromptFamily,
+    scheduler: &mut ProcessScheduler,
     client_id: usize,
     shutdown_requested: &Arc<AtomicBool>,
 ) {
@@ -65,7 +70,7 @@ pub fn execute_command(
                         Err(e) => protocol::response_err_code("LOAD_FAILED", &format!("{}", e)),
                     }
                 }
-                Err(e) => protocol::response_err_code("MODEL_SELECTOR", &e),
+                Err(e) => protocol::response_err_code("MODEL_SELECTOR", &e.to_string()),
             }
         }
         OpCode::ListModels => {
@@ -85,7 +90,7 @@ pub fn execute_command(
                         }
                         protocol::response_ok(&format!("Selected model '{}'.", model_id))
                     }
-                    Err(e) => protocol::response_err_code("MODEL_NOT_FOUND", &e),
+                    Err(e) => protocol::response_err_code("MODEL_NOT_FOUND", &e.to_string()),
                 }
             }
         }
@@ -107,7 +112,7 @@ pub fn execute_command(
             } else {
                 match model_catalog.format_info(&model_id) {
                     Ok(info) => protocol::response_ok(&info),
-                    Err(e) => protocol::response_err_code("MODEL_INFO", &e),
+                    Err(e) => protocol::response_err_code("MODEL_INFO", &e.to_string()),
                 }
             }
         }
@@ -115,37 +120,41 @@ pub fn execute_command(
             let prompt_raw = String::from_utf8_lossy(&payload).to_string();
             let (hinted_workload, prompt) = parse_workload_hint(&prompt_raw);
             let workload = hinted_workload.unwrap_or_else(|| infer_workload_class(&prompt));
+            let auto_switch = env_bool("AGENTIC_EXEC_AUTO_SWITCH", false);
 
             let _ = model_catalog.refresh();
-            if let Some(selected) = model_catalog.select_for_workload(workload).cloned() {
-                let should_reload = *active_family != selected.family;
-                if should_reload {
-                    let tokenizer_hint = selected.tokenizer_path.clone();
-                    match LLMEngine::load(
-                        selected.path.to_string_lossy().as_ref(),
-                        selected.family,
-                        tokenizer_hint,
-                    ) {
-                        Ok(new_engine) => {
-                            let mut lock = engine_state.lock().unwrap();
-                            *lock = Some(new_engine);
-                            *active_family = selected.family;
-                            model_catalog.selected_id = Some(selected.id.clone());
-                            log_event(
-                                "scheduler_model_switch",
-                                client_id,
-                                None,
-                                &format!(
-                                    "workload={:?} model_id={} family={:?}",
-                                    workload, selected.id, selected.family
-                                ),
-                            );
-                        }
-                        Err(e) => {
-                            return client.output_buffer.extend(protocol::response_err_code(
-                                "SCHEDULER_LOAD_FAILED",
-                                &format!("{}", e),
-                            ));
+            let can_scheduler_switch = auto_switch || hinted_workload.is_some();
+            if can_scheduler_switch {
+                if let Some(selected) = model_catalog.select_for_workload(workload).cloned() {
+                    let should_reload = *active_family != selected.family;
+                    if should_reload {
+                        let tokenizer_hint = selected.tokenizer_path.clone();
+                        match LLMEngine::load(
+                            selected.path.to_string_lossy().as_ref(),
+                            selected.family,
+                            tokenizer_hint,
+                        ) {
+                            Ok(new_engine) => {
+                                let mut lock = engine_state.lock().unwrap();
+                                *lock = Some(new_engine);
+                                *active_family = selected.family;
+                                model_catalog.selected_id = Some(selected.id.clone());
+                                log_event(
+                                    "scheduler_model_switch",
+                                    client_id,
+                                    None,
+                                    &format!(
+                                        "workload={:?} model_id={} family={:?}",
+                                        workload, selected.id, selected.family
+                                    ),
+                                );
+                            }
+                            Err(e) => {
+                                return client.output_buffer.extend(protocol::response_err_code(
+                                    "SCHEDULER_LOAD_FAILED",
+                                    &format!("{}", e),
+                                ));
+                            }
                         }
                     }
                 }
@@ -160,19 +169,21 @@ pub fn execute_command(
                                 engine.kill_process(pid);
                                 return client.output_buffer.extend(protocol::response_err_code(
                                     "MEMORY_ADMISSION",
-                                    &e,
+                                    &e.to_string(),
                                 ));
                             }
                         }
+
+                        scheduler.register(pid, workload, ProcessPriority::Normal);
 
                         inc_exec_started();
                         log_event(
                             "process_spawn",
                             client_id,
                             Some(pid),
-                            &format!("exec_started workload={:?}", workload),
+                            &format!("exec_started workload={:?} priority=normal", workload),
                         );
-                        protocol::response_ok(&format!("Process Started PID: {}", pid))
+                        protocol::response_ok(&format!("Process Started PID: {} workload={:?} priority=normal", pid, workload))
                     }
                     Err(e) => protocol::response_err_code("SPAWN_FAILED", &format!("{}", e)),
                 }
@@ -191,10 +202,23 @@ pub fn execute_command(
                     let waiting = engine.list_waiting_pids();
                     let cfg = engine.generation_config();
                     let mem = memory.borrow().snapshot();
+                    let loaded_path = engine.loaded_model_path().to_string();
+                    let loaded_family = engine.loaded_family();
+                    let loaded_model_id = model_catalog
+                        .entries
+                        .iter()
+                        .find(|entry| entry.path.to_string_lossy() == loaded_path)
+                        .map(|entry| entry.id.clone())
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    let selected_model_id = model_catalog
+                        .selected_id
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string());
+                    let sched_summary = scheduler.summary();
                     protocol::response_ok_code(
                         "STATUS",
                         &format!(
-                            "uptime_s={} total_commands={} total_errors={} total_exec_started={} total_signals={} active_processes={} waiting_processes={} active_pids={:?} waiting_pids={:?} generation=temperature:{} top_p:{} seed:{} max_tokens:{} mem_active={} mem_total_blocks={} mem_free_blocks={} mem_tracked_pids={} mem_allocated_tensors={} mem_alloc_bytes={} mem_evictions={} mem_swap_count={} mem_swap_faults={} mem_swap_failures={} mem_pending_swaps={} mem_waiting_pids={} mem_oom_events={}",
+                            "uptime_s={} total_commands={} total_errors={} total_exec_started={} total_signals={} active_processes={} waiting_processes={} active_pids={:?} waiting_pids={:?} selected_model_id={} loaded_model_id={} loaded_family={:?} loaded_model_path={} generation=temperature:{} top_p:{} seed:{} max_tokens:{} mem_active={} mem_total_blocks={} mem_free_blocks={} mem_tracked_pids={} mem_allocated_tensors={} mem_alloc_bytes={} mem_evictions={} mem_swap_count={} mem_swap_faults={} mem_swap_failures={} mem_pending_swaps={} mem_waiting_pids={} mem_oom_events={} {}",
                             uptime_s,
                             total_cmd,
                             total_err,
@@ -204,6 +228,10 @@ pub fn execute_command(
                             waiting.len(),
                             active,
                             waiting,
+                            selected_model_id,
+                            loaded_model_id,
+                            loaded_family,
+                            loaded_path,
                             cfg.temperature,
                             cfg.top_p,
                             cfg.seed,
@@ -220,12 +248,21 @@ pub fn execute_command(
                             mem.swap_failures,
                             mem.pending_swaps,
                             mem.waiting_pids,
-                            mem.oom_events
+                            mem.oom_events,
+                            sched_summary
                         ),
                     )
                 } else if let Ok(pid) = requested.parse::<u64>() {
                     if let Some(line) = engine.process_status_line(pid) {
-                        protocol::response_ok_code("STATUS", &line)
+                        // Enrich per-PID status with scheduler info.
+                        let sched_info = scheduler.snapshot(pid).map(|s| {
+                            format!(
+                                " priority={} workload={:?} quota_tokens={} quota_syscalls={} tokens_generated={} syscalls_used={} elapsed_secs={:.2}",
+                                s.priority, s.workload, s.quota.max_tokens, s.quota.max_syscalls,
+                                s.tokens_generated, s.syscalls_used, s.elapsed_secs
+                            )
+                        }).unwrap_or_default();
+                        protocol::response_ok_code("STATUS", &format!("{}{}", line, sched_info))
                     } else {
                         protocol::response_err_code(
                             "PID_NOT_FOUND",
@@ -242,8 +279,9 @@ pub fn execute_command(
                 protocol::response_ok_code(
                     "STATUS",
                     &format!(
-                        "uptime_s={} total_commands={} total_errors={} total_exec_started={} total_signals={} active_processes=0 active_pids=[] no_model_loaded=true",
+                        "uptime_s={} total_commands={} total_errors={} total_exec_started={} total_signals={} active_processes=0 active_pids=[] selected_model_id={} loaded_model_id=<none> loaded_family=Unknown loaded_model_path=<none> no_model_loaded=true",
                         uptime_s, total_cmd, total_err, total_exec, total_signals
+                        ,model_catalog.selected_id.clone().unwrap_or_else(|| "<none>".to_string())
                     ),
                 )
             }
@@ -257,6 +295,7 @@ pub fn execute_command(
                 if let Some(engine) = lock.as_mut() {
                     if engine.terminate_process(pid) {
                         let _ = memory.borrow_mut().release_process(pid);
+                        scheduler.unregister(pid);
                         inc_signal_count();
                         log_event("process_term", client_id, Some(pid), "graceful_termination_requested");
                         protocol::response_ok_code("TERM", &format!("Termination requested for PID {}", pid))
@@ -279,6 +318,7 @@ pub fn execute_command(
                 if let Some(engine) = lock.as_mut() {
                     engine.kill_process(pid);
                     let _ = memory.borrow_mut().release_process(pid);
+                    scheduler.unregister(pid);
                     inc_signal_count();
                     log_event("process_kill", client_id, Some(pid), "killed_immediately");
                     protocol::response_ok_code("KILL", &format!("Killed PID {}", pid))
@@ -349,11 +389,126 @@ pub fn execute_command(
                             protocol::response_ok_code("MEMW", &msg)
                         }
                     }
-                    Err(e) => protocol::response_err_code("MEMW_FAILED", &e),
+                    Err(e) => protocol::response_err_code("MEMW_FAILED", &e.to_string()),
                 }
             }
             Err(e) => protocol::response_err_code("MEMW_INVALID", &e),
         },
+        OpCode::SetPriority => {
+            let payload_text = String::from_utf8_lossy(&payload).trim().to_string();
+            let parts: Vec<&str> = payload_text.splitn(2, char::is_whitespace).collect();
+            if parts.len() != 2 {
+                protocol::response_err_code(
+                    "SET_PRIORITY_INVALID",
+                    "SET_PRIORITY requires: <PID> <low|normal|high|critical>",
+                )
+            } else if let Ok(pid) = parts[0].parse::<u64>() {
+                if let Some(level) = ProcessPriority::from_str_loose(parts[1].trim()) {
+                    if scheduler.set_priority(pid, level) {
+                        log_event("set_priority", client_id, Some(pid), &format!("priority={}", level));
+                        protocol::response_ok_code(
+                            "SET_PRIORITY",
+                            &format!("PID {} priority set to {}", pid, level),
+                        )
+                    } else {
+                        protocol::response_err_code(
+                            "PID_NOT_FOUND",
+                            &format!("PID {} not tracked by scheduler", pid),
+                        )
+                    }
+                } else {
+                    protocol::response_err_code(
+                        "SET_PRIORITY_INVALID",
+                        &format!("Unknown priority level '{}'. Use: low, normal, high, critical", parts[1]),
+                    )
+                }
+            } else {
+                protocol::response_err_code("SET_PRIORITY_INVALID", "PID must be numeric")
+            }
+        }
+        OpCode::GetQuota => {
+            let payload_text = String::from_utf8_lossy(&payload).trim().to_string();
+            if let Ok(pid) = payload_text.parse::<u64>() {
+                if let Some(snap) = scheduler.snapshot(pid) {
+                    protocol::response_ok_code(
+                        "GET_QUOTA",
+                        &format!(
+                            "pid={} priority={} workload={:?} max_tokens={} max_syscalls={} tokens_generated={} syscalls_used={} elapsed_secs={:.2}",
+                            pid, snap.priority, snap.workload, snap.quota.max_tokens, snap.quota.max_syscalls,
+                            snap.tokens_generated, snap.syscalls_used, snap.elapsed_secs
+                        ),
+                    )
+                } else {
+                    protocol::response_err_code(
+                        "PID_NOT_FOUND",
+                        &format!("PID {} not tracked by scheduler", pid),
+                    )
+                }
+            } else {
+                protocol::response_err_code("GET_QUOTA_INVALID", "GET_QUOTA requires numeric PID")
+            }
+        }
+        OpCode::SetQuota => {
+            let payload_text = String::from_utf8_lossy(&payload).trim().to_string();
+            let parts: Vec<&str> = payload_text.splitn(2, char::is_whitespace).collect();
+            if parts.len() != 2 {
+                protocol::response_err_code(
+                    "SET_QUOTA_INVALID",
+                    "SET_QUOTA requires: <PID> <max_tokens=N,max_syscalls=N>",
+                )
+            } else if let Ok(pid) = parts[0].parse::<u64>() {
+                if let Some(current) = scheduler.quota(pid).copied() {
+                    let mut new_quota = current;
+                    let mut parse_ok = true;
+                    for kv in parts[1].split(',') {
+                        let kv = kv.trim();
+                        if let Some((k, v)) = kv.split_once('=') {
+                            match k.trim() {
+                                "max_tokens" => {
+                                    if let Ok(val) = v.trim().parse::<usize>() {
+                                        new_quota.max_tokens = val;
+                                    } else {
+                                        parse_ok = false;
+                                    }
+                                }
+                                "max_syscalls" => {
+                                    if let Ok(val) = v.trim().parse::<usize>() {
+                                        new_quota.max_syscalls = val;
+                                    } else {
+                                        parse_ok = false;
+                                    }
+                                }
+                                _ => { parse_ok = false; }
+                            }
+                        } else {
+                            parse_ok = false;
+                        }
+                    }
+                    if parse_ok {
+                        scheduler.set_quota(pid, new_quota);
+                        log_event("set_quota", client_id, Some(pid),
+                            &format!("max_tokens={} max_syscalls={}", new_quota.max_tokens, new_quota.max_syscalls));
+                        protocol::response_ok_code(
+                            "SET_QUOTA",
+                            &format!("PID {} quota updated: max_tokens={} max_syscalls={}",
+                                pid, new_quota.max_tokens, new_quota.max_syscalls),
+                        )
+                    } else {
+                        protocol::response_err_code(
+                            "SET_QUOTA_INVALID",
+                            "Invalid quota format. Use: max_tokens=N,max_syscalls=N",
+                        )
+                    }
+                } else {
+                    protocol::response_err_code(
+                        "PID_NOT_FOUND",
+                        &format!("PID {} not tracked by scheduler", pid),
+                    )
+                }
+            } else {
+                protocol::response_err_code("SET_QUOTA_INVALID", "PID must be numeric")
+            }
+        }
     };
 
     if response.starts_with(b"+OK") {

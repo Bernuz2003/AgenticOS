@@ -33,6 +33,14 @@ python3 -m gui.app
 
 - La GUI usa il protocollo TCP locale su `127.0.0.1:6379` (configurabile in alto).
 - Se `target/release/agentic_os_kernel` esiste, viene usato per l’avvio kernel; altrimenti fallback a `cargo run --release`.
+- `Stop Local Kernel` ferma il processo avviato dalla GUI (livello OS), mentre `Kernel SHUTDOWN` invia il comando protocollo di spegnimento graceful.
+- `Stop PID (TERM)` richiede chiusura gentile del processo agentico; `Kill PID (KILL)` forza la chiusura immediata.
+- `Refresh Runtime Status` aggiorna stato runtime (`active_pids`, errori, uptime, memoria, stato modello).
+- `LOAD` usa un timeout esteso lato GUI (fino a 180s) per evitare falsi negativi durante il caricamento di modelli grandi.
+- I codici errore control distinguono `TIMEOUT` da `MALFORMED_OR_PARTIAL` per semplificare il troubleshooting.
+- Per mostrare i log `New connection` nel terminale kernel, abilita `AGENTIC_LOG_CONNECTIONS=1` (default: off).
+- Lo scheduler di auto-switch modello su `EXEC` è ora **opt-in** (`AGENTIC_EXEC_AUTO_SWITCH=1`); default: disabilitato per evitare reload inattesi.
+- `STATUS` espone sempre `selected_model_id` e `loaded_model_id`: la GUI mostra entrambi nel pannello `Control`.
 
 ## Smoke test manuale E2E (runbook)
 

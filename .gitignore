@@ -1,3 +1,30 @@
-/target
-/models
-/gui/__pycache__
+# ── Rust build artifacts ──
+/target/
+
+# ── LLM model weights (multi-GB, not for git) ──
+/models/**/*.gguf
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# ── Kernel runtime workspace (swap files, audit logs, test artifacts) ──
+/workspace/
+
+# ── IDE / Editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS metadata ──
+.DS_Store
+Thumbs.db
+
+# ── Misc ──
+*.log

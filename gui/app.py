@@ -8,6 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
@@ -52,6 +53,14 @@ class MainWindow(QMainWindow):
         self._retry_delay_s = 0.35
         self._is_connected = False
         self._last_background_error = ""
+        self._status_in_flight = False
+        self._models_in_flight = False
+        self._load_in_flight = False
+        self._active_pids: list[str] = []
+        self._default_read_timeout_s = 5.0
+        self._default_inactivity_timeout_s = 0.5
+        self._load_read_timeout_s = 180.0
+        self._load_inactivity_timeout_s = 2.0
 
         self._audit_offset = 0
         self._kernel_event_lines: list[str] = []
@@ -69,6 +78,13 @@ class MainWindow(QMainWindow):
         self.exec_prompt = QTextEdit()
         self.exec_output = QPlainTextEdit()
         self.exec_output.setReadOnly(True)
+        self.pid_input = QLineEdit()
+        self.pid_input.setPlaceholderText("PID da active_pids (es: 42)")
+        self.pid_input.setFixedWidth(170)
+        self.pid_combo = QComboBox()
+        self.pid_combo.setMinimumWidth(180)
+        self.pid_combo.setEditable(False)
+        self.pid_combo.addItem("active_pids: none", "")
 
         self.command_input = QLineEdit("STATUS")
         self.command_output = QPlainTextEdit()
@@ -76,6 +92,8 @@ class MainWindow(QMainWindow):
         self.model_combo = QComboBox()
         self.model_combo.setMinimumWidth(420)
         self.model_combo.setEditable(False)
+        self.selected_model_value = QLabel("<none>")
+        self.loaded_model_value = QLabel("<none>")
 
         self.gen_temp = QDoubleSpinBox()
         self.gen_top_p = QDoubleSpinBox()
@@ -97,12 +115,20 @@ class MainWindow(QMainWindow):
         self.syscall_filter_input = QLineEdit()
         self.show_stdout_cb = QCheckBox("stdout")
         self.show_stderr_cb = QCheckBox("stderr")
+        self.show_noise_cb = QCheckBox("verbose kernel")
         self.show_stdout_cb.setChecked(True)
         self.show_stderr_cb.setChecked(True)
+        self.show_noise_cb.setChecked(False)
         self.export_snapshot_btn = QPushButton("Export snapshot")
 
         self.status_snapshot = QPlainTextEdit()
         self.status_snapshot.setReadOnly(True)
+
+        self.refresh_models_btn: QPushButton | None = None
+        self.model_info_btn: QPushButton | None = None
+        self.select_model_btn: QPushButton | None = None
+        self.load_selected_btn: QPushButton | None = None
+        self.exec_stream_btn: QPushButton | None = None
 
         self._build_ui()
         self._setup_timers()
@@ -126,14 +152,17 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.agent_input, 0, 5)
 
         start_btn = QPushButton("Start Kernel")
-        stop_btn = QPushButton("Stop Kernel")
+        stop_btn = QPushButton("Stop Local Kernel")
         ping_btn = QPushButton("PING")
-        status_btn = QPushButton("Refresh STATUS")
+        status_btn = QPushButton("Refresh Runtime Status")
+
+        stop_btn.setToolTip("Ferma il processo kernel avviato dalla GUI (livello OS).")
+        status_btn.setToolTip("Richiede uno snapshot runtime: uptime, pids, errori, memoria, stato modello.")
 
         start_btn.clicked.connect(self._start_kernel)
         stop_btn.clicked.connect(self._stop_kernel)
         ping_btn.clicked.connect(lambda: self._send_simple("PING", ""))
-        status_btn.clicked.connect(self._refresh_status)
+        status_btn.clicked.connect(lambda: self._refresh_status(force=True))
 
         layout.addWidget(start_btn, 1, 0, 1, 2)
         layout.addWidget(stop_btn, 1, 2, 1, 2)
@@ -161,18 +190,26 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         exec_btn = QPushButton("EXEC Stream")
-        term_btn = QPushButton("TERM PID")
-        kill_btn = QPushButton("KILL PID")
-        pid_input = QLineEdit()
-        pid_input.setPlaceholderText("PID")
-        pid_input.setFixedWidth(120)
+        self.exec_stream_btn = exec_btn
+        term_btn = QPushButton("Stop PID (TERM)")
+        kill_btn = QPushButton("Kill PID (KILL)")
+        use_pid_btn = QPushButton("Use selected PID")
+
+        exec_btn.setToolTip("Esegue il prompt in streaming sul modello caricato.")
+        term_btn.setToolTip("Interruzione gentile del processo agentico PID.")
+        kill_btn.setToolTip("Interruzione forzata del processo agentico PID.")
+        use_pid_btn.setToolTip("Copia nel campo PID il valore selezionato da active_pids.")
 
         exec_btn.clicked.connect(self._exec_stream)
-        term_btn.clicked.connect(lambda: self._send_simple("TERM", pid_input.text().strip()))
-        kill_btn.clicked.connect(lambda: self._send_simple("KILL", pid_input.text().strip()))
+        term_btn.clicked.connect(lambda: self._send_pid_signal("TERM"))
+        kill_btn.clicked.connect(lambda: self._send_pid_signal("KILL"))
+        use_pid_btn.clicked.connect(self._use_selected_pid)
+        self.pid_combo.currentIndexChanged.connect(self._use_selected_pid)
 
         btn_row.addWidget(exec_btn)
-        btn_row.addWidget(pid_input)
+        btn_row.addWidget(self.pid_input)
+        btn_row.addWidget(self.pid_combo)
+        btn_row.addWidget(use_pid_btn)
         btn_row.addWidget(term_btn)
         btn_row.addWidget(kill_btn)
         btn_row.addStretch()
@@ -193,6 +230,10 @@ class MainWindow(QMainWindow):
         model_info_btn = QPushButton("MODEL_INFO")
         select_btn = QPushButton("SELECT_MODEL")
         load_selected_btn = QPushButton("LOAD selected")
+        self.refresh_models_btn = refresh_models_btn
+        self.model_info_btn = model_info_btn
+        self.select_model_btn = select_btn
+        self.load_selected_btn = load_selected_btn
         model_btn_row.addWidget(refresh_models_btn)
         model_btn_row.addWidget(model_info_btn)
         model_btn_row.addWidget(select_btn)
@@ -205,7 +246,14 @@ class MainWindow(QMainWindow):
         model_form_row.addWidget(self.model_combo)
         model_layout.addLayout(model_form_row)
 
-        refresh_models_btn.clicked.connect(self._refresh_models)
+        model_state_row = QGridLayout()
+        model_state_row.addWidget(QLabel("Selected model"), 0, 0)
+        model_state_row.addWidget(self.selected_model_value, 0, 1)
+        model_state_row.addWidget(QLabel("Loaded model"), 1, 0)
+        model_state_row.addWidget(self.loaded_model_value, 1, 1)
+        model_layout.addLayout(model_state_row)
+
+        refresh_models_btn.clicked.connect(lambda: self._refresh_models(silent=False, force=True))
         model_info_btn.clicked.connect(self._model_info)
         select_btn.clicked.connect(self._select_model)
         load_selected_btn.clicked.connect(self._load_selected_model)
@@ -229,7 +277,8 @@ class MainWindow(QMainWindow):
         set_gen_btn.clicked.connect(self._set_generation)
 
         quick_row = QHBoxLayout()
-        shutdown_btn = QPushButton("SHUTDOWN")
+        shutdown_btn = QPushButton("Kernel SHUTDOWN (graceful)")
+        shutdown_btn.setToolTip("Invia comando SHUTDOWN al kernel via protocollo.")
         shutdown_btn.clicked.connect(lambda: self._send_simple("SHUTDOWN", ""))
         quick_row.addWidget(shutdown_btn)
         quick_row.addStretch()
@@ -265,6 +314,7 @@ class MainWindow(QMainWindow):
         filter_row.addWidget(self.kernel_filter_input)
         filter_row.addWidget(self.show_stdout_cb)
         filter_row.addWidget(self.show_stderr_cb)
+        filter_row.addWidget(self.show_noise_cb)
         filter_row.addSpacing(12)
         filter_row.addWidget(QLabel("Syscall"))
         filter_row.addWidget(self.syscall_filter_input)
@@ -275,6 +325,7 @@ class MainWindow(QMainWindow):
         self.syscall_filter_input.textChanged.connect(self._render_syscall_events)
         self.show_stdout_cb.toggled.connect(self._render_kernel_events)
         self.show_stderr_cb.toggled.connect(self._render_kernel_events)
+        self.show_noise_cb.toggled.connect(self._render_kernel_events)
         self.export_snapshot_btn.clicked.connect(self._export_snapshot)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -295,7 +346,7 @@ class MainWindow(QMainWindow):
 
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._refresh_status)
-        self.status_timer.start(2000)
+        self.status_timer.start(5000)
 
         self.events_timer = QTimer(self)
         self.events_timer.timeout.connect(self._drain_kernel_events)
@@ -306,8 +357,8 @@ class MainWindow(QMainWindow):
         self.audit_timer.start(500)
 
         self.models_timer = QTimer(self)
-        self.models_timer.timeout.connect(lambda: self._refresh_models(silent=True))
-        self.models_timer.start(7000)
+        self.models_timer.timeout.connect(lambda: self._refresh_models(silent=True, force=False))
+        self.models_timer.start(15000)
 
     def _update_client_config(self):
         host = self.host_input.text().strip() or "127.0.0.1"
@@ -322,6 +373,18 @@ class MainWindow(QMainWindow):
     def _set_status(self, text: str):
         self.status_label.setText(text)
 
+    def _set_controls_enabled(self, enabled: bool):
+        controls = [
+            self.refresh_models_btn,
+            self.model_info_btn,
+            self.select_model_btn,
+            self.load_selected_btn,
+            self.exec_stream_btn,
+        ]
+        for control in controls:
+            if control is not None:
+                control.setEnabled(enabled)
+
     def _start_kernel(self):
         ok, msg = self.kernel.start()
         self._set_status(msg)
@@ -329,8 +392,8 @@ class MainWindow(QMainWindow):
             self._show_error(msg)
             return
 
-        QTimer.singleShot(900, self._refresh_status)
-        QTimer.singleShot(1200, lambda: self._refresh_models(silent=True))
+        QTimer.singleShot(900, lambda: self._refresh_status(force=True))
+        QTimer.singleShot(1200, lambda: self._refresh_models(silent=True, force=True))
 
     def _stop_kernel(self):
         ok, msg = self.kernel.stop()
@@ -339,21 +402,11 @@ class MainWindow(QMainWindow):
             self._show_error(msg)
 
     def _send_simple(self, verb: str, payload: str, show_error_popup: bool = True):
-        def task():
-            try:
-                self._update_client_config()
-                response = self._send_once_with_retry(verb=verb, payload=payload)
-                self.ui_queue.put(
-                    UiEvent(
-                        kind="control",
-                        message=self._format_control(verb, response),
-                    )
-                )
-            except Exception as exc:
-                kind = "error" if show_error_popup else "background_error"
-                self.ui_queue.put(UiEvent(kind=kind, message=f"{verb} failed: {exc}"))
-
-        threading.Thread(target=task, daemon=True).start()
+        self._dispatch_control_request(
+            verb=verb,
+            payload=payload,
+            show_error_popup=show_error_popup,
+        )
 
     def _send_with_event(
         self,
@@ -362,31 +415,81 @@ class MainWindow(QMainWindow):
         event_kind: str,
         show_error_popup: bool = True,
     ):
+        self._dispatch_control_request(
+            verb=verb,
+            payload=payload,
+            show_error_popup=show_error_popup,
+            success_event_kind=event_kind,
+        )
+
+    def _dispatch_control_request(
+        self,
+        verb: str,
+        payload: str,
+        show_error_popup: bool = True,
+        success_event_kind: str | None = None,
+        read_timeout_s: float | None = None,
+        inactivity_timeout_s: float | None = None,
+        include_control_log: bool = True,
+        on_done: Callable[[], None] | None = None,
+    ):
         def task():
             try:
                 self._update_client_config()
-                response = self._send_once_with_retry(verb=verb, payload=payload)
-                self.ui_queue.put(UiEvent(kind=event_kind, message=response.payload))
-                self.ui_queue.put(
-                    UiEvent(
-                        kind="control",
-                        message=self._format_control(verb, response),
-                    )
+                response = self._send_once_with_retry(
+                    verb=verb,
+                    payload=payload,
+                    read_timeout_s=read_timeout_s,
+                    inactivity_timeout_s=inactivity_timeout_s,
                 )
+                if success_event_kind:
+                    self.ui_queue.put(UiEvent(kind=success_event_kind, message=response.payload))
+                if include_control_log:
+                    self.ui_queue.put(
+                        UiEvent(
+                            kind="control",
+                            message=self._format_control(verb, response),
+                        )
+                    )
             except Exception as exc:
                 kind = "error" if show_error_popup else "background_error"
                 self.ui_queue.put(UiEvent(kind=kind, message=f"{verb} failed: {exc}"))
+            finally:
+                if on_done is not None:
+                    try:
+                        on_done()
+                    except Exception:
+                        pass
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _refresh_status(self):
+    def _refresh_status(self, force: bool = False):
+        if self._status_in_flight:
+            return
+
+        if self._load_in_flight and not force:
+            return
+
+        should_poll = force or self._is_connected or self.kernel.is_running()
+        if not should_poll:
+            return
+
+        self._status_in_flight = True
+
         def task():
             try:
                 self._update_client_config()
-                response = self._send_once_with_retry(verb="STATUS", payload="")
+                response = self._send_once_with_retry(
+                    verb="STATUS",
+                    payload="",
+                    read_timeout_s=6.0,
+                    inactivity_timeout_s=0.35,
+                )
                 self.ui_queue.put(UiEvent(kind="status", message=self._format_control("STATUS", response)))
             except Exception as exc:
                 self.ui_queue.put(UiEvent(kind="background_error", message=f"STATUS failed: {exc}"))
+            finally:
+                self._status_in_flight = False
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -400,13 +503,39 @@ class MainWindow(QMainWindow):
         payload = parts[1] if len(parts) > 1 else ""
         self._send_simple(verb, payload)
 
-    def _refresh_models(self, silent: bool = False):
-        self._send_with_event(
-            "LIST_MODELS",
-            "",
-            "models_list",
+    def _refresh_models(self, silent: bool = False, force: bool = False):
+        if self._models_in_flight:
+            return
+
+        should_refresh = force or self._is_connected or self.kernel.is_running() or not silent
+        if not should_refresh:
+            return
+
+        self._models_in_flight = True
+
+        self._dispatch_control_request(
+            verb="LIST_MODELS",
+            payload="",
             show_error_popup=not silent,
+            success_event_kind="models_list",
+            read_timeout_s=8.0,
+            inactivity_timeout_s=0.6,
+            include_control_log=not silent,
+            on_done=lambda: setattr(self, "_models_in_flight", False),
         )
+
+    def _use_selected_pid(self):
+        value = self.pid_combo.currentData()
+        if value is None:
+            return
+        self.pid_input.setText(str(value))
+
+    def _send_pid_signal(self, verb: str):
+        pid = self.pid_input.text().strip()
+        if not pid:
+            self._show_error("Seleziona o inserisci un PID valido prima del segnale")
+            return
+        self._send_simple(verb, pid)
 
     def _selected_model_id(self) -> str:
         current = self.model_combo.currentData()
@@ -429,16 +558,34 @@ class MainWindow(QMainWindow):
         self._send_simple("SELECT_MODEL", model_id)
 
     def _load_selected_model(self):
+        if self._load_in_flight:
+            self.command_output.appendPlainText("[INFO] LOAD già in corso, attendi completamento.\n")
+            return
+
         model_id = self._selected_model_id()
         if not model_id:
             self._show_error("Nessun modello selezionato")
             return
 
+        self._load_in_flight = True
+        self._set_status("Loading model...")
+        self._set_controls_enabled(False)
+
         def task():
             try:
                 self._update_client_config()
-                select_resp = self._send_once_with_retry("SELECT_MODEL", model_id)
-                load_resp = self._send_once_with_retry("LOAD", "")
+                select_resp = self._send_once_with_retry(
+                    "SELECT_MODEL",
+                    model_id,
+                    read_timeout_s=8.0,
+                    inactivity_timeout_s=0.6,
+                )
+                load_resp = self._send_once_with_retry(
+                    "LOAD",
+                    "",
+                    read_timeout_s=self._load_read_timeout_s,
+                    inactivity_timeout_s=self._load_inactivity_timeout_s,
+                )
                 self.ui_queue.put(
                     UiEvent(
                         kind="control",
@@ -451,8 +598,12 @@ class MainWindow(QMainWindow):
                         message=self._format_control("LOAD", load_resp),
                     )
                 )
+                self.ui_queue.put(UiEvent(kind="refresh_after_load", message=""))
             except Exception as exc:
                 self.ui_queue.put(UiEvent(kind="error", message=f"LOAD failed: {exc}"))
+            finally:
+                self._load_in_flight = False
+                self.ui_queue.put(UiEvent(kind="load_done", message=""))
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -473,6 +624,10 @@ class MainWindow(QMainWindow):
         prompt = self.exec_prompt.toPlainText().strip()
         if not prompt:
             self._show_error("Prompt EXEC vuoto")
+            return
+
+        if "no_model_loaded=true" in self.status_snapshot.toPlainText().lower():
+            self._show_error("Nessun modello caricato: usa Control -> SELECT_MODEL + LOAD prima di EXEC")
             return
 
         self.exec_output.appendPlainText("\n--- EXEC start ---")
@@ -560,8 +715,15 @@ class MainWindow(QMainWindow):
                 self._last_background_error = ""
                 self._set_status("Connected")
                 self.status_snapshot.setPlainText(event.message)
+                self._update_active_pids_from_status(event.message)
+                self._update_model_status_from_status(event.message)
             elif event.kind == "models_list":
                 self._populate_model_list(event.message)
+            elif event.kind == "load_done":
+                self._set_controls_enabled(True)
+            elif event.kind == "refresh_after_load":
+                self._refresh_status(force=True)
+                self._refresh_models(silent=True, force=True)
             elif event.kind == "gen_get":
                 self._apply_generation_payload(event.message)
             elif event.kind == "exec_stream":
@@ -588,7 +750,8 @@ class MainWindow(QMainWindow):
             if not match:
                 continue
             model_id = match.group(1)
-            self.model_combo.addItem(line, model_id)
+            label = self._format_model_label(line, model_id)
+            self.model_combo.addItem(label, model_id)
 
         if self.model_combo.count() == 0:
             return
@@ -600,6 +763,71 @@ class MainWindow(QMainWindow):
                     return
 
         self.model_combo.setCurrentIndex(0)
+
+    def _format_model_label(self, line: str, model_id: str) -> str:
+        family_match = re.search(r"family=([^\s]+)", line)
+        path_match = re.search(r"path=([^\s]+)", line)
+
+        family = family_match.group(1) if family_match else "Unknown"
+        source_name = model_id.split("/")[-1]
+        if path_match:
+            source_name = Path(path_match.group(1)).stem
+
+        pretty = source_name.replace("_", " ").replace("-", " ").strip()
+        pretty = re.sub(r"(?i)meta\s*", "", pretty)
+        pretty = re.sub(r"(?i)qwen\s*2\.?5", "Qwen 2.5", pretty)
+        pretty = re.sub(r"(?i)llama\s*3\.?1", "Llama 3.1", pretty)
+        pretty = re.sub(r"(?i)\b(\d+)b\b", lambda m: f"{m.group(1)}B", pretty)
+        pretty = re.sub(r"\s+", " ", pretty).strip()
+
+        if not pretty:
+            pretty = model_id
+
+        return f"{pretty} ({family})"
+
+    def _update_active_pids_from_status(self, payload: str):
+        match = re.search(r"active_pids=\[([^\]]*)\]", payload)
+        if not match:
+            return
+
+        content = match.group(1).strip()
+        pids = [p.strip() for p in content.split(",") if p.strip()]
+        self._active_pids = pids
+
+        previous = self.pid_combo.currentData()
+        self.pid_combo.clear()
+        if not pids:
+            self.pid_combo.addItem("active_pids: none", "")
+            return
+
+        for pid in pids:
+            self.pid_combo.addItem(f"PID {pid}", pid)
+
+        if previous:
+            for idx in range(self.pid_combo.count()):
+                if self.pid_combo.itemData(idx) == previous:
+                    self.pid_combo.setCurrentIndex(idx)
+                    return
+        self.pid_combo.setCurrentIndex(0)
+
+    def _extract_status_value(self, payload: str, key: str, default: str = "<none>") -> str:
+        match = re.search(rf"\b{re.escape(key)}=([^\s]+)", payload)
+        if not match:
+            return default
+        return match.group(1)
+
+    def _update_model_status_from_status(self, payload: str):
+        selected_model_id = self._extract_status_value(payload, "selected_model_id", "<none>")
+        loaded_model_id = self._extract_status_value(payload, "loaded_model_id", "<none>")
+
+        self.selected_model_value.setText(selected_model_id)
+        self.loaded_model_value.setText(loaded_model_id)
+
+        if loaded_model_id and loaded_model_id not in {"<none>", "<unknown>"}:
+            for idx in range(self.model_combo.count()):
+                if self.model_combo.itemData(idx) == loaded_model_id:
+                    self.model_combo.setCurrentIndex(idx)
+                    break
 
     def _apply_generation_payload(self, payload: str):
         kv = {}
@@ -627,14 +855,28 @@ class MainWindow(QMainWindow):
         self.command_output.appendPlainText(f"[ERROR] {message}\n")
         QMessageBox.critical(self, "AgenticOS GUI", message)
 
-    def _send_once_with_retry(self, verb: str, payload: str) -> ControlResponse:
+    def _send_once_with_retry(
+        self,
+        verb: str,
+        payload: str,
+        read_timeout_s: float | None = None,
+        inactivity_timeout_s: float | None = None,
+    ) -> ControlResponse:
         last_exc: Exception | None = None
+        timeout = read_timeout_s if read_timeout_s is not None else self._default_read_timeout_s
+        inactivity_timeout = (
+            inactivity_timeout_s
+            if inactivity_timeout_s is not None
+            else self._default_inactivity_timeout_s
+        )
         for attempt in range(1, self._request_retries + 1):
             try:
                 return self.client.send_once(
                     verb=verb,
                     payload=payload,
                     agent_id=self.agent_input.text().strip() or "1",
+                    read_timeout_s=timeout,
+                    inactivity_timeout_s=inactivity_timeout,
                 )
             except Exception as exc:
                 last_exc = exc
@@ -665,12 +907,15 @@ class MainWindow(QMainWindow):
         term = self.kernel_filter_input.text().strip().lower()
         allow_stdout = self.show_stdout_cb.isChecked()
         allow_stderr = self.show_stderr_cb.isChecked()
+        show_noise = self.show_noise_cb.isChecked()
 
         filtered: list[str] = []
         for line in self._kernel_event_lines:
             if line.startswith("[stdout]") and not allow_stdout:
                 continue
             if line.startswith("[stderr]") and not allow_stderr:
+                continue
+            if not show_noise and "New connection:" in line:
                 continue
             if term and term not in line.lower():
                 continue

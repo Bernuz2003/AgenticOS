@@ -5,41 +5,19 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub type TensorId = u64;
+use super::types::{MemoryConfig, MemorySnapshot, SwapEvent, TensorId};
+use crate::errors::MemoryError;
+
 type BlockIndex = usize;
 
-#[derive(Debug, Clone)]
-pub struct MemorySnapshot {
-    pub active: bool,
-    pub total_blocks: usize,
-    pub free_blocks: usize,
-    pub allocated_tensors: usize,
-    pub tracked_pids: usize,
-    pub alloc_bytes: usize,
-    pub evictions: u64,
-    pub swap_count: u64,
-    pub swap_faults: u64,
-    pub swap_failures: u64,
-    pub pending_swaps: usize,
-    pub waiting_pids: usize,
-    pub oom_events: u64,
-}
-
 #[derive(Default)]
-struct MemoryCounters {
-    alloc_bytes: usize,
-    evictions: u64,
-    swap_count: u64,
-    swap_faults: u64,
-    swap_failures: u64,
-    oom_events: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct SwapEvent {
-    pub pid: u64,
-    pub success: bool,
-    pub detail: String,
+pub(super) struct MemoryCounters {
+    pub(super) alloc_bytes: usize,
+    pub(super) evictions: u64,
+    pub(super) swap_count: u64,
+    pub(super) swap_faults: u64,
+    pub(super) swap_failures: u64,
+    pub(super) oom_events: u64,
 }
 
 struct SwapJob {
@@ -53,53 +31,46 @@ struct SwapResult {
     detail: String,
 }
 
-#[derive(Clone)]
-pub struct MemoryConfig {
-    pub block_size: usize,
-    pub hidden_dim: usize,
-    pub total_memory_mb: usize,
-}
-
-struct PhysicalBlock {
+pub(super) struct PhysicalBlock {
     tensor: Tensor,
 }
 
 impl PhysicalBlock {
-    fn new(size_elements: usize, device: &Device) -> Result<Self, String> {
+    fn new(size_elements: usize, device: &Device) -> Result<Self, MemoryError> {
         let t = Tensor::zeros((size_elements,), DType::F32, device)
-            .map_err(|e| format!("Candle alloc error: {}", e))?;
+            .map_err(|e| MemoryError::Alloc(format!("Candle alloc error: {}", e)))?;
 
         Ok(PhysicalBlock { tensor: t })
     }
 }
 
 pub struct NeuralMemory {
-    config: MemoryConfig,
+    pub(super) config: MemoryConfig,
     device: Device,
 
-    physical_blocks: Vec<PhysicalBlock>,
-    free_blocks: VecDeque<BlockIndex>,
-    page_table: HashMap<TensorId, Vec<BlockIndex>>,
+    pub(super) physical_blocks: Vec<PhysicalBlock>,
+    pub(super) free_blocks: VecDeque<BlockIndex>,
+    pub(super) page_table: HashMap<TensorId, Vec<BlockIndex>>,
 
-    pid_to_tensor: HashMap<u64, TensorId>,
-    tensor_to_pid: HashMap<TensorId, u64>,
-    pid_token_slots: HashMap<u64, usize>,
+    pub(super) pid_to_tensor: HashMap<u64, TensorId>,
+    pub(super) tensor_to_pid: HashMap<TensorId, u64>,
+    pub(super) pid_token_slots: HashMap<u64, usize>,
     token_slot_quota_per_pid: usize,
-    counters: MemoryCounters,
+    pub(super) counters: MemoryCounters,
     active: bool,
 
     swap_enabled: bool,
     swap_dir: PathBuf,
     swap_tx: Option<Sender<SwapJob>>,
     swap_rx: Option<Receiver<SwapResult>>,
-    waiting_for_memory: HashSet<u64>,
-    lru_order: VecDeque<TensorId>,
+    pub(super) waiting_for_memory: HashSet<u64>,
+    pub(super) lru_order: VecDeque<TensorId>,
 
     next_tensor_id: TensorId,
 }
 
 impl NeuralMemory {
-    pub fn new(config: MemoryConfig) -> Result<Self, String> {
+    pub fn new(config: MemoryConfig) -> Result<Self, MemoryError> {
         let device = Device::Cpu;
 
         let elements_per_block = config.block_size * config.hidden_dim;
@@ -108,9 +79,11 @@ impl NeuralMemory {
         let bytes_per_block = elements_per_block * bytes_per_element;
         let num_blocks = total_bytes / bytes_per_block;
 
-        println!(
-            "INIT GPU MEMORY (Candle): {} MB. Blocks: {} ({} params each)",
-            config.total_memory_mb, num_blocks, elements_per_block
+        tracing::info!(
+            total_mb = config.total_memory_mb,
+            blocks = num_blocks,
+            params_per_block = elements_per_block,
+            "NeuralMemory: init (Candle)"
         );
 
         let mut physical_blocks = Vec::with_capacity(num_blocks);
@@ -147,7 +120,7 @@ impl NeuralMemory {
         &mut self,
         enabled: bool,
         swap_dir: Option<PathBuf>,
-    ) -> Result<(), String> {
+    ) -> Result<(), MemoryError> {
         if !enabled {
             self.swap_enabled = false;
             self.swap_tx = None;
@@ -201,7 +174,7 @@ impl NeuralMemory {
                     }
                 }
             })
-            .map_err(|e| format!("Failed to spawn swap worker: {}", e))?;
+            .map_err(|e| MemoryError::Swap(format!("Failed to spawn swap worker: {}", e)))?;
 
         self.swap_enabled = true;
         self.swap_tx = Some(tx_job);
@@ -209,8 +182,9 @@ impl NeuralMemory {
         Ok(())
     }
 
-    fn resolve_valid_swap_dir(requested: Option<PathBuf>) -> Result<PathBuf, String> {
+    fn resolve_valid_swap_dir(requested: Option<PathBuf>) -> Result<PathBuf, MemoryError> {
         super::swap_io::resolve_valid_swap_dir(requested)
+            .map_err(MemoryError::Swap)
     }
 
     fn persist_swap_payload(base_dir: &Path, file_stem: &str, payload: &[u8]) -> Result<PathBuf, String> {
@@ -229,21 +203,22 @@ impl NeuralMemory {
         self.token_slot_quota_per_pid = quota.max(1);
     }
 
-    pub fn register_process(&mut self, pid: u64, token_slots: usize) -> Result<TensorId, String> {
+    pub fn register_process(&mut self, pid: u64, token_slots: usize) -> Result<TensorId, MemoryError> {
         if !self.active {
             return Ok(0);
         }
 
         if token_slots == 0 {
             self.counters.oom_events += 1;
-            return Err("NeuralMemory: token_slots must be > 0".to_string());
+            return Err(MemoryError::ZeroTokenSlots);
         }
         if token_slots > self.token_slot_quota_per_pid {
             self.counters.oom_events += 1;
-            return Err(format!(
-                "NeuralMemory: PID {} requested {} token slots > quota {}",
-                pid, token_slots, self.token_slot_quota_per_pid
-            ));
+            return Err(MemoryError::QuotaExceeded {
+                pid,
+                requested: token_slots,
+                quota: self.token_slot_quota_per_pid,
+            });
         }
 
         if let Some(existing) = self.pid_to_tensor.get(&pid).copied() {
@@ -259,7 +234,7 @@ impl NeuralMemory {
         Ok(tensor_id)
     }
 
-    pub fn release_process(&mut self, pid: u64) -> Result<String, String> {
+    pub fn release_process(&mut self, pid: u64) -> Result<String, MemoryError> {
         if !self.active {
             return Ok(format!("NeuralMemory disabled: release skipped for PID {}", pid));
         }
@@ -275,7 +250,7 @@ impl NeuralMemory {
         self.release_tensor(tensor_id)
     }
 
-    pub fn write_for_pid_bytes(&mut self, pid: u64, raw_data: &[u8]) -> Result<String, String> {
+    pub fn write_for_pid_bytes(&mut self, pid: u64, raw_data: &[u8]) -> Result<String, MemoryError> {
         if !self.active {
             return Ok(format!(
                 "NeuralMemory disabled: MEMW skipped for PID {} ({} bytes)",
@@ -288,14 +263,14 @@ impl NeuralMemory {
             .pid_to_tensor
             .get(&pid)
             .copied()
-            .ok_or_else(|| format!("NeuralMemory: PID {} is not registered", pid))?;
+            .ok_or(MemoryError::PidNotRegistered(pid))?;
         match self.write_from_bytes(tensor_id, raw_data) {
             Ok(msg) => {
                 self.waiting_for_memory.remove(&pid);
                 Ok(msg)
             }
             Err(e) => {
-                if e.starts_with("OOM:") && self.swap_enabled {
+                if matches!(e, MemoryError::OutOfMemory { .. }) && self.swap_enabled {
                     self.counters.swap_faults += 1;
                     let queued = self.enqueue_swap(pid, raw_data.to_vec())?;
                     return Ok(queued);
@@ -367,9 +342,9 @@ impl NeuralMemory {
         events
     }
 
-    fn enqueue_swap(&mut self, pid: u64, payload: Vec<u8>) -> Result<String, String> {
+    fn enqueue_swap(&mut self, pid: u64, payload: Vec<u8>) -> Result<String, MemoryError> {
         let Some(tx) = &self.swap_tx else {
-            return Err("Swap queue is not available".to_string());
+            return Err(MemoryError::Swap("Swap queue is not available".to_string()));
         };
 
         self.waiting_for_memory.insert(pid);
@@ -380,7 +355,7 @@ impl NeuralMemory {
         })
         .map_err(|e| {
             self.waiting_for_memory.remove(&pid);
-            format!("Failed to enqueue swap job for PID {}: {}", pid, e)
+            MemoryError::Swap(format!("Failed to enqueue swap job for PID {}: {}", pid, e))
         })?;
 
         Ok(format!(
@@ -398,11 +373,11 @@ impl NeuralMemory {
         id
     }
 
-    pub fn read(&self, id: TensorId) -> Result<Vec<f32>, String> {
+    pub fn read(&self, id: TensorId) -> Result<Vec<f32>, MemoryError> {
         let pages = self
             .page_table
             .get(&id)
-            .ok_or("Tensor ID not found".to_string())?;
+            .ok_or(MemoryError::TensorNotFound(id))?;
 
         let mut output = Vec::new();
 
@@ -411,7 +386,7 @@ impl NeuralMemory {
             let chunk: Vec<f32> = block
                 .tensor
                 .to_vec1()
-                .map_err(|e| format!("Candle read error: {}", e))?;
+                .map_err(|e| MemoryError::Alloc(format!("Candle read error: {}", e)))?;
 
             output.extend(chunk);
         }
@@ -419,7 +394,7 @@ impl NeuralMemory {
         Ok(output)
     }
 
-    pub fn write_from_bytes(&mut self, id: TensorId, raw_data: &[u8]) -> Result<String, String> {
+    pub fn write_from_bytes(&mut self, id: TensorId, raw_data: &[u8]) -> Result<String, MemoryError> {
         if !self.active {
             return Ok(format!(
                 "NeuralMemory disabled: write skipped for tensor {} ({} bytes)",
@@ -429,7 +404,7 @@ impl NeuralMemory {
         }
 
         if !self.page_table.contains_key(&id) {
-            return Err("Tensor ID not found".to_string());
+            return Err(MemoryError::TensorNotFound(id));
         }
 
         self.clear_tensor_pages(id, true);
@@ -450,13 +425,13 @@ impl NeuralMemory {
             let recovered = self.evict_lru_until_fit(blocks_needed, Some(id));
             if !recovered {
                 self.counters.oom_events += 1;
-                return Err("OOM: Not enough GPU blocks".to_string());
+                return Err(MemoryError::OutOfMemory { detail: "Not enough GPU blocks".into() });
             }
         }
 
         if self.free_blocks.len() < blocks_needed {
             self.counters.oom_events += 1;
-            return Err("OOM: Not enough GPU blocks".to_string());
+            return Err(MemoryError::OutOfMemory { detail: "Not enough GPU blocks".into() });
         }
 
         let mut data_offset = 0;
@@ -467,13 +442,13 @@ impl NeuralMemory {
             let chunk_data = &f32_data[data_offset..end];
 
             let temp_tensor = Tensor::from_slice(chunk_data, (chunk_data.len(),), &self.device)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| MemoryError::Alloc(e.to_string()))?;
 
             let final_tensor = if chunk_data.len() < elements_per_block {
                 let pad_size = elements_per_block - chunk_data.len();
                 let zeros = Tensor::zeros((pad_size,), DType::F32, &self.device)
-                    .map_err(|e| e.to_string())?;
-                Tensor::cat(&[&temp_tensor, &zeros], 0).map_err(|e| e.to_string())?
+                    .map_err(|e| MemoryError::Alloc(e.to_string()))?;
+                Tensor::cat(&[&temp_tensor, &zeros], 0).map_err(|e| MemoryError::Alloc(e.to_string()))?
             } else {
                 temp_tensor
             };
@@ -497,7 +472,7 @@ impl NeuralMemory {
         ))
     }
 
-    pub fn release_tensor(&mut self, id: TensorId) -> Result<String, String> {
+    pub fn release_tensor(&mut self, id: TensorId) -> Result<String, MemoryError> {
         if !self.active {
             return Ok(format!("NeuralMemory disabled: release skipped for tensor {}", id));
         }
@@ -505,7 +480,7 @@ impl NeuralMemory {
         let pages = self
             .page_table
             .remove(&id)
-            .ok_or_else(|| "Tensor ID not found".to_string())?;
+            .ok_or(MemoryError::TensorNotFound(id))?;
 
         let elements_per_block = self.config.block_size * self.config.hidden_dim;
         let released_blocks = pages.len();
@@ -526,32 +501,32 @@ impl NeuralMemory {
         Ok(format!("Released tensor {} ({} blocks)", id, released_blocks))
     }
 
-    pub fn compute_test(&self, id: TensorId, multiplier: f32) -> Result<String, String> {
-        let pages = self.page_table.get(&id).ok_or("ID not found")?;
+    pub fn compute_test(&self, id: TensorId, multiplier: f32) -> Result<String, MemoryError> {
+        let pages = self.page_table.get(&id).ok_or(MemoryError::TensorNotFound(id))?;
 
         let mut report = String::new();
 
         for (i, &block_idx) in pages.iter().enumerate() {
             let block_tensor = &self.physical_blocks[block_idx].tensor;
-            let res = (block_tensor * (multiplier as f64)).map_err(|e| e.to_string())?;
+            let res = (block_tensor * (multiplier as f64)).map_err(|e| MemoryError::Alloc(e.to_string()))?;
 
             let max_val: f32 = res
                 .max_all()
-                .map_err(|e| e.to_string())?
+                .map_err(|e| MemoryError::Alloc(e.to_string()))?
                 .to_scalar()
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| MemoryError::Alloc(e.to_string()))?;
 
             let mean_val: f32 = res
                 .mean_all()
-                .map_err(|e| e.to_string())?
+                .map_err(|e| MemoryError::Alloc(e.to_string()))?
                 .to_scalar()
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| MemoryError::Alloc(e.to_string()))?;
 
             let vec: Vec<f32> = res
                 .flatten_all()
-                .map_err(|e| e.to_string())?
+                .map_err(|e| MemoryError::Alloc(e.to_string()))?
                 .to_vec1()
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| MemoryError::Alloc(e.to_string()))?;
             let snippet = &vec[..std::cmp::min(vec.len(), 5)];
 
             report.push_str(&format!(
@@ -581,89 +556,11 @@ impl NeuralMemory {
             s.oom_events
         )
     }
-
-    fn clear_tensor_pages(&mut self, id: TensorId, count_as_eviction: bool) -> usize {
-        let Some(pages) = self.page_table.get_mut(&id) else {
-            return 0;
-        };
-
-        if pages.is_empty() {
-            return 0;
-        }
-
-        let released_blocks = pages.len();
-        let elements_per_block = self.config.block_size * self.config.hidden_dim;
-
-        for block_idx in pages.drain(..) {
-            self.free_blocks.push_back(block_idx);
-        }
-
-        let released_bytes = released_blocks * elements_per_block * 4;
-        self.counters.alloc_bytes = self.counters.alloc_bytes.saturating_sub(released_bytes);
-
-        if count_as_eviction {
-            self.counters.evictions += 1;
-        }
-
-        released_blocks
-    }
-
-    fn touch_tensor_lru(&mut self, id: TensorId) {
-        self.lru_order.retain(|&current| current != id);
-        self.lru_order.push_back(id);
-    }
-
-    fn next_lru_victim(&mut self, protected: Option<TensorId>) -> Option<TensorId> {
-        let attempts = self.lru_order.len();
-        for _ in 0..attempts {
-            let candidate = self.lru_order.pop_front()?;
-            self.lru_order.push_back(candidate);
-
-            if Some(candidate) == protected {
-                continue;
-            }
-
-            let has_pages = self
-                .page_table
-                .get(&candidate)
-                .map(|pages| !pages.is_empty())
-                .unwrap_or(false);
-            if has_pages {
-                return Some(candidate);
-            }
-        }
-
-        None
-    }
-
-    fn evict_lru_until_fit(&mut self, required_blocks: usize, protected: Option<TensorId>) -> bool {
-        let mut guard = 0usize;
-        let guard_limit = self.page_table.len().saturating_add(1);
-
-        while self.free_blocks.len() < required_blocks {
-            if guard >= guard_limit {
-                return false;
-            }
-
-            let Some(victim) = self.next_lru_victim(protected) else {
-                return false;
-            };
-
-            let freed = self.clear_tensor_pages(victim, true);
-            if freed == 0 {
-                guard += 1;
-            } else {
-                guard = 0;
-            }
-        }
-
-        true
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryConfig, NeuralMemory};
+    use crate::memory::{MemoryConfig, NeuralMemory};
     use std::fs;
     use std::path::PathBuf;
     use std::thread;
@@ -714,7 +611,7 @@ mod tests {
         let err = mem
             .register_process(7, 64)
             .expect_err("quota should reject large token slots");
-        assert!(err.contains("quota"));
+        assert!(err.to_string().contains("quota"));
         assert!(mem.snapshot().oom_events >= 1);
     }
 
@@ -869,7 +766,7 @@ mod tests {
         let err = mem
             .configure_async_swap(true, Some(outside))
             .expect_err("outside workspace path must be rejected");
-        assert!(err.contains("inside workspace root"));
+        assert!(err.to_string().contains("inside workspace root"));
     }
 
     #[test]
@@ -884,7 +781,7 @@ mod tests {
         let err = mem
             .configure_async_swap(true, Some(PathBuf::from("../swap_escape")))
             .expect_err("relative traversal must be rejected");
-        assert!(err.contains("traversal"));
+        assert!(err.to_string().contains("traversal"));
     }
 
     #[test]

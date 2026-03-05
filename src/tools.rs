@@ -5,6 +5,8 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::config::{env_bool, env_u64, env_usize};
+
 const WORKSPACE_DIR: &str = "./workspace";
 const AUDIT_LOG_FILE: &str = "syscall_audit.log";
 const OUTPUT_TRUNCATE_LEN: usize = 2000;
@@ -42,32 +44,6 @@ static RATE_STATES: OnceLock<Mutex<HashMap<u64, RateState>>> = OnceLock::new();
 
 fn rate_states() -> &'static Mutex<HashMap<u64, RateState>> {
     RATE_STATES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(default)
-}
-
-fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(default)
-}
-
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or(default)
 }
 
 fn syscall_config() -> SysCallConfig {

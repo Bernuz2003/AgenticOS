@@ -52,11 +52,11 @@ pub(crate) fn log_event(event: &str, client_id: usize, pid: Option<u64>, detail:
     let pid_text = pid
         .map(|p| p.to_string())
         .unwrap_or_else(|| "-".to_string());
-    eprintln!(
-        "event={} client_id={} pid={} detail=\"{}\"",
+    tracing::info!(
         event,
         client_id,
-        pid_text,
-        detail.replace('"', "'")
+        pid = %pid_text,
+        detail = detail.replace('"', "'"),
+        "kernel_event"
     );
 }

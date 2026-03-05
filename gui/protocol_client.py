@@ -107,10 +107,15 @@ class ProtocolClient:
                         break
 
         if control is None:
+            code = "TIMEOUT"
+            payload = "No complete control frame received before timeout."
+            if frame_buffer:
+                code = "MALFORMED_OR_PARTIAL"
+                payload = "Received non-complete or malformed frame data."
             return ControlResponse(
                 ok=False,
-                code="TIMEOUT_OR_MALFORMED",
-                payload="No complete control frame received.",
+                code=code,
+                payload=payload,
                 duration_s=time.perf_counter() - start,
             )
 
@@ -123,7 +128,7 @@ class ProtocolClient:
         on_frame: FrameCallback,
         connect_timeout_s: float = 10.0,
         max_total_s: float = 120.0,
-        inactivity_timeout_s: float = 3.0,
+        inactivity_timeout_s: float = 8.0,
     ) -> ControlResponse:
         payload_bytes = prompt.encode("utf-8")
         header = f"EXEC {agent_id} {len(payload_bytes)}\n".encode("utf-8")
@@ -131,6 +136,7 @@ class ProtocolClient:
         start = time.perf_counter()
         frame_buffer = bytearray()
         control: Optional[ControlResponse] = None
+        saw_process_finished = False
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(connect_timeout_s)
@@ -159,6 +165,10 @@ class ProtocolClient:
 
                     for kind, code, body in consume_framed_messages(frame_buffer):
                         on_frame(kind, code, body)
+                        if kind == "DATA" and code.lower() == "raw":
+                            text = body.decode("utf-8", errors="replace")
+                            if "[PROCESS_FINISHED" in text:
+                                saw_process_finished = True
                         if kind in {"+OK", "-ERR"}:
                             control = ControlResponse(
                                 ok=(kind == "+OK"),
@@ -168,6 +178,14 @@ class ProtocolClient:
                             )
                 except socket.timeout:
                     continue
+
+        if control is None and saw_process_finished:
+            return ControlResponse(
+                ok=True,
+                code="PROCESS_FINISHED",
+                payload="Process finished marker received.",
+                duration_s=time.perf_counter() - start,
+            )
 
         if control is None:
             return ControlResponse(

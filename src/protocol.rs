@@ -1,5 +1,7 @@
 use std::str;
 
+use crate::errors::ProtocolError;
+
 #[derive(Debug, Clone)]
 pub enum OpCode {
     Ping,           // Ping-Pong
@@ -15,6 +17,9 @@ pub enum OpCode {
     ModelInfo,      // Mostra info modello
     SetGen,         // Configura generation params
     GetGen,         // Legge generation params
+    SetPriority,    // Imposta priorità processo
+    GetQuota,       // Legge quota/accounting processo
+    SetQuota,       // Imposta quota processo
 }
 
 #[derive(Debug)]
@@ -27,16 +32,15 @@ pub struct CommandHeader {
 impl CommandHeader {
     /// Parsa la riga di intestazione: "VERB AgentID Length"
     /// Esempio: "EXEC coder_01 500"
-    pub fn parse(line: &str) -> Result<Self, String> {
+    pub fn parse(line: &str) -> Result<Self, ProtocolError> {
         let parts: Vec<&str> = line.split_whitespace().collect();
 
         if parts.is_empty() {
-            return Err("Empty header".to_string());
+            return Err(ProtocolError::EmptyHeader);
         }
 
         if parts.len() != 3 {
-            return Err("Invalid header format. Expected: <OPCODE> <AGENT_ID> <CONTENT_LENGTH>"
-                .to_string());
+            return Err(ProtocolError::InvalidHeaderFormat);
         }
 
         let opcode = match parts[0].to_uppercase().as_str() {
@@ -53,14 +57,17 @@ impl CommandHeader {
             "MODEL_INFO" => OpCode::ModelInfo,
             "SET_GEN" => OpCode::SetGen,
             "GET_GEN" => OpCode::GetGen,
-            _ => return Err(format!("Unknown opcode: {}", parts[0])),
+            "SET_PRIORITY" => OpCode::SetPriority,
+            "GET_QUOTA" => OpCode::GetQuota,
+            "SET_QUOTA" => OpCode::SetQuota,
+            _ => return Err(ProtocolError::UnknownOpcode(parts[0].to_string())),
         };
 
         let agent_id = parts[1].to_string();
 
         let content_length = parts[2]
             .parse::<usize>()
-            .map_err(|_| "Invalid content length")?;
+            .map_err(|_| ProtocolError::InvalidContentLength)?;
 
         Ok(CommandHeader {
             opcode,
@@ -147,6 +154,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_scheduler_opcodes() {
+        let sp = CommandHeader::parse("SET_PRIORITY 1 5").expect("SET_PRIORITY should parse");
+        assert!(matches!(sp.opcode, OpCode::SetPriority));
+
+        let gq = CommandHeader::parse("GET_QUOTA 1 2").expect("GET_QUOTA should parse");
+        assert!(matches!(gq.opcode, OpCode::GetQuota));
+
+        let sq = CommandHeader::parse("SET_QUOTA 1 20").expect("SET_QUOTA should parse");
+        assert!(matches!(sq.opcode, OpCode::SetQuota));
+    }
+
+    #[test]
     fn parse_memw_case_insensitive() {
         let memw = CommandHeader::parse("memw 1 4").expect("memw should parse");
         assert!(matches!(memw.opcode, OpCode::MemoryWrite));
@@ -155,17 +174,17 @@ mod tests {
     #[test]
     fn parse_invalid_opcode() {
         let err = CommandHeader::parse("WHAT 1 0").expect_err("invalid opcode must fail");
-        assert!(err.contains("Unknown opcode"));
+        assert!(err.to_string().contains("Unknown opcode"));
     }
 
     #[test]
     fn parse_requires_three_tokens() {
         let err = CommandHeader::parse("PING").expect_err("header without fields must fail");
-        assert!(err.contains("Invalid header format"));
+        assert!(err.to_string().contains("Invalid header format"));
 
         let err =
             CommandHeader::parse("PING 1 0 extra").expect_err("header with extra fields fails");
-        assert!(err.contains("Invalid header format"));
+        assert!(err.to_string().contains("Invalid header format"));
     }
 
     #[test]

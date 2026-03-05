@@ -1,6 +1,6 @@
 # AgenticOS — Roadmap Operativa
 
-Questo file è la fonte unica di verità per il piano immediato del progetto.
+Questo file è la fonte unica di verità per il piano del progetto.
 
 ## Come usarla
 
@@ -12,308 +12,289 @@ Questo file è la fonte unica di verità per il piano immediato del progetto.
 
 ## Stato attuale (snapshot)
 
-- Data snapshot: **2026-02-23**
-- Modello target: `models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf`
-- Runtime: server TCP event-driven (`mio`) + engine LLM process-centric
-- Verificato: `PING`, `LOAD`, `EXEC` funzionanti end-to-end
+- **Data snapshot:** 2026-03-05
+- **Versione:** `v0.5.0`
+- **Runtime:** server TCP event-driven (`mio 1.0`) + engine LLM process-centric (`candle 0.9`)
+- **Codebase:** ~5.000 righe Rust (kernel) + ~1.300 righe Python (GUI PySide6)
+- **Test suite:** 67 test verdi (`cargo test --release`), clippy pulito, CI GitHub Actions
+- **Modelli supportati:** Llama 3.1 (Q4_K_M) + Qwen 2.5 (Q4_K_M) con auto-discovery e capability routing
+- **Dipendenze chiave:** `candle-core/candle-transformers 0.9.1`, `tokenizers 0.22.2`, `mio 1.0`, `thiserror 2.0`, `tracing 0.1`
 
 ---
 
-## Pianificazione per tempi e modalità
+## Archivio milestone completate (1–12)
 
-### Breve termine (0-4 settimane)
+Le milestone 1–12 coprono la costruzione dell'intero kernel single-node, dalla stabilità base alla GUI desktop. Sono tutte **DONE** e qui riassunte per riferimento.
 
-- **Priorità 1 — SysCall sandboxing**: passare da esecuzione host diretta a isolamento minimo obbligatorio (`timeout`, limiti risorse, workspace confinement).
-- **Priorità 2 — Osservabilità base**: metriche e log strutturati per PID/client-id con eventi runtime principali.
-- **Priorità 3 — Segnali kernel minimi**: introdurre controllo lifecycle processi (`KILL`, `TERM`, `STATUS`) per interrompere loop o runaway agents.
+| # | Titolo | Completata | Sintesi | File principali |
+|---|--------|------------|---------|-----------------|
+| 1 | Stabilità core runtime | 2026-02-22 | Flush I/O affidabile, cleanup zombie PID, marker `PROCESS_FINISHED`, gestione `ConnectionReset`/`BrokenPipe` | `main.rs`, `runtime.rs` |
+| 2 | Hardening protocollo TCP | 2026-02-22 | Header strict, reply codificate con lunghezza, framing `DATA raw <len>`, errori `-ERR CODE` | `protocol.rs`, `transport/framing.rs` |
+| 3 | Qualità inferenza Llama 3 | 2026-02-22 | Parametri sampling runtime (`GET_GEN`/`SET_GEN`), stop policy per-family, benchmark baseline replicabile | `backend.rs`, `prompting.rs` |
+| 4 | Hardening SysCall | 2026-02-23 | Timeout enforced, path safety, audit log, sandbox mode (`host`/`container`/`wasm`), rate-limit + kill su abuso | `tools.rs` |
+| 5 | Test & regressione | 2026-02-22 | Unit/integration/e2e, multi-client, reconnect, benchmark commit-aware (`reports/`) | `transport/mod.rs` (test) |
+| 6 | Osservabilità operativa | 2026-02-23 | `STATUS`/`TERM`/`KILL`/`SHUTDOWN`, metriche aggregate, logging strutturato, graceful shutdown | `commands/mod.rs`, `commands/metrics.rs` |
+| 7 | Refactoring multi-LLM | 2026-02-23 | Catalogo auto-discovery, `LIST_MODELS`/`SELECT_MODEL`/`MODEL_INFO`, prompt-family abstraction, backend Qwen, capability scheduler v1 | `model_catalog.rs`, `prompting.rs`, `backend.rs` |
+| 8 | NeuralMemory nel runtime | 2026-02-23 | Ownership PID, quote token-slot, OOM events, MEMW, swap asincrono worker queue, eviction LRU, path safety I/O, fallback no-op | `memory/core.rs`, `memory/eviction.rs`, `memory/swap_io.rs`, `memory/types.rs` |
+| 9 | Scheduler & Swarm | 2026-03-04 | `ProcessScheduler` con priorità (Low→Critical), quote token/syscall per WorkloadClass, enforcement runtime, opcodes `SET_PRIORITY`/`GET_QUOTA`/`SET_QUOTA`, STATUS arricchito | `scheduler.rs`, `runtime.rs`, `commands/mod.rs` |
+| 10 | GUI desktop | 2026-02-23 | PySide6: start/stop kernel, EXEC streaming, TERM/KILL, STATUS polling, pannello modelli/generation, export diagnostico, runbook E2E | `gui/app.py`, `gui/protocol_client.py`, `gui/kernel_manager.py` |
+| 11 | Refactoring qualità | 2026-03-04 | `config.rs` centralizzato, versione da `CARGO_PKG_VERSION`, estrazione funzioni da `runtime.rs`, `memory/types.rs`, +17 test (54 totali) | `config.rs`, `runtime.rs`, `memory/types.rs` |
+| 12 | Hardening architetturale | 2026-03-04 | `thiserror` error hierarchy (`MemoryError`, `CatalogError`, `ProtocolError`, `EngineError`), `tracing` structured logging, `struct Kernel`, `memory/eviction.rs` estratto, CI GitHub Actions | `errors.rs`, `main.rs`, `.github/workflows/ci.yml` |
 
-**Modalità operative**
-- Feature flag incrementali (`unsafe_tools=false` di default in produzione).
-- Ogni milestone chiude con: unit test + integration test + benchmark smoke.
-- Nessun merge senza DoD verificato nel registro avanzamento.
-
-### Medio termine (1-3 mesi)
-
-- **NeuralMemory attiva nel runtime**: integrare `memory.rs` nel ciclo engine/runtime (allocazioni, mapping, pressure tracking).
-- **Paging state/KV cache (fase 1)**: politiche di eviction e meccanismi di swap RAM↔disk per processi inattivi.
-- **Swarm multi-modello (fase 1)**: policy scheduler per routing task su modelli diversi in base a costo/capability.
-
-**Modalità operative**
-- Introduzione per step con fallback sicuro a path corrente.
-- Benchmark comparativi prima/dopo su latenza, stabilità e memoria.
-- Gate di regressione su scenari multi-client e multi-processo.
-
-### Lungo termine (3-12 mesi)
-
-- **NeuralMemory avanzata**: paging KV multi-tier (RAM/disk e successiva estensione GPU/CPU-aware).
-- **Swarm multi-modello completo**: scheduling dinamico QoS-aware con priorità e quote risorse per PID.
-- **Kernel agentico production-grade**: segnali completi, policy sicurezza mature, osservabilità operativa piena.
-
-**Modalità operative**
-- Design docs versionati per subsystem critici (memory, scheduler, sandbox).
-- Test e2e con fault injection (OOM, timeout, disconnect, syscall storm).
-- Quality gates CI/CD su test + benchmark + profili memoria.
+**Totale test accumulati:** 37 (fine M8) → 54 (fine M11/M12) → 67 (fine M9-scheduler)
 
 ---
 
-## Roadmap immediata
+## Mappa codebase corrente
 
-### 1) Stabilità core runtime
-**Status:** `DONE` ✅
+```
+src/
+├── main.rs              # struct Kernel, event loop mio, bootstrap (~215 righe)
+├── protocol.rs          # OpCode enum, CommandHeader parser, response formatting
+├── config.rs            # env_bool, env_u64, env_usize centralizzati
+├── errors.rs            # KernelError, MemoryError, EngineError, ProtocolError, CatalogError
+├── model_catalog.rs     # ModelCatalog auto-discovery, WorkloadClass, capability routing
+├── prompting.rs         # PromptFamily (Llama/Qwen/Mistral), system/user templates, stop policy
+├── backend.rs           # RuntimeModel trait, dispatch per famiglia (quantized_llama/qwen2)
+├── process.rs           # AgentProcess, ProcessState, SamplingParams
+├── runtime.rs           # run_engine_tick, dispatch_process_syscall, scan_syscall_buffer
+├── scheduler.rs         # ProcessScheduler, ProcessPriority, ProcessQuota, ResourceAccounting
+├── tools.rs             # Syscall sandbox (python/write_file/calc), rate-limit, audit
+├── commands/
+│   ├── mod.rs           # execute_command dispatch (~520 righe)
+│   ├── metrics.rs       # StatusMetrics, formattazione STATUS
+│   └── parsing.rs       # parse_generation_payload, parse_memw_payload
+├── engine/
+│   ├── mod.rs           # LLMEngine, spawn/step/kill process
+│   ├── lifecycle.rs     # load_engine_from_catalog
+│   └── tokenizer.rs     # load_tokenizer, validate_chat_template
+├── memory/
+│   ├── mod.rs           # re-export
+│   ├── types.rs         # TensorId, MemorySnapshot, SwapEvent, MemoryConfig
+│   ├── core.rs          # NeuralMemory allocatore (~560 righe)
+│   ├── eviction.rs      # LRU eviction (clear/touch/victim/evict_until_fit)
+│   └── swap_io.rs       # Swap I/O worker, path validation, atomic write
+└── transport/
+    ├── mod.rs           # re-export + test integration TCP (~510 righe)
+    ├── client.rs        # Client struct (stream, buffers)
+    ├── framing.rs       # parse_available_commands, frame parsing
+    └── io.rs            # handle_read, raw TCP dispatch
 
-**Obiettivi**
-- Flush affidabile di risposte e stream.
-- Gestione robusta errori I/O lato socket.
-- Cleanup processi terminati (no zombie PID).
-- Segnale esplicito di fine processo verso client.
-
-**DoD**
-- [x] Output pending ⇒ socket registrato `WRITABLE`.
-- [x] `ConnectionReset` / `BrokenPipe` gestiti con chiusura pulita.
-- [x] Processi `Finished` ripuliti dal runtime loop.
-- [x] Marker di completamento processo inviato al client.
-- [x] Build `release` senza errori.
-
-## Note implementative correnti
-- `main.rs`: flush/reregister + cleanup finished PID + marker `[PROCESS_FINISHED ...]`.
-- `engine.rs`: helper per owner lookup + lista processi finiti.
-
----
-
-### 2) Hardening protocollo TCP
-**Status:** `DONE` ✅
-
-**Obiettivi**
-- Parser opcode coerente e case-insensitive.
-- Framing risposta più formale (header + payload length).
-- Errori standardizzati (`-ERR` con codici).
-
-**DoD (target)**
-- [x] Parser accetta varianti previste e rifiuta input ambiguo.
-- [x] Risposte di controllo con formato deterministico e codici (`+OK CODE ...`, `-ERR CODE ...`).
-- [x] Suite test parser/protocollo verde.
-- [x] Framing completo header+payload length per risposte dati/stream (`DATA raw <len>\r\n<payload>`).
-
----
-
-### 3) Qualità inferenza Llama 3
-**Status:** `DONE` ✅
-
-**Obiettivi**
-- Ridurre variabilità first-token/total-time.
-- Migliorare completamento risposte.
-- Parametri generation configurabili per request.
-
-**DoD (target)**
-- [x] Parametri sampling esposti runtime in modo model-agnostic (`GET_GEN`/`SET_GEN`).
-- [x] Benchmark baseline replicabile con soglie realistiche.
-- [x] Riduzione troncamenti nei prompt lunghi.
+gui/
+├── app.py               # PySide6 main application
+├── protocol_client.py   # TCP client con framing protocol
+├── kernel_manager.py    # Kernel lifecycle manager (start/stop)
+└── README.md            # Runbook operativo
+```
 
 ---
 
-### 4) Hardening subsystem SysCall
-**Status:** `DONE` ✅
+## Roadmap attiva — Fase 2: Consolidamento + Orchestrazione
 
-**Obiettivi**
-- Esecuzione Python con timeout/isolamento reale (non host diretto).
-- Path safety robusta nel workspace.
-- Logging strutturato su invocazioni tool.
-- Policy permessi SysCall (allowlist comandi e limiti per PID).
-
-**DoD (target)**
-- [x] Timeout processo esterno + gestione error path.
-- [x] Verifica anti path traversal robusta.
-- [x] Audit log syscall con outcome e durata.
-- [x] Backend sandbox selezionabile (`container` o `wasm`) con fallback disabilitabile.
-- [x] Rate limit SysCall per processo e kill automatico su abuso/error burst.
-
----
-
-### 5) Test professionali & regressione
-**Status:** `DONE` ✅
-
-**Obiettivi**
-- Unit/integration test su protocollo, I/O, flow EXEC.
-- Test multi-client e reconnect.
-- Report benchmark versione/commit-aware.
-
-**DoD (target)**
-- [x] Test critici automatizzati base (protocol + transport framing + loopback TCP).
-- [x] Regressioni principali coperte (multi-client, reconnect, disconnect, partial I/O, header error recovery).
-- [x] Report benchmark ripetibile e commit-aware (`reports/benchmark_commit_aware.json`).
-
----
-
-### 6) Osservabilità operativa
-**Status:** `DONE` ✅
-
-**Obiettivi**
-- Metriche minime runtime (latency/error/throughput).
-- Logging strutturato con PID/client-id.
-- Graceful shutdown.
-- Segnali kernel-level per lifecycle processi (`TERM`, `KILL`, `STATUS`).
-
-**DoD (target)**
-- [x] Metriche base esportabili/stampabili.
-- [x] Log con campi consistenti per debugging.
-- [x] Shutdown senza perdita stato critica.
-- [x] Comandi/segnali di controllo processo disponibili e coperti da test.
-
----
-
-### 7) Refactoring modulare multi-LLM
-**Status:** `DONE` ✅
-
-**Obiettivi**
-- Separare responsabilità per evitare crescita incontrollata dei file core.
-- Astrarre dipendenze model-family-specific (Llama/Qwen/Mistral).
-- Abilitare selezione modello intuitiva via catalogo + autodiscovery.
-- Preparare base per suite test incrementale.
-
-**DoD (target)**
-- [x] Catalogo modelli runtime con autodiscovery `.gguf` in `models/`.
-- [x] Nuovi comandi protocollo: `LIST_MODELS`, `SELECT_MODEL`, `MODEL_INFO`.
-- [x] `LOAD` retrocompatibile (path) + supporto modello selezionato (`LOAD` payload vuoto).
-- [x] Astrazione prompt-family in modulo dedicato (`Llama/Qwen/Mistral/Unknown`).
-- [x] Decoupling backend engine (rimozione coupling diretto a `quantized_llama::ModelWeights`).
-- [x] Primo livello test incrementali (unit parser protocollo + catalog family inference).
-- [x] Split task-specific dei moduli core (`main`, `commands`, `transport`, `runtime`, `tools`).
-- [x] Moduli Rust sotto soglia `< 300` righe (snapshot corrente).
-- [x] Test incrementali transport/framing (partial header/body, concatenated commands, error recovery).
-- [x] Supporto backend Qwen runtime.
-- [x] Policy scheduler capability-aware per scegliere modello in base al task.
-- [x] Suite test incrementale multi-livello completa (unit/integration/e2e).
-
----
-
-### 8) Integrazione NeuralMemory nel runtime
-**Status:** `DONE` ✅
-
-**Obiettivi**
-- Rendere `memory.rs` parte attiva del ciclo `engine/runtime`.
-- Introdurre tracciamento pressione memoria per processo (`PID`) e globale.
-- Preparare paging KV/state con politiche di eviction configurabili.
-
-**Strategia approvata (aggiornata)**
-- **8a (MVP RAM-only, immediata):** integrazione lifecycle + quote + metriche senza swap su disco.
-- **8b (estensione successiva):** swap RAM↔disco **asincrono** con worker dedicati (mai bloccare event loop `mio`).
-- Quote memoria MVP basate su **token slots** (non bytes stimati) per comportamento deterministico.
-- Cambio modello/family bloccato quando ci sono PID attivi (sicurezza stato processo).
-
-**Non obiettivi del primo rilascio (8a)**
-- Niente paging su disco sincrono nel loop runtime.
-- Niente `mmap` nel primo step (valutazione dopo stabilizzazione).
-
-**DoD (target)**
-- [x] **8a.1** API memoria stabilizzate e integrate in `engine` (`alloc`, `release`, `map`, `evict`) con ownership per PID.
-- [x] **8a.2** Quote per PID in token slots con enforcement e `oom_events`.
-- [x] **8a.3** Metriche memoria esposte in `STATUS` (globale + per processo minimo).
-- [x] **8a.4** Comando `MEMW` attivo e validato su path runtime.
-- [x] **8a.5** Test memory pressure (N processi concorrenti) verdi + regressione transport/protocol verde.
-- [x] **8a.6** Fallback sicuro (feature flag/no-op) quando integrazione memoria attiva è disabilitata.
-- [x] **8b.1** Swap su disco asincrono (worker queue) con stato processo `WaitingForMemory`.
-- [x] **8b.2** Policy eviction LRU minima + contatori swap/fault.
-- [x] **8b.3** Hardening I/O swap (write-temp + rename atomico, path safety dedicata).
-- [x] **8b.4** Test e2e sotto pressure senza blocco event loop.
-
-**Piano operativo (task piccoli)**
-- [x] Piano d'attacco definito e validato (fasi, rischi, rollback gate).
-- [x] Implementare 8a.1–8a.3 (`memory.rs`, `engine.rs`, `runtime.rs`, `commands.rs`).
-- [x] Implementare 8a.4 (`MEMW`) + test unit/integration dedicati.
-- [x] Chiudere 8a con benchmark smoke e aggiornamento roadmap.
-- [x] Avviare 8b con worker swap asincrono e test di non-blocco loop.
-
----
-
-### 9) Scheduler & risorse condivise (Swarm)
+### 13) Swap extraction — `memory/swap.rs`
 **Status:** `TODO`
 
 **Obiettivi**
-- Assegnare processi a modelli diversi in base a capability/costo.
-- Gestire quote risorse e priorità per processo.
-- Migliorare isolamento tra processi ad alto consumo.
+- Estrarre la logica swap worker da `memory/core.rs` in modulo dedicato `memory/swap.rs`.
+- Ridurre `core.rs` sotto le 450 righe, migliorando manutenibilità.
+- Nessun cambio funzionale: puro refactoring strutturale.
 
-**DoD (target)**
-- [ ] Policy scheduler documentata e applicata (small-model routing vs heavy-reasoning routing).
-- [ ] Quote base per PID (CPU-time/memoria/syscall-budget) con enforcement runtime.
-- [ ] Benchmark comparativo swarm vs single-model con regressione controllata.
+**DoD**
+- [ ] Modulo `memory/swap.rs` creato con: `SwapWorker`, `SwapQueue`, metodi `enqueue_swap`, `poll_completions`, `drain`.
+- [ ] `memory/core.rs` sotto 450 righe, con `use swap::*` per delegare.
+- [ ] `memory/mod.rs` aggiornato con re-export.
+- [ ] Suite test invariata e verde (67/67).
+- [ ] Clippy pulito.
 
-**Note implementative**
-- `src/model_catalog.rs`: discovery, selezione, info e risoluzione target di load.
-- `src/prompting.rs`: formattazione system/user per famiglia modello.
-- `src/protocol.rs`: opcodes estesi e fix parsing `MEMW` case-insensitive.
-- `src/main.rs`: bootstrap e wiring del loop eventi (ridotto a ~120 righe).
-- `src/commands/mod.rs`: dispatch ed esecuzione opcodes protocollo.
-- `src/transport/mod.rs`: orchestrazione transport + submoduli `client/framing/io`.
-- `src/runtime.rs`: scheduler processi + routing syscall/output streaming.
-- `src/tools.rs`: tool syscall filesystem/python/calc.
-- `src/backend.rs`: runtime backend astratto (`RuntimeModel`) con dispatch per famiglia.
-- `src/engine/mod.rs` + `src/process.rs`: refactor su backend astratto (no type coupling diretto sparso a Llama).
+**Stima:** ~1-2h
 
 ---
 
-### 10) GUI desktop operativa (Control + Observability)
-**Status:** `DONE` ✅
+### 14) Persistence & Snapshot — checkpoint/restore stato kernel
+**Status:** `TODO`
 
 **Obiettivi**
-- Fornire interfaccia desktop intuitiva e reattiva per interagire col kernel.
-- Esporre controllo operativo rapido (kernel lifecycle, processi, modelli, generation).
-- Mostrare osservabilità "dietro le quinte" unificando metriche, eventi runtime e audit syscall.
+- Permettere salvataggio periodico dello stato kernel su disco (checkpoint).
+- Permettere restore dello stato al boot (processi attivi, scheduler, metriche).
+- Garantire che un crash non perda l'intero contesto di lavoro.
 
-**Scelte tecniche approvate**
-- Stack: **Python + PySide6 (Qt)**.
-- Focus MVP: **bilanciato** (controllo + osservabilità).
-- Sorgenti osservabilità: `STATUS` polling + eventi `stdout/stderr` kernel + tail `workspace/syscall_audit.log`.
-- Gestione kernel integrata direttamente dalla GUI (`start/stop` processo kernel).
+**DoD**
+- [ ] **14.1** Definire `KernelSnapshot` serializzabile (`serde`) con: processi attivi (PID, stato, prompt, workload), scheduler state (priorità, quote, accounting), metriche correnti.
+- [ ] **14.2** Comando protocollo `CHECKPOINT` che scrive snapshot su `workspace/checkpoint.json` (atomic write via temp+rename).
+- [ ] **14.3** Checkpoint automatico periodico configurabile via `AGENTIC_CHECKPOINT_INTERVAL_SECS` (default: disabilitato, 0).
+- [ ] **14.4** `Kernel::restore_from(path)` che al boot ricarica stato da ultimo checkpoint valido. Processi non ripristinabili marcati come `Orphaned` con log warning.
+- [ ] **14.5** Comando protocollo `RESTORE` per trigger manuale.
+- [ ] **14.6** Test unitari: serializzazione/deserializzazione roundtrip, checkpoint atomico, restore con dati corrotti (graceful fallback).
+- [ ] **14.7** Suite test verde, clippy pulito.
 
-**DoD (target)**
-- [x] **10.1** Scaffold GUI con architettura modulare (`protocol client`, `kernel manager`, `UI app`).
-- [x] **10.2** Pannello controllo kernel (`Start/Stop`, `PING`, `STATUS`) + stato connessione.
-- [x] **10.3** Pannello interazione (`EXEC` streaming) + azioni processo (`TERM`/`KILL`).
-- [x] **10.4** Pannello osservabilità con `STATUS` periodico + eventi runtime + syscall audit tail.
-- [x] **10.5** Pannello modelli/generation completo (`LIST_MODELS`, `MODEL_INFO`, `SELECT_MODEL`, `LOAD`, `GET_GEN`/`SET_GEN`) con UX guidata.
-- [x] **10.6** Hardening UX (retry/reconnect policy, filtri eventi, export snapshot diagnostico).
-- [x] **10.7** Smoke test manuale end-to-end documentato (runbook GUI).
+**Dipendenze nuove:** `serde 1.0`, `serde_json 1.0`
 
-**Piano operativo (task piccoli)**
-- [x] Implementare MVP GUI desktop con protocol framing robusto e worker thread non bloccanti.
-- [x] Integrare lifecycle kernel (start/stop) e stream output processi.
-- [x] Integrare vista osservabilità con triple source logs/metrics.
-- [x] Chiudere pannello model/generation guidato e validazioni UX.
-- [x] Concludere hardening UX + runbook operativo e chiusura punto.
+**Rischi & mitigazioni**
+- Il restore non può ricaricare pesi LLM in RAM → i processi vengono segnalati come `Orphaned` e richiedono un nuovo `LOAD` + re-EXEC.
+- Lo swap state su disco è già persistente → il checkpoint deve solo registrare i riferimenti, non duplicare dati.
+
+**Stima:** ~6-8h
+
+---
+
+### 15) Documentazione architetturale — ARCHITECTURE.md
+**Status:** `TODO`
+
+**Obiettivi**
+- Creare un documento di design che descriva l'architettura complessiva del sistema.
+- Rendere il progetto comprensibile a contributor esterni o a sé stessi tra 6 mesi.
+- Includere diagrammi a blocchi e flussi end-to-end.
+
+**DoD**
+- [ ] **15.1** `ARCHITECTURE.md` nella root con: overview sistema, diagramma a blocchi (kernel, engine, memory, scheduler, transport, tools), glossario concetti chiave.
+- [ ] **15.2** Flusso end-to-end documentato: `LOAD` → `EXEC` → token generation → syscall dispatch → `PROCESS_FINISHED`.
+- [ ] **15.3** Sezione "Memory subsystem" con diagramma alloc/eviction/swap lifecycle.
+- [ ] **15.4** Sezione "Scheduler" con diagramma priority ordering + quota enforcement.
+- [ ] **15.5** Sezione "Protocol" con tabella completa opcodes, formato header/reply, esempi.
+- [ ] **15.6** Diagrammi in Mermaid (renderizzabili su GitHub).
+
+**Stima:** ~2-3h
+
+---
+
+### 16) Agent orchestration primitives — task graph
+**Status:** `TODO`
+
+**Obiettivi**
+- Introdurre primitive per orchestrazione multi-agente: un processo "orchestratore" lancia sub-task, raccoglie risultati, decide il passo successivo.
+- Abilitare workflow strutturati (DAG di task) e non solo esecuzioni isolate.
+- Mantenere l'approccio event-driven senza blocking nel loop principale.
+
+**DoD**
+- [ ] **16.1** Tipo `TaskGraph` con nodi (task con prompt + workload hint + dipendenze) e archi (data flow).
+- [ ] **16.2** Opcode `ORCHESTRATE <json_task_graph>` che registra un grafo, spawna il primo livello di task indipendenti, e avanza automaticamente quando le dipendenze sono soddisfatte.
+- [ ] **16.3** Stato orchestrazione interrogabile via `STATUS <orchestration_id>` con progress (nodi completati/totali/falliti).
+- [ ] **16.4** Raccolta risultati: output di ogni sub-task accessibile dall'orchestratore come contesto per i nodi successivi.
+- [ ] **16.5** Policy fallimento configurabile: `fail_fast` (abort tutto al primo errore) vs `best_effort` (continua nodi indipendenti).
+- [ ] **16.6** Test unitari: grafo lineare (A→B→C), grafo parallelo (A→{B,C}→D), grafo con nodo fallito + policy.
+- [ ] **16.7** Suite test verde, clippy pulito.
+
+**Note di design**
+- L'orchestratore non è un processo LLM speciale: è logica kernel-side che gestisce lo scheduling dei sub-task usando il `ProcessScheduler` esistente.
+- I risultati intermedi passano tramite NeuralMemory (già persistente) oppure buffer in-kernel leggero.
+- Il formato task graph è JSON per interoperabilità con la GUI e client esterni.
+
+**Stima:** ~4-6h
+
+---
+
+### 17) Benchmark comparativo swarm
+**Status:** `TODO`
+
+**Obiettivi**
+- Chiudere l'ultimo DoD rimasto dalla milestone 9 (benchmark swarm vs single-model).
+- Produrre dati quantitativi su latenza, throughput e qualità con routing multi-modello vs modello singolo.
+
+**DoD**
+- [ ] Script benchmark riproducibile (`src/eval_swarm.py` o Rust integration test).
+- [ ] Report JSON in `reports/` con metriche: latency p50/p95, tokens/sec, task completion rate.
+- [ ] Almeno 2 scenari: (a) tutti i task su un solo modello, (b) routing capability-aware su 2+ modelli.
+- [ ] Analisi regressione documentata nel report.
+
+**Prerequisiti:** Almeno 2 modelli `.gguf` disponibili in `models/`.
+
+**Stima:** ~2-3h
+
+---
+
+## Roadmap futura — Fase 3: Intelligenza agentica
+
+### 18) Tool registry dinamico
+**Status:** `TODO`
+
+**Obiettivi**
+- Sostituire il registry hardcoded di tool (`python`, `write_file`, `calc`) con un sistema dinamico.
+- Permettere registrazione/discovery di tool a runtime da parte di agenti o plugin esterni.
+- Abilitare estensibilità senza modificare il codice kernel.
+
+**DoD**
+- [ ] **18.1** `ToolDescriptor` struct: nome, descrizione, schema input (JSON Schema), backend (host/wasm/remote).
+- [ ] **18.2** `ToolRegistry` con `register(descriptor)` / `unregister(name)` / `list()` / `resolve(name)`.
+- [ ] **18.3** Opcodes protocollo: `REGISTER_TOOL <json>`, `LIST_TOOLS`, `TOOL_INFO <name>`.
+- [ ] **18.4** Dispatch syscall aggiornato: lookup nel registry prima del dispatch hardcoded.
+- [ ] **18.5** Tool remoto: possibilità di registrare un tool che fa HTTP call a un endpoint esterno.
+- [ ] **18.6** Integrazione GUI: pannello tool con lista, dettagli, register/unregister.
+- [ ] **18.7** Test: register + invoke, unregister + fallback, tool remoto mock.
+- [ ] **18.8** Suite test verde, clippy pulito.
+
+**Note di design**
+- Il registry è in-memory (non persistente nel primo rilascio). Checkpoint/restore (M14) può serializzarlo in futuro.
+- I tool WASM sono già supportati come backend sandbox — il registry li rende discoverable programmaticamente.
+- Il JSON Schema dei tool è compatibile con il formato OpenAI function calling per interoperabilità.
+
+**Stima:** ~4-6h
+
+---
+
+### 19) Context window management
+**Status:** `TODO`
+
+**Obiettivi**
+- Gestire intelligentemente la finestra di contesto LLM per processi long-running.
+- Evitare troncamento silenzioso su prompt lunghi e conversazioni multi-turn.
+- Abilitare strategie di compressione contesto (summarization, sliding window, retrieval).
+
+**DoD**
+- [ ] **19.1** Tracking context usage: ogni processo traccia token count corrente vs window size del modello caricato.
+- [ ] **19.2** Strategia `sliding_window`: mantiene ultimi N token, scarta i più vecchi con boundary allineato a turni conversazione.
+- [ ] **19.3** Strategia `summarize`: quando il contesto supera soglia, genera un riassunto dei turni più vecchi usando il modello stesso e lo sostituisce al contesto originale.
+- [ ] **19.4** Strategia `retrieve`: integrazione con NeuralMemory per storage/retrieval semantico di frammenti di contesto evicted (RAG-like from memory store).
+- [ ] **19.5** Strategia selezionabile per processo via hint su `EXEC` (`context_strategy=sliding|summarize|retrieve`).
+- [ ] **19.6** Metriche context in `STATUS`: `context_tokens_used`, `context_window_size`, `context_compressions`.
+- [ ] **19.7** Test unitari: overflow detection, sliding window boundary, summarize trigger.
+- [ ] **19.8** Suite test verde, clippy pulito.
+
+**Note di design**
+- La strategia `summarize` introduce un "meta-step" nel runtime: il processo genera un riassunto prima di proseguire. Richiede attenzione al budget token (la summarization stessa consuma quota).
+- La strategia `retrieve` sfrutta NeuralMemory come store vettoriale — i tensori già allocati per PID diventano embedding recuperabili. Questo è il primo passo verso una vera memoria episodica.
+- Default: `sliding_window` (zero overhead). Le altre strategie sono opt-in.
+
+**Stima:** ~6-10h
+
+---
+
+## Sequenza di esecuzione prevista
+
+```
+Fase 2 — Consolidamento + Orchestrazione (marzo 2026)
+  ├─ M13  Swap extraction            ~1-2h    (debito tecnico)
+  ├─ M14  Persistence & Snapshot     ~6-8h    (infrastruttura critica)
+  ├─ M15  ARCHITECTURE.md            ~2-3h    (documentazione)
+  ├─ M16  Agent orchestration        ~4-6h    (feature strategica)
+  └─ M17  Benchmark swarm            ~2-3h    (validazione)
+
+Fase 3 — Intelligenza agentica (aprile 2026)
+  ├─ M18  Tool registry dinamico     ~4-6h    (estensibilità)
+  └─ M19  Context window mgmt        ~6-10h   (qualità agentica)
+```
 
 ---
 
 ## Registro avanzamento
 
-| Data       | Punto | Stato        | Note |
-|------------|-------|--------------|------|
-| 2026-02-22 | 1     | DONE         | Stabilità runtime implementata e verificata con smoke test. |
-| 2026-02-22 | 7     | IN_PROGRESS  | Avviato refactoring: catalogo modelli + prompt abstraction + comandi protocollo modello. |
-| 2026-02-22 | 7     | IN_PROGRESS  | Decoupling backend completato + test unitari iniziali + smoke test end-to-end su flusso catalog/load/exec. |
-| 2026-02-22 | 7     | IN_PROGRESS  | Modularizzazione completata: split `main/commands/transport/runtime/tools`, build+test verdi, target `<300` righe raggiunto. |
-| 2026-02-22 | 7     | IN_PROGRESS  | Aggiunti test incrementali `transport` su framing chunked/recovery; suite test totale verde (9 test). |
-| 2026-02-22 | 2/5   | IN_PROGRESS  | Hardening protocollo (header strict + error code) + test loopback TCP su transport; suite test verde (15 test). |
-| 2026-02-22 | 2     | DONE         | Protocollo hardening concluso: header strict, reply codificate con lunghezza, stream data framed, test verdi. |
-| 2026-02-22 | 5     | IN_PROGRESS  | Estesa regressione TCP: aggiunti test multi-client + reconnect; suite verde (17 test). |
-| 2026-02-22 | 5     | DONE         | Chiuso punto test/regressione: benchmark commit-aware integrato e report JSON ripetibile generato. |
-| 2026-02-22 | 3     | IN_PROGRESS  | Avviata qualità inferenza model-agnostic: policy stop per-family + configurazione sampling runtime (`GET_GEN`/`SET_GEN`). |
-| 2026-02-22 | 3     | DONE         | Baseline Meta-Llama-3.1 calibrata (timeout/soglie realistiche), parser stream framed robusto e stop su `PROCESS_FINISHED`; report aggiornato in `reports/llama3_eval_report.json`. |
-| 2026-02-23 | roadmap | UPDATED      | Inserita pianificazione per tempi/modalità e aggiunti assi strategici: sandbox SysCall, integrazione NeuralMemory, scheduler swarm, segnali kernel-level. |
-| 2026-02-23 | 4     | DONE         | Hardening SysCall completato: timeout enforced, path safety robusta, audit log (`workspace/syscall_audit.log`), sandbox mode (`host/container/wasm` + fallback policy), rate-limit e kill automatico su abuso/error burst. |
-| 2026-02-23 | 6     | DONE         | Osservabilità + segnali kernel-level completati: opcodes `STATUS/TERM/KILL/SHUTDOWN`, metriche runtime aggregate, logging strutturato eventi (`client_id/pid`), shutdown graceful via flag atomica con loop termination. Test transport aggiornati e verdi. |
-| 2026-02-23 | 7     | IN_PROGRESS  | Task 1 completato: backend Qwen runtime abilitato (`quantized_qwen2`), fail-fast tokenizer/template per-family in load engine (Llama/Qwen), stop policy Qwen validata con test unit. Nota: smoke E2E `LOAD/EXEC` su Qwen richiede un modello `.gguf` Qwen presente in `models/`. |
-| 2026-02-23 | 7     | DONE         | Chiuso refactoring multi-LLM: scheduler capability-aware v1 su `EXEC` (hint `capability=` + inferenza workload + auto-switch family), catalogo ricorsivo stabile per modelli in sottocartelle, backend Qwen runtime operativo. Suite test aggiornata e verde (`cargo test --release`: 27/27). |
-| 2026-02-23 | 8     | IN_PROGRESS  | Piano Punto 8 formalizzato: split 8a (RAM-only) + 8b (swap async), quote in token slots, blocco model-switch con PID attivi, rollback gate e DoD dettagliate definite. |
-| 2026-02-23 | 8     | IN_PROGRESS  | Implementati 8a.1–8a.4: ownership memoria per PID, quota token-slot + `oom_events`, metriche memoria in `STATUS`, comando `MEMW` attivo. Cleanup memoria agganciato a runtime/TERM/KILL. Test verdi (`cargo test --release`: 29/29). |
-| 2026-02-23 | 8     | IN_PROGRESS  | Completati 8a.5–8a.6: test pressure multi-PID (`oom_events`) e fallback no-op con feature flag `AGENTIC_MEMORY_ACTIVE`. Suite aggiornata verde (`cargo test --release`: 31/31). |
-| 2026-02-23 | 8     | IN_PROGRESS  | Completato 8b.1: introdotta worker queue swap asincrona (`workspace/swap`), polling non-bloccante nel runtime e stato processo `WaitingForMemory` con resume automatico a completamento swap. Suite verde (`cargo test --release`: 32/32). |
-| 2026-02-23 | 8     | IN_PROGRESS  | Completato 8b.2: eviction LRU minima in `memory.rs` (reclaim prima dell'OOM), nuovo contatore `swap_faults` e metriche `STATUS` aggiornate (`mem_swap_faults`). Aggiunto test dedicato su pressure+LRU; suite verde (`cargo test --release`: 33/33). |
-| 2026-02-23 | 8     | IN_PROGRESS  | Completato 8b.3: hardening I/O swap con validazione path dedicata (solo sotto `workspace/`, blocco traversal/escape), persistenza robusta (`create_new` + `sync_all` + rename atomico) e cleanup tmp su errore. Aggiunti test su path safety e atomic write; suite verde (`cargo test --release`: 36/36). |
-| 2026-02-23 | 8     | DONE         | Completato 8b.4: test e2e transport sotto pressure (`MEMW_QUEUED`) con verifica non-blocco loop (`PING` immediato su stesso stream). Punto 8 chiuso; suite verde (`cargo test --release`: 37/37). |
-| 2026-02-23 | 10    | IN_PROGRESS  | Avviato task GUI desktop: creato pacchetto `gui/` con `protocol_client.py`, `kernel_manager.py`, `app.py` (PySide6) e README operativo. MVP già copre start/stop kernel, comandi base, `EXEC` streaming, `TERM/KILL`, status polling, eventi runtime e tail `workspace/syscall_audit.log`. |
-| 2026-02-23 | 10    | IN_PROGRESS  | Completato 10.5: aggiunto pannello guidato Modelli/Generation in GUI (`LIST_MODELS`, selezione model-id, `MODEL_INFO`, `SELECT_MODEL`, `LOAD` selected/path, `GET_GEN`/`SET_GEN` con campi dedicati e parsing automatico risposta). |
-| 2026-02-23 | 10    | DONE         | Completati 10.6–10.7: hardening UX GUI (retry/reconnect richieste, filtri eventi kernel/syscall, export snapshot diagnostico in `reports/`) e runbook smoke E2E documentato in `gui/README.md`. |
+> Le entry dettagliate delle milestone 1–12 sono archiviate qui in forma compressa.
+> Per il log completo delle singole sub-task, consultare la history git.
+
+| Data | Milestone | Stato | Note sintetica |
+|------|-----------|-------|----------------|
+| 2026-02-22 | M1 | DONE | Runtime stabile: flush I/O, cleanup PID, marker PROCESS_FINISHED |
+| 2026-02-22 | M2 | DONE | Protocollo hardened: header strict, reply codificate, framing DATA |
+| 2026-02-22 | M3 | DONE | Inferenza calibrata: stop policy per-family, GET_GEN/SET_GEN, benchmark baseline |
+| 2026-02-22 | M5 | DONE | Test professionali: multi-client, reconnect, benchmark commit-aware |
+| 2026-02-23 | M4 | DONE | SysCall hardened: timeout, path safety, audit log, sandbox mode, rate-limit |
+| 2026-02-23 | M6 | DONE | Osservabilità: STATUS/TERM/KILL/SHUTDOWN, metriche, logging strutturato, graceful shutdown |
+| 2026-02-23 | M7 | DONE | Multi-LLM: catalogo auto-discovery, backend Qwen, capability scheduler v1, 27 test |
+| 2026-02-23 | M8 | DONE | NeuralMemory: ownership PID, quote token-slot, swap asincrono, eviction LRU, 37 test |
+| 2026-02-23 | M10 | DONE | GUI desktop PySide6: controllo kernel, EXEC streaming, modelli, osservabilità, runbook |
+| 2026-03-04 | M11 | DONE | Refactoring qualità: config.rs, estrazione funzioni runtime, memory/types.rs, 54 test |
+| 2026-03-04 | M12 | DONE | Hardening: thiserror error hierarchy, tracing logging, struct Kernel, eviction.rs, CI |
+| 2026-03-04 | M12.1 | DONE | Migrazione errori: CatalogError, ProtocolError, EngineError::Backend, 54 test |
+| 2026-03-04 | M9 | DONE | Scheduler: ProcessPriority, ProcessQuota, enforcement runtime, 3 nuovi opcodes, 67 test |
 
 ---
 

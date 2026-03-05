@@ -11,27 +11,26 @@ use super::LLMEngine;
 
 impl LLMEngine {
     pub fn load(path: &str, family: crate::prompting::PromptFamily, tokenizer_hint: Option<PathBuf>) -> Result<Self> {
-        println!("ENGINE: Loading Master Model from {}...", path);
+        tracing::info!(path, ?family, "ENGINE: Loading Master Model");
 
         let device = Device::Cpu;
         let model = RuntimeModel::load_from_gguf(path, family, &device)?;
 
-        println!("ENGINE: Weights loaded. Loading Tokenizer...");
+        tracing::info!("ENGINE: Weights loaded. Loading Tokenizer...");
 
         let tokenizer_path = resolve_tokenizer_path(path, tokenizer_hint)
             .ok_or_else(|| E::msg("Tokenizer not found for selected model (fail-fast policy)."))?;
-        println!("ENGINE: Using tokenizer at {:?}", tokenizer_path);
+        tracing::info!(?tokenizer_path, "ENGINE: Using tokenizer");
         let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_path).map_err(E::msg)?;
 
         let (eos_token_id, eot_token_id) = resolve_special_tokens(&tokenizer, family).map_err(E::msg)?;
 
-        println!(
-            "ENGINE: Special Tokens Identified -> EOS: {}, EOT: {}",
-            eos_token_id, eot_token_id
+        tracing::info!(
+            eos_token_id,
+            eot_token_id,
+            "ENGINE: Special Tokens Identified"
         );
-        println!(
-            "ENGINE: Master Model & Tokenizer Ready. Backend abstraction enabled."
-        );
+        tracing::info!("ENGINE: Master Model & Tokenizer Ready. Backend abstraction enabled.");
 
         Ok(Self {
             master_model: Some(model),
@@ -56,9 +55,10 @@ impl LLMEngine {
         let pid = self.next_pid;
         self.next_pid += 1;
 
-        println!(
-            "OS: Forking Agent Process PID {} for Owner {} (Zero-Copy)",
-            pid, owner_id
+        tracing::info!(
+            pid,
+            owner_id,
+            "OS: Forking Agent Process (Zero-Copy)"
         );
 
         let model_clone = {
@@ -70,9 +70,10 @@ impl LLMEngine {
             if let Some(dup) = master.duplicate_if_supported() {
                 dup
             } else {
-                println!(
-                    "ENGINE: Runtime backend for {:?} is not cloneable; spawning PID {} by reloading model instance.",
-                    self.family, pid
+                tracing::info!(
+                    family = ?self.family,
+                    pid,
+                    "ENGINE: Runtime backend not cloneable; reloading model instance"
                 );
                 RuntimeModel::load_from_gguf(&self.model_path, self.family, &self.device)?
             }
@@ -165,7 +166,7 @@ impl LLMEngine {
             .get_ids()
             .to_vec();
 
-        println!("OS: Injecting {} tokens into PID {}", new_tokens.len(), pid);
+        tracing::debug!(pid, tokens = new_tokens.len(), "OS: Injecting tokens");
         process.tokens.extend(new_tokens);
         process.state = ProcessState::Running;
         Ok(())
@@ -271,5 +272,13 @@ impl LLMEngine {
 
     pub fn generation_config(&self) -> GenerationConfig {
         self.generation
+    }
+
+    pub fn loaded_model_path(&self) -> &str {
+        &self.model_path
+    }
+
+    pub fn loaded_family(&self) -> crate::prompting::PromptFamily {
+        self.family
     }
 }
