@@ -146,7 +146,7 @@ gui/
 ---
 
 ### 15) Documentazione architetturale — ARCHITECTURE.md
-**Status:** `TODO`
+**Status:** `DONE` ✅
 
 **Obiettivi**
 - Creare un documento di design che descriva l'architettura complessiva del sistema.
@@ -154,14 +154,16 @@ gui/
 - Includere diagrammi a blocchi e flussi end-to-end.
 
 **DoD**
-- [ ] **15.1** `ARCHITECTURE.md` nella root con: overview sistema, diagramma a blocchi (kernel, engine, memory, scheduler, transport, tools), glossario concetti chiave.
-- [ ] **15.2** Flusso end-to-end documentato: `LOAD` → `EXEC` → token generation → syscall dispatch → `PROCESS_FINISHED`.
-- [ ] **15.3** Sezione "Memory subsystem" con diagramma alloc/eviction/swap lifecycle.
-- [ ] **15.4** Sezione "Scheduler" con diagramma priority ordering + quota enforcement.
-- [ ] **15.5** Sezione "Protocol" con tabella completa opcodes, formato header/reply, esempi.
-- [ ] **15.6** Diagrammi in Mermaid (renderizzabili su GitHub).
+- [x] **15.1** `ARCHITECTURE.md` nella root con: overview sistema, diagramma a blocchi (kernel, engine, memory, scheduler, transport, tools), glossario concetti chiave.
+- [x] **15.2** Flusso end-to-end documentato: `LOAD` → `EXEC` → token generation → syscall dispatch → `PROCESS_FINISHED`.
+- [x] **15.3** Sezione "Memory subsystem" con diagramma alloc/eviction/swap lifecycle.
+- [x] **15.4** Sezione "Scheduler" con diagramma priority ordering + quota enforcement.
+- [x] **15.5** Sezione "Protocol" con tabella completa opcodes, formato header/reply, esempi.
+- [x] **15.6** Diagrammi in Mermaid (renderizzabili su GitHub).
 
-**Stima:** ~2-3h
+**Esito**
+- `ARCHITECTURE.md` (~500 righe): 14 sezioni — overview, diagramma blocchi Mermaid, event loop flowchart, sequence diagram LOAD→EXEC→FINISHED, tabella completa 18 opcodes con wire format ed esempi, architettura engine e processi con state machine, memory subsystem con flusso write/eviction/swap, scheduler con priority ordering e quota enforcement, syscall sandbox con security model, model catalog routing, checkpoint/restore, configurazione env vars completa, error hierarchy tree, glossario 20 termini.
+- 8 diagrammi Mermaid: block diagram, event loop flowchart, end-to-end sequence, process state machine, memory write flow, scheduler enforcement flow, capability routing flow, error hierarchy tree.
 
 ---
 
@@ -304,6 +306,8 @@ Fase 3 — Intelligenza agentica (aprile 2026)
 | 2026-03-04 | M12.1 | DONE | Migrazione errori: CatalogError, ProtocolError, EngineError::Backend, 54 test |
 | 2026-03-04 | M9 | DONE | Scheduler: ProcessPriority, ProcessQuota, enforcement runtime, 3 nuovi opcodes, 67 test |
 | 2026-03-05 | M13 | DONE | Swap extraction: `memory/swap.rs` (236 righe) con `SwapManager`. `core.rs` 809→673 (424 prod). Suite invariata 67/67, clippy pulito. |
+| 2026-03-05 | M14 | DONE | Persistence: `checkpoint.rs` (340 righe) con KernelSnapshot + 6 sub-types. Opcodes CHECKPOINT/RESTORE. Auto-checkpoint timer. 74 test, clippy pulito. |
+| 2026-03-05 | M15 | DONE | ARCHITECTURE.md (~500 righe): 14 sezioni, 8 diagrammi Mermaid, tabella 18 opcodes, glossario 20 termini. |
 
 ---
 
