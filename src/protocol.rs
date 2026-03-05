@@ -20,6 +20,8 @@ pub enum OpCode {
     SetPriority,    // Imposta priorità processo
     GetQuota,       // Legge quota/accounting processo
     SetQuota,       // Imposta quota processo
+    Checkpoint,     // Salva snapshot kernel su disco
+    Restore,        // Ripristina stato kernel da disco
 }
 
 #[derive(Debug)]
@@ -60,6 +62,8 @@ impl CommandHeader {
             "SET_PRIORITY" => OpCode::SetPriority,
             "GET_QUOTA" => OpCode::GetQuota,
             "SET_QUOTA" => OpCode::SetQuota,
+            "CHECKPOINT" => OpCode::Checkpoint,
+            "RESTORE" => OpCode::Restore,
             _ => return Err(ProtocolError::UnknownOpcode(parts[0].to_string())),
         };
 
@@ -163,6 +167,15 @@ mod tests {
 
         let sq = CommandHeader::parse("SET_QUOTA 1 20").expect("SET_QUOTA should parse");
         assert!(matches!(sq.opcode, OpCode::SetQuota));
+    }
+
+    #[test]
+    fn parse_checkpoint_opcodes() {
+        let cp = CommandHeader::parse("CHECKPOINT 1 0").expect("CHECKPOINT should parse");
+        assert!(matches!(cp.opcode, OpCode::Checkpoint));
+
+        let rs = CommandHeader::parse("RESTORE 1 0").expect("RESTORE should parse");
+        assert!(matches!(rs.opcode, OpCode::Restore));
     }
 
     #[test]

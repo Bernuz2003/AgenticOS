@@ -1,4 +1,5 @@
 mod backend;
+mod checkpoint;
 mod config;
 mod commands;
 mod engine;
@@ -21,6 +22,7 @@ use std::io;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use config::env_bool;
 use engine::LLMEngine;
@@ -47,6 +49,8 @@ struct Kernel {
     model_catalog: ModelCatalog,
     active_family: PromptFamily,
     scheduler: ProcessScheduler,
+    checkpoint_interval_secs: u64,
+    last_checkpoint: Instant,
 }
 
 impl Kernel {
@@ -89,12 +93,18 @@ impl Kernel {
         let active_family: PromptFamily = PromptFamily::Llama;
         let scheduler = ProcessScheduler::new();
 
+        let checkpoint_interval_secs: u64 = std::env::var("AGENTIC_CHECKPOINT_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
         tracing::info!(
             version = env!("CARGO_PKG_VERSION"),
             %addr,
             memory_active,
             memory_swap_async,
             swap_dir = memory_swap_dir.as_deref().unwrap_or("workspace/swap"),
+            checkpoint_interval_secs,
             "AgenticOS Kernel ready"
         );
 
@@ -111,6 +121,8 @@ impl Kernel {
             model_catalog,
             active_family,
             scheduler,
+            checkpoint_interval_secs,
+            last_checkpoint: Instant::now(),
         })
     }
 
@@ -200,9 +212,76 @@ impl Kernel {
                 self.active_family,
                 &mut self.scheduler,
             );
+
+            // ── Auto-checkpoint ────────────────────────────────────────
+            if self.checkpoint_interval_secs > 0
+                && self.last_checkpoint.elapsed().as_secs() >= self.checkpoint_interval_secs
+            {
+                self.last_checkpoint = Instant::now();
+                self.run_auto_checkpoint();
+            }
         }
 
         Ok(())
+    }
+
+    /// Perform an automatic periodic checkpoint (best-effort, errors are logged).
+    fn run_auto_checkpoint(&self) {
+        use crate::checkpoint;
+        use crate::commands::snapshot_metrics_fn;
+
+        let path = checkpoint::default_checkpoint_path();
+        let (uptime_s, total_cmd, total_err, total_exec, total_signals) = snapshot_metrics_fn();
+
+        let (processes, generation) = {
+            let lock = self.engine_state.lock().unwrap();
+            if let Some(engine) = lock.as_ref() {
+                let procs: Vec<checkpoint::ProcessSnapshot> = engine
+                    .processes
+                    .iter()
+                    .map(|(pid, p)| checkpoint::ProcessSnapshot {
+                        pid: *pid,
+                        owner_id: p.owner_id,
+                        state: format!("{:?}", p.state),
+                        token_count: p.tokens.len(),
+                        max_tokens: p.max_tokens,
+                    })
+                    .collect();
+                let cfg = engine.generation_config();
+                let gen = Some(checkpoint::GenerationSnapshot {
+                    temperature: cfg.temperature,
+                    top_p: cfg.top_p,
+                    seed: cfg.seed,
+                    max_tokens: cfg.max_tokens,
+                });
+                (procs, gen)
+            } else {
+                (vec![], None)
+            }
+        };
+
+        let snap = checkpoint::KernelSnapshot {
+            timestamp: checkpoint::now_timestamp(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            active_family: format!("{:?}", self.active_family),
+            selected_model: self.model_catalog.selected_id.clone(),
+            generation,
+            processes,
+            scheduler: checkpoint::snapshot_scheduler(&self.scheduler),
+            metrics: checkpoint::MetricsSnapshot {
+                uptime_secs: uptime_s,
+                total_commands: total_cmd,
+                total_errors: total_err,
+                total_exec_started: total_exec,
+                total_signals,
+            },
+            memory: checkpoint::snapshot_memory(&self.memory.borrow()),
+        };
+
+        match checkpoint::save_checkpoint(&snap, &path) {
+            Ok(msg) => tracing::debug!(msg, "auto-checkpoint"),
+            Err(e) => tracing::warn!(%e, "auto-checkpoint failed"),
+        }
     }
 }
 

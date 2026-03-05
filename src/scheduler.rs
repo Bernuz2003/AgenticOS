@@ -243,6 +243,13 @@ impl ProcessScheduler {
 
     // ── Snapshot ────────────────────────────────────────────────────────
 
+    /// Return a sorted list of all PIDs tracked by the scheduler.
+    pub fn registered_pids(&self) -> Vec<u64> {
+        let mut pids: Vec<u64> = self.accounting.keys().copied().collect();
+        pids.sort_unstable();
+        pids
+    }
+
     pub fn snapshot(&self, pid: u64) -> Option<ProcessSchedulerSnapshot> {
         let acc = self.accounting.get(&pid)?;
         Some(ProcessSchedulerSnapshot {
@@ -408,5 +415,20 @@ mod tests {
         assert!(s.contains("scheduler_tracked=3"));
         assert!(s.contains("priority_high=2"));
         assert!(s.contains("priority_normal=1"));
+    }
+
+    #[test]
+    fn registered_pids_returns_sorted() {
+        let mut sched = ProcessScheduler::new();
+        sched.register(5, WorkloadClass::General, ProcessPriority::Normal);
+        sched.register(1, WorkloadClass::Code, ProcessPriority::High);
+        sched.register(3, WorkloadClass::Fast, ProcessPriority::Low);
+
+        let pids = sched.registered_pids();
+        assert_eq!(pids, vec![1, 3, 5]);
+
+        sched.unregister(3);
+        let pids = sched.registered_pids();
+        assert_eq!(pids, vec![1, 5]);
     }
 }

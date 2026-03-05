@@ -107,10 +107,12 @@ impl NeuralMemory {
         self.active = active;
     }
 
+    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         self.active
     }
 
+    #[allow(dead_code)]
     pub fn set_token_slot_quota_per_pid(&mut self, quota: usize) {
         self.token_slot_quota_per_pid = quota.max(1);
     }
@@ -214,6 +216,7 @@ impl NeuralMemory {
         self.swap.is_pid_waiting(pid)
     }
 
+    #[allow(dead_code)]
     pub fn waiting_pids(&self) -> Vec<u64> {
         // Delegate removed — this method is currently unused (dead_code)
         // but kept for API completeness.
@@ -236,6 +239,7 @@ impl NeuralMemory {
         id
     }
 
+    #[allow(dead_code)]
     pub fn read(&self, id: TensorId) -> Result<Vec<f32>, MemoryError> {
         let pages = self
             .page_table
@@ -282,7 +286,7 @@ impl NeuralMemory {
         }
 
         let elements_per_block = self.config.block_size * self.config.hidden_dim;
-        let blocks_needed = (f32_data.len() + elements_per_block - 1) / elements_per_block;
+        let blocks_needed = f32_data.len().div_ceil(elements_per_block);
 
         if self.free_blocks.len() < blocks_needed {
             let recovered = self.evict_lru_until_fit(blocks_needed, Some(id));
@@ -364,6 +368,7 @@ impl NeuralMemory {
         Ok(format!("Released tensor {} ({} blocks)", id, released_blocks))
     }
 
+    #[allow(dead_code)]
     pub fn compute_test(&self, id: TensorId, multiplier: f32) -> Result<String, MemoryError> {
         let pages = self.page_table.get(&id).ok_or(MemoryError::TensorNotFound(id))?;
 
@@ -401,6 +406,7 @@ impl NeuralMemory {
         Ok(report)
     }
 
+    #[allow(dead_code)]
     pub fn stats(&self) -> String {
         let s = self.snapshot();
         format!(

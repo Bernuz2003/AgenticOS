@@ -13,6 +13,7 @@ pub enum ProcessState {
 }
 
 pub struct AgentProcess {
+    #[allow(dead_code)]
     pub id: u64,
     pub owner_id: usize, // ID del socket proprietario
     pub state: ProcessState,

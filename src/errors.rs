@@ -59,6 +59,7 @@ pub enum MemoryError {
 // ── Engine / process errors ─────────────────────────────────────────────
 
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum EngineError {
     #[error("No model loaded")]
     NoModelLoaded,

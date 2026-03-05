@@ -18,6 +18,8 @@ dependencies = [
  "candle-transformers",
  "hf-hub",
  "mio",
+ "serde",
+ "serde_json",
  "thiserror 2.0.17",
  "tokenizers",
  "tracing",
