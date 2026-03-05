@@ -6,6 +6,7 @@ mod engine;
 mod errors;
 mod memory;
 mod model_catalog;
+mod orchestrator;
 mod process;
 mod prompting;
 mod protocol;
@@ -28,6 +29,7 @@ use config::env_bool;
 use engine::LLMEngine;
 use memory::{MemoryConfig, NeuralMemory};
 use model_catalog::ModelCatalog;
+use orchestrator::Orchestrator;
 use prompting::PromptFamily;
 use runtime::run_engine_tick;
 use scheduler::ProcessScheduler;
@@ -49,6 +51,7 @@ struct Kernel {
     model_catalog: ModelCatalog,
     active_family: PromptFamily,
     scheduler: ProcessScheduler,
+    orchestrator: Orchestrator,
     checkpoint_interval_secs: u64,
     last_checkpoint: Instant,
 }
@@ -121,6 +124,7 @@ impl Kernel {
             model_catalog,
             active_family,
             scheduler,
+            orchestrator: Orchestrator::new(),
             checkpoint_interval_secs,
             last_checkpoint: Instant::now(),
         })
@@ -169,6 +173,7 @@ impl Kernel {
                                     &mut self.model_catalog,
                                     &mut self.active_family,
                                     &mut self.scheduler,
+                                    &mut self.orchestrator,
                                     token.0,
                                     &self.shutdown_requested,
                                 )
@@ -211,6 +216,7 @@ impl Kernel {
                 &self.poll,
                 self.active_family,
                 &mut self.scheduler,
+                &mut self.orchestrator,
             );
 
             // ── Auto-checkpoint ────────────────────────────────────────

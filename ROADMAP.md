@@ -15,8 +15,8 @@ Questo file è la fonte unica di verità per il piano del progetto.
 - **Data snapshot:** 2026-03-05
 - **Versione:** `v0.5.0`
 - **Runtime:** server TCP event-driven (`mio 1.0`) + engine LLM process-centric (`candle 0.9`)
-- **Codebase:** ~5.300 righe Rust (kernel) + ~1.300 righe Python (GUI PySide6)
-- **Test suite:** 74 test verdi (`cargo test --release`), clippy pulito, CI GitHub Actions
+- **Codebase:** ~5.800 righe Rust (kernel) + ~1.300 righe Python (GUI PySide6)
+- **Test suite:** 94 test verdi (`cargo test --release`), clippy pulito, CI GitHub Actions
 - **Modelli supportati:** Llama 3.1 (Q4_K_M) + Qwen 2.5 (Q4_K_M) con auto-discovery e capability routing
 - **Dipendenze chiave:** `candle-core/candle-transformers 0.9.1`, `tokenizers 0.22.2`, `mio 1.0`, `thiserror 2.0`, `tracing 0.1`, `serde 1.0`, `serde_json 1.0`
 
@@ -41,7 +41,7 @@ Le milestone 1–12 coprono la costruzione dell'intero kernel single-node, dalla
 | 11 | Refactoring qualità | 2026-03-04 | `config.rs` centralizzato, versione da `CARGO_PKG_VERSION`, estrazione funzioni da `runtime.rs`, `memory/types.rs`, +17 test (54 totali) | `config.rs`, `runtime.rs`, `memory/types.rs` |
 | 12 | Hardening architetturale | 2026-03-04 | `thiserror` error hierarchy (`MemoryError`, `CatalogError`, `ProtocolError`, `EngineError`), `tracing` structured logging, `struct Kernel`, `memory/eviction.rs` estratto, CI GitHub Actions | `errors.rs`, `main.rs`, `.github/workflows/ci.yml` |
 
-**Totale test accumulati:** 37 (fine M8) → 54 (fine M11/M12) → 67 (fine M9-scheduler) → 74 (fine M14-checkpoint)
+**Totale test accumulati:** 37 (fine M8) → 54 (fine M11/M12) → 67 (fine M9-scheduler) → 74 (fine M14-checkpoint) → 94 (fine M16-orchestration)
 
 ---
 
@@ -49,20 +49,21 @@ Le milestone 1–12 coprono la costruzione dell'intero kernel single-node, dalla
 
 ```
 src/
-├── main.rs              # struct Kernel, event loop mio, auto-checkpoint timer (~270 righe)
+├── main.rs              # struct Kernel, event loop mio, auto-checkpoint timer (~280 righe)
 ├── checkpoint.rs        # KernelSnapshot, save/load atomic, snapshot builders (~340 righe)
-├── protocol.rs          # OpCode enum (incl. Checkpoint/Restore), CommandHeader parser, response formatting
+├── orchestrator.rs      # Orchestrator, TaskGraphDef, DAG validation, advance logic (~500 righe)
+├── protocol.rs          # OpCode enum (incl. Checkpoint/Restore/Orchestrate), CommandHeader parser, response formatting
 ├── config.rs            # env_bool, env_u64, env_usize centralizzati
 ├── errors.rs            # KernelError, MemoryError, EngineError, ProtocolError, CatalogError
 ├── model_catalog.rs     # ModelCatalog auto-discovery, WorkloadClass, capability routing
 ├── prompting.rs         # PromptFamily (Llama/Qwen/Mistral), system/user templates, stop policy
 ├── backend.rs           # RuntimeModel trait, dispatch per famiglia (quantized_llama/qwen2)
 ├── process.rs           # AgentProcess, ProcessState, SamplingParams
-├── runtime.rs           # run_engine_tick, dispatch_process_syscall, scan_syscall_buffer
+├── runtime.rs           # run_engine_tick, dispatch_process_syscall, orchestration advance (~350 righe)
 ├── scheduler.rs         # ProcessScheduler, ProcessPriority, ProcessQuota, ResourceAccounting
 ├── tools.rs             # Syscall sandbox (python/write_file/calc), rate-limit, audit
 ├── commands/
-│   ├── mod.rs           # execute_command dispatch incl. CHECKPOINT/RESTORE (~650 righe)
+│   ├── mod.rs           # execute_command dispatch incl. CHECKPOINT/RESTORE/ORCHESTRATE (~720 righe)
 │   ├── metrics.rs       # StatusMetrics, formattazione STATUS
 │   └── parsing.rs       # parse_generation_payload, parse_memw_payload
 ├── engine/
@@ -77,7 +78,7 @@ src/
 │   ├── eviction.rs      # LRU eviction (clear/touch/victim/evict_until_fit)
 │   └── swap_io.rs       # Swap I/O worker, path validation, atomic write
 └── transport/
-    ├── mod.rs           # re-export + test integration TCP (~510 righe)
+    ├── mod.rs           # re-export + test integration TCP (~530 righe)
     ├── client.rs        # Client struct (stream, buffers)
     ├── framing.rs       # parse_available_commands, frame parsing
     └── io.rs            # handle_read, raw TCP dispatch
@@ -168,7 +169,7 @@ gui/
 ---
 
 ### 16) Agent orchestration primitives — task graph
-**Status:** `TODO`
+**Status:** `DONE` ✅
 
 **Obiettivi**
 - Introdurre primitive per orchestrazione multi-agente: un processo "orchestratore" lancia sub-task, raccoglie risultati, decide il passo successivo.
@@ -176,20 +177,30 @@ gui/
 - Mantenere l'approccio event-driven senza blocking nel loop principale.
 
 **DoD**
-- [ ] **16.1** Tipo `TaskGraph` con nodi (task con prompt + workload hint + dipendenze) e archi (data flow).
-- [ ] **16.2** Opcode `ORCHESTRATE <json_task_graph>` che registra un grafo, spawna il primo livello di task indipendenti, e avanza automaticamente quando le dipendenze sono soddisfatte.
-- [ ] **16.3** Stato orchestrazione interrogabile via `STATUS <orchestration_id>` con progress (nodi completati/totali/falliti).
-- [ ] **16.4** Raccolta risultati: output di ogni sub-task accessibile dall'orchestratore come contesto per i nodi successivi.
-- [ ] **16.5** Policy fallimento configurabile: `fail_fast` (abort tutto al primo errore) vs `best_effort` (continua nodi indipendenti).
-- [ ] **16.6** Test unitari: grafo lineare (A→B→C), grafo parallelo (A→{B,C}→D), grafo con nodo fallito + policy.
-- [ ] **16.7** Suite test verde, clippy pulito.
+- [x] **16.1** Tipo `TaskGraph` con nodi (task con prompt + workload hint + dipendenze) e archi (data flow).
+- [x] **16.2** Opcode `ORCHESTRATE <json_task_graph>` che registra un grafo, spawna il primo livello di task indipendenti, e avanza automaticamente quando le dipendenze sono soddisfatte.
+- [x] **16.3** Stato orchestrazione interrogabile via `STATUS <orchestration_id>` con progress (nodi completati/totali/falliti).
+- [x] **16.4** Raccolta risultati: output di ogni sub-task accessibile dall'orchestratore come contesto per i nodi successivi.
+- [x] **16.5** Policy fallimento configurabile: `fail_fast` (abort tutto al primo errore) vs `best_effort` (continua nodi indipendenti).
+- [x] **16.6** Test unitari: grafo lineare (A→B→C), grafo parallelo (A→{B,C}→D), grafo con nodo fallito + policy.
+- [x] **16.7** Suite test verde (94/94), clippy pulito.
 
 **Note di design**
 - L'orchestratore non è un processo LLM speciale: è logica kernel-side che gestisce lo scheduling dei sub-task usando il `ProcessScheduler` esistente.
-- I risultati intermedi passano tramite NeuralMemory (già persistente) oppure buffer in-kernel leggero.
+- I risultati intermedi accumulati in buffer in-kernel leggero (`HashMap<String, String>`) nell'`Orchestration`. Output di dependency iniettato nel prompt dei nodi successori.
 - Il formato task graph è JSON per interoperabilità con la GUI e client esterni.
+- Validazione DAG: topological sort (Kahn's algorithm) con cycle detection, verifica dipendenze, self-dependency, duplicate task IDs.
+- STATUS con prefisso `orch:N` per distinguere orchestrazioni da PID.
 
-**Stima:** ~4-6h
+**Esito**
+- `src/orchestrator.rs` (~500 righe): `TaskGraphDef`/`TaskNodeDef` (serde JSON-deserializable), `FailurePolicy` (`fail_fast`/`best_effort`), `Orchestrator` con `register`/`register_pid`/`append_output`/`mark_completed`/`mark_failed`/`advance`/`format_status`. DAG validation via topological sort. 20 unit test.
+- `src/protocol.rs`: +1 opcode `Orchestrate`, +1 test.
+- `src/commands/mod.rs` (~720 righe): +ORCHESTRATE handler (parse JSON, validate, spawn root tasks), +STATUS `orch:` prefix per orchestration query.
+- `src/runtime.rs` (~350 righe): orchestrator output tracking in step loop, completion/failure notifications, advance+spawn after finished PIDs, fail_fast kill logic.
+- `src/main.rs` (~280 righe): +`mod orchestrator`, `Orchestrator` field in Kernel, passed to `handle_read` e `run_engine_tick`.
+- `src/transport/io.rs`: +`orchestrator: &mut Orchestrator` parameter.
+- `src/transport/mod.rs` (~530 righe): 13 test calls updated, `setup_shared_state` returns Orchestrator.
+- Test: 74 → 94 (+20 orchestrator tests: registration, linear/parallel advancement, fail_fast/best_effort policies, cycle/empty/duplicate/unknown-dep/self-dep validation, topo sort, status format, JSON deserialization, default policy, workload parsing, context building).
 
 ---
 
@@ -308,6 +319,7 @@ Fase 3 — Intelligenza agentica (aprile 2026)
 | 2026-03-05 | M13 | DONE | Swap extraction: `memory/swap.rs` (236 righe) con `SwapManager`. `core.rs` 809→673 (424 prod). Suite invariata 67/67, clippy pulito. |
 | 2026-03-05 | M14 | DONE | Persistence: `checkpoint.rs` (340 righe) con KernelSnapshot + 6 sub-types. Opcodes CHECKPOINT/RESTORE. Auto-checkpoint timer. 74 test, clippy pulito. |
 | 2026-03-05 | M15 | DONE | ARCHITECTURE.md (~500 righe): 14 sezioni, 8 diagrammi Mermaid, tabella 18 opcodes, glossario 20 termini. |
+| 2026-03-05 | M16 | DONE | Orchestrator: `orchestrator.rs` (~500 righe), opcode ORCHESTRATE, DAG validation + advance, fail_fast/best_effort, STATUS orch:, 94 test, clippy pulito. |
 
 ---
 

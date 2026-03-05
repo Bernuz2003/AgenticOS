@@ -30,6 +30,7 @@ mod tests {
     use crate::engine::LLMEngine;
     use crate::memory::{MemoryConfig, NeuralMemory};
     use crate::model_catalog::ModelCatalog;
+    use crate::orchestrator::Orchestrator;
     use crate::prompting::PromptFamily;
     use crate::scheduler::ProcessScheduler;
 
@@ -61,6 +62,7 @@ mod tests {
         PromptFamily,
         Arc<AtomicBool>,
         ProcessScheduler,
+        Orchestrator,
     ) {
         let memory = Rc::new(RefCell::new(
             NeuralMemory::new(MemoryConfig {
@@ -80,6 +82,7 @@ mod tests {
             PromptFamily::Llama,
             shutdown_requested,
             ProcessScheduler::new(),
+            Orchestrator::new(),
         )
     }
 
@@ -93,6 +96,7 @@ mod tests {
         PromptFamily,
         Arc<AtomicBool>,
         ProcessScheduler,
+        Orchestrator,
     ) {
         let memory = Rc::new(RefCell::new(
             NeuralMemory::new(MemoryConfig {
@@ -112,6 +116,7 @@ mod tests {
             PromptFamily::Llama,
             shutdown_requested,
             ProcessScheduler::new(),
+            Orchestrator::new(),
         )
     }
 
@@ -170,7 +175,7 @@ mod tests {
     #[test]
     fn tcp_ping_roundtrip_on_transport_layer() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler) =
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler, mut orchestrator) =
             setup_shared_state();
 
         peer.write_all(b"PING 1 0\n").expect("write ping");
@@ -182,6 +187,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             1,
             &shutdown_requested,
         );
@@ -201,7 +207,7 @@ mod tests {
     #[test]
     fn tcp_partial_header_then_complete_header() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler) =
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler, mut orchestrator) =
             setup_shared_state();
 
         peer.write_all(b"PING 1").expect("write chunk1");
@@ -212,6 +218,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             1,
             &shutdown_requested,
         );
@@ -225,6 +232,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             1,
             &shutdown_requested,
         );
@@ -240,7 +248,7 @@ mod tests {
     #[test]
     fn tcp_invalid_header_then_valid_ping_same_stream() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler) =
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler, mut orchestrator) =
             setup_shared_state();
 
         peer.write_all(b"WHAT 1 0\nPING 1 0\n")
@@ -252,6 +260,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             1,
             &shutdown_requested,
         );
@@ -267,7 +276,7 @@ mod tests {
     #[test]
     fn tcp_disconnect_requests_close() {
         let (mut client, peer) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler) =
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler, mut orchestrator) =
             setup_shared_state();
 
         drop(peer);
@@ -279,6 +288,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             1,
             &shutdown_requested,
         );
@@ -289,7 +299,7 @@ mod tests {
     fn tcp_multi_client_isolated_buffers() {
         let (mut client_a, mut peer_a) = setup_client_and_peer();
         let (mut client_b, mut peer_b) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler) =
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler, mut orchestrator) =
             setup_shared_state();
 
         peer_a.write_all(b"PING 1 0\n").expect("write ping a");
@@ -302,6 +312,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             1,
             &shutdown_requested,
         );
@@ -312,6 +323,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             2,
             &shutdown_requested,
         );
@@ -332,7 +344,7 @@ mod tests {
 
     #[test]
     fn tcp_reconnect_after_disconnect_still_works() {
-        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler) =
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler, mut orchestrator) =
             setup_shared_state();
 
         let (mut client1, peer1) = setup_client_and_peer();
@@ -344,6 +356,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             1,
             &shutdown_requested,
         );
@@ -358,6 +371,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             9,
             &shutdown_requested,
         );
@@ -373,7 +387,7 @@ mod tests {
     #[test]
     fn tcp_status_returns_kernel_metrics_snapshot() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler) =
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler, mut orchestrator) =
             setup_shared_state();
 
         peer.write_all(b"STATUS 1 0\n").expect("write status");
@@ -384,6 +398,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             1,
             &shutdown_requested,
         );
@@ -400,7 +415,7 @@ mod tests {
     #[test]
     fn tcp_shutdown_sets_flag() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler) =
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler, mut orchestrator) =
             setup_shared_state();
 
         peer.write_all(b"SHUTDOWN 1 0\n").expect("write shutdown");
@@ -411,6 +426,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             1,
             &shutdown_requested,
         );
@@ -427,7 +443,7 @@ mod tests {
     #[test]
     fn tcp_pressure_memw_queued_does_not_block_ping() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler) =
+        let (memory, engine_state, mut catalog, mut family, shutdown_requested, mut scheduler, mut orchestrator) =
             setup_shared_state_with_memory_mb(0);
 
         let swap_dir = format!(
@@ -464,6 +480,7 @@ mod tests {
                 &mut catalog,
                 &mut family,
                 &mut scheduler,
+                &mut orchestrator,
                 1,
                 &shutdown_requested,
             );
@@ -491,6 +508,7 @@ mod tests {
             &mut catalog,
             &mut family,
             &mut scheduler,
+            &mut orchestrator,
             1,
             &shutdown_requested,
         );

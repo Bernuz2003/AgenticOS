@@ -22,6 +22,7 @@ pub enum OpCode {
     SetQuota,       // Imposta quota processo
     Checkpoint,     // Salva snapshot kernel su disco
     Restore,        // Ripristina stato kernel da disco
+    Orchestrate,    // Registra ed esegue un DAG di task
 }
 
 #[derive(Debug)]
@@ -64,6 +65,7 @@ impl CommandHeader {
             "SET_QUOTA" => OpCode::SetQuota,
             "CHECKPOINT" => OpCode::Checkpoint,
             "RESTORE" => OpCode::Restore,
+            "ORCHESTRATE" => OpCode::Orchestrate,
             _ => return Err(ProtocolError::UnknownOpcode(parts[0].to_string())),
         };
 
@@ -176,6 +178,14 @@ mod tests {
 
         let rs = CommandHeader::parse("RESTORE 1 0").expect("RESTORE should parse");
         assert!(matches!(rs.opcode, OpCode::Restore));
+    }
+
+    #[test]
+    fn parse_orchestrate_opcode() {
+        let o = CommandHeader::parse("ORCHESTRATE agent_1 200").expect("ORCHESTRATE should parse");
+        assert!(matches!(o.opcode, OpCode::Orchestrate));
+        assert_eq!(o.agent_id, "agent_1");
+        assert_eq!(o.content_length, 200);
     }
 
     #[test]

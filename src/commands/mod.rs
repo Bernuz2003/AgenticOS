@@ -10,6 +10,7 @@ use crate::checkpoint;
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::{infer_workload_class, parse_workload_hint, ModelCatalog};
+use crate::orchestrator::Orchestrator;
 use crate::prompting::PromptFamily;
 use crate::protocol::{self, OpCode};
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
@@ -33,6 +34,7 @@ pub fn execute_command(
     model_catalog: &mut ModelCatalog,
     active_family: &mut PromptFamily,
     scheduler: &mut ProcessScheduler,
+    orchestrator: &mut Orchestrator,
     client_id: usize,
     shutdown_requested: &Arc<AtomicBool>,
 ) {
@@ -256,6 +258,22 @@ pub fn execute_command(
                             sched_summary
                         ),
                     )
+                } else if let Some(orch_id_str) = requested.strip_prefix("orch:") {
+                    if let Ok(orch_id) = orch_id_str.parse::<u64>() {
+                        if let Some(status_text) = orchestrator.format_status(orch_id) {
+                            protocol::response_ok_code("STATUS", &status_text)
+                        } else {
+                            protocol::response_err_code(
+                                "ORCH_NOT_FOUND",
+                                &format!("Orchestration {} not found", orch_id),
+                            )
+                        }
+                    } else {
+                        protocol::response_err_code(
+                            "STATUS_INVALID",
+                            "Orchestration ID must be numeric (orch:<N>)",
+                        )
+                    }
                 } else if let Ok(pid) = requested.parse::<u64>() {
                     if let Some(line) = engine.process_status_line(pid) {
                         // Enrich per-PID status with scheduler info.
@@ -637,6 +655,59 @@ pub fn execute_command(
                     )
                 }
                 Err(e) => protocol::response_err_code("RESTORE_FAILED", &e),
+            }
+        }
+        OpCode::Orchestrate => {
+            // Require a loaded engine before registering the graph.
+            {
+                let lock = engine_state.lock().unwrap();
+                if lock.is_none() {
+                    return client.output_buffer.extend(
+                        protocol::response_err_code("NO_MODEL", "No Model Loaded — ORCHESTRATE requires a loaded engine"),
+                    );
+                }
+            }
+
+            let payload_text = String::from_utf8_lossy(&payload);
+            match serde_json::from_str::<crate::orchestrator::TaskGraphDef>(payload_text.trim()) {
+                Ok(graph) => {
+                    let total_tasks = graph.tasks.len();
+                    match orchestrator.register(graph, client_id) {
+                        Ok((orch_id, spawn_requests)) => {
+                            let mut spawned = 0usize;
+                            let mut lock = engine_state.lock().unwrap();
+                            let engine = lock.as_mut().unwrap(); // safe: checked above
+
+                            for req in spawn_requests {
+                                match engine.spawn_process(&req.prompt, 0, req.owner_id) {
+                                    Ok(pid) => {
+                                        if let Some(token_slots) = engine.process_max_tokens(pid) {
+                                            if let Err(e) = memory.borrow_mut().register_process(pid, token_slots) {
+                                                engine.kill_process(pid);
+                                                orchestrator.mark_spawn_failed(orch_id, &req.task_id, &e.to_string());
+                                                continue;
+                                            }
+                                        }
+                                        scheduler.register(pid, req.workload, ProcessPriority::Normal);
+                                        orchestrator.register_pid(pid, orch_id, &req.task_id);
+                                        inc_exec_started();
+                                        spawned += 1;
+                                    }
+                                    Err(e) => {
+                                        orchestrator.mark_spawn_failed(orch_id, &req.task_id, &e.to_string());
+                                    }
+                                }
+                            }
+
+                            log_event("orchestrate", client_id, None,
+                                &format!("orch_id={} total={} spawned={}", orch_id, total_tasks, spawned));
+                            protocol::response_ok_code("ORCHESTRATE",
+                                &format!("orchestration_id={} total_tasks={} spawned={}", orch_id, total_tasks, spawned))
+                        }
+                        Err(e) => protocol::response_err_code("ORCHESTRATE_INVALID", &e),
+                    }
+                }
+                Err(e) => protocol::response_err_code("ORCHESTRATE_JSON", &format!("Invalid task graph JSON: {}", e)),
             }
         }
     };

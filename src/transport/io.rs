@@ -8,6 +8,7 @@ use crate::commands::execute_command;
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
+use crate::orchestrator::Orchestrator;
 use crate::prompting::PromptFamily;
 use crate::protocol;
 use crate::scheduler::ProcessScheduler;
@@ -22,6 +23,7 @@ pub fn handle_read(
     model_catalog: &mut ModelCatalog,
     active_family: &mut PromptFamily,
     scheduler: &mut ProcessScheduler,
+    orchestrator: &mut Orchestrator,
     client_id: usize,
     shutdown_requested: &Arc<AtomicBool>,
 ) -> bool {
@@ -56,6 +58,7 @@ pub fn handle_read(
                 model_catalog,
                 active_family,
                 scheduler,
+                orchestrator,
                 client_id,
                 shutdown_requested,
             ),

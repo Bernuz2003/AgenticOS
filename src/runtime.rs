@@ -6,9 +6,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
+use crate::orchestrator::Orchestrator;
 use crate::prompting::{format_interprocess_user_message, format_system_injection, PromptFamily};
 use crate::protocol;
-use crate::scheduler::ProcessScheduler;
+use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::tools::handle_syscall;
 use crate::transport::Client;
 
@@ -140,6 +141,7 @@ pub fn run_engine_tick(
     poll: &Poll,
     active_family: PromptFamily,
     scheduler: &mut ProcessScheduler,
+    orchestrator: &mut Orchestrator,
 ) {
     let mut lock = engine_state.lock().unwrap();
     if let Some(engine) = lock.as_mut() {
@@ -173,6 +175,11 @@ pub fn run_engine_tick(
                 Ok(Some((text, owner_id))) => {
                     // Record token and enforce quota.
                     let token_quota_exceeded = scheduler.record_token(pid);
+
+                    // Track output for orchestrated tasks.
+                    if orchestrator.is_orchestrated(pid) {
+                        orchestrator.append_output(pid, &text);
+                    }
 
                     let mut pending_syscall: Option<String> = None;
 
@@ -217,6 +224,9 @@ pub fn run_engine_tick(
                 Ok(None) => {}
                 Err(e) => {
                     tracing::error!(pid, %e, "Process error, killing");
+                    if orchestrator.is_orchestrated(pid) {
+                        orchestrator.mark_failed(pid, &e.to_string());
+                    }
                     let _ = memory.borrow_mut().release_process(pid);
                     scheduler.unregister(pid);
                     engine.kill_process(pid);
@@ -226,6 +236,11 @@ pub fn run_engine_tick(
 
         let finished_pids = engine.list_finished_pids();
         for pid in finished_pids {
+            // Notify orchestrator before cleanup.
+            if orchestrator.is_orchestrated(pid) {
+                orchestrator.mark_completed(pid);
+            }
+
             if let Some(owner_id) = engine.process_owner_id(pid) {
                 if owner_id > 0 {
                     let token = Token(owner_id);
@@ -245,6 +260,56 @@ pub fn run_engine_tick(
             let _ = memory.borrow_mut().release_process(pid);
             scheduler.unregister(pid);
             engine.kill_process(pid);
+        }
+
+        // ── Orchestration advance ───────────────────────────────────
+        let (spawn_requests, kill_pids) = orchestrator.advance();
+
+        // Kill tasks for fail-fast policy.
+        for pid in kill_pids {
+            tracing::warn!(pid, "ORCHESTRATOR: killing task (fail_fast policy)");
+            if let Some(owner_id) = engine.process_owner_id(pid) {
+                if owner_id > 0 {
+                    let token = Token(owner_id);
+                    if let Some(client) = clients.get_mut(&token) {
+                        let msg = format!("\n[ORCHESTRATOR_TASK_KILLED pid={}]\n", pid);
+                        client.output_buffer.extend(protocol::response_data(msg.as_bytes()));
+                        let _ = poll.registry().reregister(
+                            &mut client.stream, token,
+                            Interest::READABLE | Interest::WRITABLE,
+                        );
+                    }
+                }
+            }
+            let _ = memory.borrow_mut().release_process(pid);
+            scheduler.unregister(pid);
+            engine.kill_process(pid);
+        }
+
+        // Spawn tasks whose dependencies are now satisfied.
+        for req in spawn_requests {
+            match engine.spawn_process(&req.prompt, 0, req.owner_id) {
+                Ok(pid) => {
+                    if let Some(token_slots) = engine.process_max_tokens(pid) {
+                        if let Err(e) = memory.borrow_mut().register_process(pid, token_slots) {
+                            engine.kill_process(pid);
+                            orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, &e.to_string());
+                            tracing::error!(task_id = %req.task_id, %e, "ORCHESTRATOR: memory admission failed");
+                            continue;
+                        }
+                    }
+                    scheduler.register(pid, req.workload, ProcessPriority::Normal);
+                    orchestrator.register_pid(pid, req.orch_id, &req.task_id);
+                    tracing::info!(
+                        pid, orch_id = req.orch_id, task_id = %req.task_id,
+                        "ORCHESTRATOR: spawned dependent task"
+                    );
+                }
+                Err(e) => {
+                    orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, &e.to_string());
+                    tracing::error!(task_id = %req.task_id, %e, "ORCHESTRATOR: spawn failed");
+                }
+            }
         }
     }
 }
