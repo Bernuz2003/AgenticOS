@@ -225,7 +225,7 @@ impl SwapManager {
 
     // ── Persistence helpers (delegate to swap_io) ───────────────────
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn persist_payload(
         base_dir: &std::path::Path,
         file_stem: &str,

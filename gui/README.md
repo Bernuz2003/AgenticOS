@@ -31,7 +31,7 @@ python3 -m gui.app
 
 ## Note
 
-- La GUI usa il protocollo TCP locale su `127.0.0.1:6379` (configurabile in alto).
+- La GUI usa il protocollo TCP locale su `127.0.0.1:6380` (configurabile via `AGENTIC_PORT`).
 - Se `target/release/agentic_os_kernel` esiste, viene usato per l’avvio kernel; altrimenti fallback a `cargo run --release`.
 - `Stop Local Kernel` ferma il processo avviato dalla GUI (livello OS), mentre `Kernel SHUTDOWN` invia il comando protocollo di spegnimento graceful.
 - `Stop PID (TERM)` richiede chiusura gentile del processo agentico; `Kill PID (KILL)` forza la chiusura immediata.

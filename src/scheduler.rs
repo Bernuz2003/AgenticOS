@@ -217,14 +217,10 @@ impl ProcessScheduler {
         false
     }
 
-    #[allow(dead_code)]
+    /// Used in tests to verify token accounting.
+    #[cfg(test)]
     pub fn tokens_generated(&self, pid: u64) -> usize {
         self.accounting.get(&pid).map_or(0, |a| a.tokens_generated)
-    }
-
-    #[allow(dead_code)]
-    pub fn syscalls_used(&self, pid: u64) -> usize {
-        self.accounting.get(&pid).map_or(0, |a| a.syscalls_used)
     }
 
     // ── Scheduling order ────────────────────────────────────────────────

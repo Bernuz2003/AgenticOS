@@ -143,7 +143,7 @@ pub fn run_engine_tick(
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
 ) {
-    let mut lock = engine_state.lock().unwrap();
+    let mut lock = engine_state.lock().expect("engine_state lock poisoned");
     if let Some(engine) = lock.as_mut() {
         let swap_events = memory.borrow_mut().poll_swap_events();
         for event in swap_events {

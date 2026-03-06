@@ -42,7 +42,7 @@ class MainWindow(QMainWindow):
     def __init__(self, workspace_root: Path):
         super().__init__()
         self.workspace_root = workspace_root
-        self.client = ProtocolClient(host="127.0.0.1", port=6379)
+        self.client = ProtocolClient()
         self.kernel = KernelProcessManager(workspace_root=workspace_root)
         self.ui_queue: queue.Queue[UiEvent] = queue.Queue()
 
@@ -379,28 +379,45 @@ class MainWindow(QMainWindow):
             self.chat_section.show_error("Nessun modello caricato — usa Models → Load prima di Chat.")
             return
 
-        self.chat_section.begin_user_message(prompt)
+        req_id = self.chat_section.begin_user_message(prompt)
 
         def task():
+            pid = 0
             try:
                 self._update_client_config()
 
                 def on_frame(kind: str, code: str, body: bytes):
-                    if kind == "DATA" and code.lower() == "raw":
-                        text = body.decode("utf-8", errors="replace")
-                        self.ui_queue.put(UiEvent(kind="exec_stream", message=text))
-                    elif kind in {"+OK", "-ERR"}:
-                        control = body.decode("utf-8", errors="replace")
-                        self.ui_queue.put(UiEvent(kind="exec_control", message=f"{kind} {code}: {control}"))
+                    nonlocal pid
+                    text = body.decode("utf-8", errors="replace")
+                    if kind == "+OK":
+                        m = re.search(r"PID:\s*(\d+)", text)
+                        if m:
+                            pid = int(m.group(1))
+                            self.ui_queue.put(UiEvent(
+                                kind="exec_started",
+                                message=f"{pid}\x00{req_id}",
+                            ))
+                    elif kind == "DATA" and code.lower() == "raw":
+                        self.ui_queue.put(UiEvent(
+                            kind="exec_stream",
+                            message=f"{pid}\x00{text}",
+                        ))
 
                 result = self._exec_stream_with_retry(prompt=prompt, on_frame=on_frame)
-                status_str = "OK" if result.ok else "ERR"
-                self.ui_queue.put(UiEvent(
-                    kind="exec_done",
-                    message=f"[EXEC] {status_str} duration={result.duration_s:.3f}s",
-                ))
+                if pid > 0:
+                    self.ui_queue.put(UiEvent(
+                        kind="exec_done", message=f"{pid}\x00{req_id}",
+                    ))
+                elif not result.ok:
+                    self.ui_queue.put(UiEvent(
+                        kind="exec_error",
+                        message=f"0\x00{req_id}\x00{result.payload}",
+                    ))
             except Exception as exc:
-                self.ui_queue.put(UiEvent(kind="exec_error", message=f"EXEC failed: {exc}"))
+                self.ui_queue.put(UiEvent(
+                    kind="exec_error",
+                    message=f"{pid}\x00{req_id}\x00EXEC failed: {exc}",
+                ))
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -451,20 +468,31 @@ class MainWindow(QMainWindow):
             elif event.kind == "gen_get":
                 self.chat_section.apply_generation(event.message)
 
+            elif event.kind == "exec_started":
+                parts = event.message.split("\x00", 1)
+                self.chat_section.start_assistant_stream(int(parts[0]), int(parts[1]))
+
             elif event.kind == "exec_stream":
-                self.chat_section.append_assistant_chunk(event.message)
+                pid_str, text = event.message.split("\x00", 1)
+                self.chat_section.append_assistant_chunk(int(pid_str), text)
 
             elif event.kind == "exec_done":
-                self.chat_section.finish_assistant_message()
+                parts = event.message.split("\x00", 1)
+                self.chat_section.finish_assistant_message(int(parts[0]))
 
             elif event.kind == "exec_error":
-                self.chat_section.show_error(event.message)
+                parts = event.message.split("\x00", 2)
+                pid = int(parts[0]) if len(parts) > 0 else 0
+                req_id = int(parts[1]) if len(parts) > 1 else 0
+                msg = parts[2] if len(parts) > 2 else event.message
+                self.chat_section.show_error(msg, pid=pid, req_id=req_id)
 
             elif event.kind == "quota_response":
                 self.processes_section.show_quota(event.message)
 
             elif event.kind == "pid_status":
-                self.processes_section.update_pid_detail("", event.message)
+                pid = self._extract(event.message, "pid", "")
+                self.processes_section.update_pid_detail(pid, event.message)
 
             elif event.kind == "checkpoint_done":
                 self.memory_section.show_checkpoint_result(event.message)
@@ -592,6 +620,8 @@ class MainWindow(QMainWindow):
             try:
                 return self.client.exec_stream(
                     prompt=prompt, agent_id="1", on_frame=on_frame,
+                    inactivity_timeout_s=60.0,
+                    max_total_s=300.0,
                 )
             except Exception as exc:
                 last_exc = exc

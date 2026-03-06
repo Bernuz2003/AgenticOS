@@ -9,7 +9,9 @@ def send_command(verb, agent_id, payload):
     
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect(("127.0.0.1", 6379))
+            import os
+            port = int(os.environ.get("AGENTIC_PORT", "6380"))
+            s.connect(("127.0.0.1", port))
             s.sendall(header.encode('utf-8'))
             s.sendall(payload_bytes)
             

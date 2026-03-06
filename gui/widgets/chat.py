@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import html
+import re as _re
 import time
+from dataclasses import dataclass
 
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QKeyEvent
@@ -40,6 +42,17 @@ code { color: #9ece6a; }
 </style>
 """
 
+_PROCESS_FINISHED_RE = _re.compile(r'\[PROCESS_FINISHED[^\]]*\]')
+
+
+@dataclass
+class _StreamState:
+    """Per-PID streaming state."""
+    text: str = ""
+    start: float = 0.0
+    nbytes: int = 0
+    bubble_index: int = -1
+
 
 class ChatSection(QWidget):
     """Chat-style EXEC interface with workload hints and generation params."""
@@ -53,9 +66,10 @@ class ChatSection(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._message_count = 0
-        self._current_assistant_text = ""
-        self._stream_start = 0.0
-        self._stream_bytes = 0
+        self._bubbles: list[str] = []
+        self._streams: dict[int, _StreamState] = {}
+        self._pending_slots: dict[int, int] = {}
+        self._next_req_id = 1
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 12)
@@ -177,47 +191,90 @@ class ChatSection(QWidget):
 
     # ── Public API (called by MainWindow) ────────────────────
 
-    def begin_user_message(self, prompt: str):
+    def begin_user_message(self, prompt: str) -> int:
+        """Add user bubble and reserve a slot for the assistant response.
+        Returns a request ID to correlate with the kernel PID later."""
         escaped = html.escape(prompt).replace("\n", "<br>")
         bubble = (
             f'<div class="user-bubble">'
             f'<div class="user-label">YOU</div>'
             f'{escaped}</div>'
         )
-        self._append_html(bubble)
-        self._current_assistant_text = ""
-        self._stream_start = time.perf_counter()
-        self._stream_bytes = 0
+        self._bubbles.append(bubble)
+        req_id = self._next_req_id
+        self._next_req_id += 1
+        slot_index = len(self._bubbles)
+        self._bubbles.append(
+            '<div class="assistant-bubble">'
+            '<div class="assistant-label" style="color: #565f89;">'
+            'ASSISTANT \u25cf waiting...</div></div>'
+        )
+        self._pending_slots[req_id] = slot_index
         self._message_count += 1
+        self._refresh_display()
+        return req_id
 
-    def append_assistant_chunk(self, text: str):
-        self._current_assistant_text += text
-        self._stream_bytes += len(text.encode("utf-8"))
+    def start_assistant_stream(self, pid: int, req_id: int):
+        """Associate a kernel PID with the reserved slot and begin streaming."""
+        slot_index = self._pending_slots.pop(req_id, None)
+        if slot_index is None:
+            slot_index = len(self._bubbles)
+            self._bubbles.append("")
+        state = _StreamState(start=time.perf_counter(), bubble_index=slot_index)
+        self._streams[pid] = state
+        self._bubbles[slot_index] = self._render_live_bubble(pid)
+        self._refresh_display()
 
-    def finish_assistant_message(self):
-        elapsed = time.perf_counter() - self._stream_start
-        escaped = html.escape(self._current_assistant_text).replace("\n", "<br>")
-        tok_approx = max(self._stream_bytes // 4, 1)
+    def append_assistant_chunk(self, pid: int, text: str):
+        text = _PROCESS_FINISHED_RE.sub('', text)
+        if not text:
+            return
+        state = self._streams.get(pid)
+        if state is None:
+            return
+        state.text += text
+        state.nbytes += len(text.encode("utf-8"))
+        self._bubbles[state.bubble_index] = self._render_live_bubble(pid)
+        self._refresh_display()
+
+    def finish_assistant_message(self, pid: int):
+        state = self._streams.pop(pid, None)
+        if state is None:
+            return
+        elapsed = time.perf_counter() - state.start
+        escaped = html.escape(state.text).replace("\n", "<br>")
+        tok_approx = max(state.nbytes // 4, 1)
         tps = tok_approx / elapsed if elapsed > 0 else 0
-
-        bubble = (
+        self._bubbles[state.bubble_index] = (
             f'<div class="assistant-bubble">'
-            f'<div class="assistant-label">ASSISTANT</div>'
+            f'<div class="assistant-label">ASSISTANT [PID {pid}]</div>'
             f'{escaped}'
             f'<div class="metrics">'
-            f'<span>⏱ {elapsed:.1f}s</span>'
-            f'<span>⚡ {tok_approx} tok</span>'
-            f'<span>📊 {tps:.1f} tok/s</span>'
+            f'<span>\u23f1 {elapsed:.1f}s</span>'
+            f'<span>\u26a1 {tok_approx} tok</span>'
+            f'<span>\U0001f4ca {tps:.1f} tok/s</span>'
             f'</div></div>'
         )
-        self._append_html(bubble)
+        self._refresh_display()
 
-    def show_error(self, message: str):
-        bubble = (
+    def show_error(self, message: str, pid: int = 0, req_id: int = 0):
+        error_html = (
             f'<div style="color: #f7768e; padding: 8px; margin: 4px 8px;">'
-            f'⚠ {html.escape(message)}</div>'
+            f'\u26a0 {html.escape(message)}</div>'
         )
-        self._append_html(bubble)
+        if pid > 0:
+            state = self._streams.pop(pid, None)
+            if state is not None:
+                self._bubbles[state.bubble_index] = error_html
+                self._refresh_display()
+                return
+        if req_id > 0:
+            slot_index = self._pending_slots.pop(req_id, None)
+            if slot_index is not None:
+                self._bubbles[slot_index] = error_html
+                self._refresh_display()
+                return
+        self._append_html(error_html)
 
     def apply_generation(self, payload: str):
         kv = {}
@@ -241,6 +298,25 @@ class ChatSection(QWidget):
 
     # ── Internals ────────────────────────────────────────────
 
+    def _render_live_bubble(self, pid: int) -> str:
+        state = self._streams.get(pid)
+        if state is None:
+            return ""
+        escaped = html.escape(state.text).replace("\n", "<br>")
+        elapsed = time.perf_counter() - state.start
+        tok_approx = max(state.nbytes // 4, 1)
+        tps = tok_approx / elapsed if elapsed > 0 else 0
+        return (
+            f'<div class="assistant-bubble">'
+            f'<div class="assistant-label">ASSISTANT [PID {pid}] \u25cf streaming...</div>'
+            f'{escaped}'
+            f'<div class="metrics">'
+            f'<span>\u23f1 {elapsed:.1f}s</span>'
+            f'<span>\u26a1 {tok_approx} tok</span>'
+            f'<span>\U0001f4ca {tps:.1f} tok/s</span>'
+            f'</div></div>'
+        )
+
     def _on_send(self):
         prompt = self.prompt_input.toPlainText().strip()
         if not prompt:
@@ -260,17 +336,23 @@ class ChatSection(QWidget):
         self.set_gen_requested.emit(payload)
 
     def _append_html(self, html_fragment: str):
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        cursor.insertHtml(html_fragment)
+        self._bubbles.append(html_fragment)
+        self._refresh_display()
+
+    def _refresh_display(self):
+        self.chat_display.setHtml(
+            _CHAT_CSS + "<body>" + "".join(self._bubbles) + "</body>"
+        )
         self.chat_display.verticalScrollBar().setValue(
             self.chat_display.verticalScrollBar().maximum()
         )
 
     def _clear_chat(self):
+        self._bubbles.clear()
+        self._streams.clear()
+        self._pending_slots.clear()
         self.chat_display.setHtml(_CHAT_CSS + "<body></body>")
         self._message_count = 0
-        self._current_assistant_text = ""
 
     def eventFilter(self, obj, event):
         if obj is self.prompt_input and isinstance(event, QKeyEvent):

@@ -33,8 +33,10 @@ from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
 
+import os
+
 HOST = "127.0.0.1"
-PORT = 6379
+PORT = int(os.environ.get("AGENTIC_PORT", "6380"))
 FINISHED_MARKER = "[PROCESS_FINISHED pid="
 
 

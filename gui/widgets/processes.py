@@ -187,18 +187,29 @@ class ProcessesSection(QWidget):
             f"Critical: {crit}  High: {high}  Normal: {norm}  Low: {low}"
         )
 
+        # Snapshot current cell values keyed by PID so we can preserve them
+        _prev: dict[str, list[str]] = {}
+        for row in range(self.table.rowCount()):
+            item0 = self.table.item(row, 0)
+            if item0:
+                _prev[item0.text()] = [
+                    (self.table.item(row, c).text() if self.table.item(row, c) else "—")
+                    for c in range(self.table.columnCount())
+                ]
+
         # Update table
         prev_pid = self._selected_pid()
         self.table.setRowCount(len(all_pids))
         for row, pid in enumerate(all_pids):
             state = "active" if pid in active_pids else "waiting"
+            old = _prev.get(pid)
             self.table.setItem(row, 0, QTableWidgetItem(pid))
-            self.table.setItem(row, 1, QTableWidgetItem("—"))      # workload — need per-PID STATUS
-            self.table.setItem(row, 2, QTableWidgetItem("—"))      # priority
+            self.table.setItem(row, 1, QTableWidgetItem(old[1] if old else "—"))
+            self.table.setItem(row, 2, QTableWidgetItem(old[2] if old else "—"))
             self.table.setItem(row, 3, QTableWidgetItem(state))
-            self.table.setItem(row, 4, QTableWidgetItem("—"))      # tokens
-            self.table.setItem(row, 5, QTableWidgetItem("—"))      # syscalls
-            self.table.setItem(row, 6, QTableWidgetItem("—"))      # elapsed
+            self.table.setItem(row, 4, QTableWidgetItem(old[4] if old else "—"))
+            self.table.setItem(row, 5, QTableWidgetItem(old[5] if old else "—"))
+            self.table.setItem(row, 6, QTableWidgetItem(old[6] if old else "—"))
 
         # Restore selection
         if prev_pid:
@@ -208,9 +219,18 @@ class ProcessesSection(QWidget):
                     self.table.setCurrentCell(row, 0)
                     break
 
+        # Auto-enrich: request per-PID STATUS for every active process
+        for pid in all_pids:
+            self.status_pid_requested.emit(pid)
+
     def update_pid_detail(self, pid: str, payload: str):
         """Parse per-PID STATUS or GET_QUOTA response and update row + detail."""
-        # Try to find row for this PID
+        # If pid not provided, extract from payload
+        if not pid:
+            pid = self._ex(payload, "pid", "")
+        if not pid:
+            return
+
         row = self._find_row(pid)
 
         priority = self._ex(payload, "priority", "—")
@@ -233,19 +253,19 @@ class ProcessesSection(QWidget):
             except (ValueError, TypeError):
                 self.table.setItem(row, 6, QTableWidgetItem(elapsed))
 
-        self.detail_label.setText(
-            f"PID {pid}  │  priority={priority}  workload={workload}\n"
-            f"tokens: {tokens_gen}/{quota_tokens}  │  syscalls: {syscalls_used}/{quota_syscalls}  │  elapsed: {elapsed}s"
-        )
-
-        # Pre-fill controls
-        idx = self.priority_combo.findText(priority.lower())
-        if idx >= 0:
-            self.priority_combo.setCurrentIndex(idx)
-        if quota_tokens not in {"—", ""}:
-            self.quota_tokens.setText(str(quota_tokens))
-        if quota_syscalls not in {"—", ""}:
-            self.quota_syscalls.setText(str(quota_syscalls))
+        # Only update detail panel + controls for the currently selected PID
+        if pid == self._selected_pid():
+            self.detail_label.setText(
+                f"PID {pid}  │  priority={priority}  workload={workload}\n"
+                f"tokens: {tokens_gen}/{quota_tokens}  │  syscalls: {syscalls_used}/{quota_syscalls}  │  elapsed: {elapsed}s"
+            )
+            idx = self.priority_combo.findText(priority.lower())
+            if idx >= 0:
+                self.priority_combo.setCurrentIndex(idx)
+            if quota_tokens not in {"—", ""}:
+                self.quota_tokens.setText(str(quota_tokens))
+            if quota_syscalls not in {"—", ""}:
+                self.quota_syscalls.setText(str(quota_syscalls))
 
     def show_quota(self, payload: str):
         """Parse GET_QUOTA response."""

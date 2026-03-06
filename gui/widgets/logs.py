@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Signal, Qt
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 
 
 _MAX_LOG_LINES = 4000
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
 
 
 class LogsSection(QWidget):
@@ -109,7 +111,8 @@ class LogsSection(QWidget):
 
     def append_kernel_event(self, source: str, text: str):
         """Append a single kernel event line from kernel_manager."""
-        line = f"[{source}] {text}"
+        clean = _ANSI_RE.sub('', text)
+        line = f"[{source}] {clean}"
         self._kernel_lines.append(line)
         if len(self._kernel_lines) > _MAX_LOG_LINES:
             self._kernel_lines = self._kernel_lines[-_MAX_LOG_LINES:]

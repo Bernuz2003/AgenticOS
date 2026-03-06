@@ -31,7 +31,7 @@ Questo documento descrive l'architettura interna del kernel, i flussi end-to-end
 ## 1. Visione d'insieme
 
 ```
-┌─────────────────┐     TCP :6379     ┌──────────────────────────────┐
+┌─────────────────┐     TCP :6380     ┌──────────────────────────────┐
 │   Client / GUI  │◄────────────────►│      AgenticOS Kernel        │
 │  (Python, CLI)  │  RESP-like proto  │  (single-thread, mio 1.0)   │
 └─────────────────┘                   └──────────────────────────────┘
@@ -66,7 +66,7 @@ Questo documento descrive l'architettura interna del kernel, i flussi end-to-end
 ```mermaid
 graph TB
     subgraph "Transport Layer"
-        TCP["TcpListener :6379"]
+        TCP["TcpListener :6380"]
         FR["Framing<br/>parse_available_commands"]
         CL["Client<br/>stream + buffers + FSM"]
     end

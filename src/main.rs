@@ -60,7 +60,10 @@ impl Kernel {
     fn new() -> io::Result<Self> {
         let poll = Poll::new()?;
         let events = Events::with_capacity(128);
-        let addr = "127.0.0.1:6379".parse().unwrap();
+        let port = config::env_u64("AGENTIC_PORT", 6380) as u16;
+        let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port)
+            .parse()
+            .expect("valid listen address");
         let mut server = TcpListener::bind(addr)?;
         poll.registry()
             .register(&mut server, SERVER, Interest::READABLE)?;
@@ -240,7 +243,7 @@ impl Kernel {
         let (uptime_s, total_cmd, total_err, total_exec, total_signals) = snapshot_metrics_fn();
 
         let (processes, generation) = {
-            let lock = self.engine_state.lock().unwrap();
+            let lock = self.engine_state.lock().expect("engine_state lock poisoned");
             if let Some(engine) = lock.as_ref() {
                 let procs: Vec<checkpoint::ProcessSnapshot> = engine
                     .processes
@@ -300,5 +303,6 @@ fn main() -> io::Result<()> {
         .init();
 
     let mut kernel = Kernel::new()?;
+    tools::cleanup_stale_temp_scripts();
     kernel.run()
 }

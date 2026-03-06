@@ -8,6 +8,7 @@ use thiserror::Error;
 
 // ── Top-level kernel error ──────────────────────────────────────────────
 
+// TODO: adopt KernelError as the return type in Kernel::run() and command handlers.
 #[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum KernelError {
@@ -59,7 +60,6 @@ pub enum MemoryError {
 // ── Engine / process errors ─────────────────────────────────────────────
 
 #[derive(Debug, Error)]
-#[allow(dead_code)]
 pub enum EngineError {
     #[error("No model loaded")]
     NoModelLoaded,

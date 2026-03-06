@@ -89,8 +89,6 @@ impl TaskStatus {
 
 /// A live orchestration instance.
 pub struct Orchestration {
-    #[allow(dead_code)]
-    pub id: u64,
     pub owner_id: usize,
     pub failure_policy: FailurePolicy,
     /// Task definitions keyed by task id.
@@ -223,7 +221,6 @@ impl Orchestrator {
             .collect();
 
         let orch = Orchestration {
-            id: orch_id,
             owner_id,
             failure_policy: graph.failure_policy,
             tasks,
@@ -405,7 +402,7 @@ impl Orchestrator {
     // ── Query ───────────────────────────────────────────────────────────
 
     /// Look up an orchestration by id.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn get(&self, orch_id: u64) -> Option<&Orchestration> {
         self.orchestrations.get(&orch_id)
     }

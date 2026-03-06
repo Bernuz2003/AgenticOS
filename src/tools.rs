@@ -10,6 +10,28 @@ use crate::config::{env_bool, env_u64, env_usize};
 const WORKSPACE_DIR: &str = "./workspace";
 const AUDIT_LOG_FILE: &str = "syscall_audit.log";
 const OUTPUT_TRUNCATE_LEN: usize = 2000;
+const TEMP_SCRIPT_PREFIX: &str = "agent_script_";
+
+/// Remove stale `agent_script_*.py` temp files left by previous crashes.
+/// Called once at kernel boot.
+pub fn cleanup_stale_temp_scripts() {
+    let root = match workspace_root() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let Ok(entries) = fs::read_dir(&root) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(TEMP_SCRIPT_PREFIX) && name.ends_with(".py") {
+            if let Err(e) = fs::remove_file(entry.path()) {
+                tracing::warn!(file = %name, %e, "failed to remove stale temp script");
+            } else {
+                tracing::debug!(file = %name, "removed stale temp script");
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SandboxMode {
@@ -377,7 +399,7 @@ fn append_audit_log(
 }
 
 fn rate_limit_precheck(pid: u64, cfg: SysCallConfig) -> Result<(), String> {
-    let mut lock = rate_states().lock().unwrap();
+    let mut lock = rate_states().lock().expect("rate_states lock poisoned");
     let now = Instant::now();
     let state = lock.entry(pid).or_insert_with(|| RateState {
         calls_in_window: VecDeque::new(),
@@ -406,7 +428,7 @@ fn rate_limit_precheck(pid: u64, cfg: SysCallConfig) -> Result<(), String> {
 }
 
 fn rate_limit_postcheck(pid: u64, success: bool, cfg: SysCallConfig) -> bool {
-    let mut lock = rate_states().lock().unwrap();
+    let mut lock = rate_states().lock().expect("rate_states lock poisoned");
     let state = lock.entry(pid).or_insert_with(|| RateState {
         calls_in_window: VecDeque::new(),
         consecutive_errors: 0,

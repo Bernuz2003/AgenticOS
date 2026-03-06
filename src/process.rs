@@ -13,9 +13,7 @@ pub enum ProcessState {
 }
 
 pub struct AgentProcess {
-    #[allow(dead_code)]
-    pub id: u64,
-    pub owner_id: usize, // ID del socket proprietario
+    pub owner_id: usize,
     pub state: ProcessState,
     pub model: RuntimeModel,
     pub logits_processor: LogitsProcessor,
@@ -34,7 +32,6 @@ impl AgentProcess {
         generation: GenerationConfig,
     ) -> Self {
         AgentProcess {
-            id,
             owner_id,
             state: ProcessState::Ready,
             model,

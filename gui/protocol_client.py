@@ -56,9 +56,10 @@ def consume_framed_messages(buffer: bytearray) -> list[tuple[str, str, bytes]]:
 
 
 class ProtocolClient:
-    def __init__(self, host: str = "127.0.0.1", port: int = 6379):
+    def __init__(self, host: str = "127.0.0.1", port: int = 0):
+        import os
         self.host = host
-        self.port = port
+        self.port = port if port else int(os.environ.get("AGENTIC_PORT", "6380"))
 
     def send_once(
         self,

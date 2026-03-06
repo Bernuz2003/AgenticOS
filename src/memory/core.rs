@@ -107,12 +107,12 @@ impl NeuralMemory {
         self.active = active;
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_active(&self) -> bool {
         self.active
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn set_token_slot_quota_per_pid(&mut self, quota: usize) {
         self.token_slot_quota_per_pid = quota.max(1);
     }
@@ -216,13 +216,6 @@ impl NeuralMemory {
         self.swap.is_pid_waiting(pid)
     }
 
-    #[allow(dead_code)]
-    pub fn waiting_pids(&self) -> Vec<u64> {
-        // Delegate removed — this method is currently unused (dead_code)
-        // but kept for API completeness.
-        Vec::new()
-    }
-
     pub fn poll_swap_events(&mut self) -> Vec<SwapEvent> {
         let (events, deltas) = self.swap.poll_events();
         self.counters.swap_count += deltas.swap_count_inc;
@@ -237,28 +230,6 @@ impl NeuralMemory {
         self.page_table.insert(id, Vec::new());
         self.touch_tensor_lru(id);
         id
-    }
-
-    #[allow(dead_code)]
-    pub fn read(&self, id: TensorId) -> Result<Vec<f32>, MemoryError> {
-        let pages = self
-            .page_table
-            .get(&id)
-            .ok_or(MemoryError::TensorNotFound(id))?;
-
-        let mut output = Vec::new();
-
-        for &block_idx in pages {
-            let block = &self.physical_blocks[block_idx];
-            let chunk: Vec<f32> = block
-                .tensor
-                .to_vec1()
-                .map_err(|e| MemoryError::Alloc(format!("Candle read error: {}", e)))?;
-
-            output.extend(chunk);
-        }
-
-        Ok(output)
     }
 
     pub fn write_from_bytes(&mut self, id: TensorId, raw_data: &[u8]) -> Result<String, MemoryError> {
@@ -368,63 +339,7 @@ impl NeuralMemory {
         Ok(format!("Released tensor {} ({} blocks)", id, released_blocks))
     }
 
-    #[allow(dead_code)]
-    pub fn compute_test(&self, id: TensorId, multiplier: f32) -> Result<String, MemoryError> {
-        let pages = self.page_table.get(&id).ok_or(MemoryError::TensorNotFound(id))?;
 
-        let mut report = String::new();
-
-        for (i, &block_idx) in pages.iter().enumerate() {
-            let block_tensor = &self.physical_blocks[block_idx].tensor;
-            let res = (block_tensor * (multiplier as f64)).map_err(|e| MemoryError::Alloc(e.to_string()))?;
-
-            let max_val: f32 = res
-                .max_all()
-                .map_err(|e| MemoryError::Alloc(e.to_string()))?
-                .to_scalar()
-                .map_err(|e| MemoryError::Alloc(e.to_string()))?;
-
-            let mean_val: f32 = res
-                .mean_all()
-                .map_err(|e| MemoryError::Alloc(e.to_string()))?
-                .to_scalar()
-                .map_err(|e| MemoryError::Alloc(e.to_string()))?;
-
-            let vec: Vec<f32> = res
-                .flatten_all()
-                .map_err(|e| MemoryError::Alloc(e.to_string()))?
-                .to_vec1()
-                .map_err(|e| MemoryError::Alloc(e.to_string()))?;
-            let snippet = &vec[..std::cmp::min(vec.len(), 5)];
-
-            report.push_str(&format!(
-                "\n  > Block {}: Max={:.2}, Mean={:.5}, Data={:?}",
-                i, max_val, mean_val, snippet
-            ));
-        }
-
-        Ok(report)
-    }
-
-    #[allow(dead_code)]
-    pub fn stats(&self) -> String {
-        let s = self.snapshot();
-        format!(
-            "active={} free_blocks={} total_blocks={} tracked_pids={} allocated_tensors={} alloc_bytes={} evictions={} swap_count={} swap_faults={} swap_failures={} pending_swaps={} oom_events={}",
-            s.active,
-            s.free_blocks,
-            s.total_blocks,
-            s.tracked_pids,
-            s.allocated_tensors,
-            s.alloc_bytes,
-            s.evictions,
-            s.swap_count,
-            s.swap_faults,
-            s.swap_failures,
-            s.pending_swaps,
-            s.oom_events
-        )
-    }
 }
 
 #[cfg(test)]
