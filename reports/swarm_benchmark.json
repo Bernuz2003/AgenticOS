@@ -1,0 +1,54 @@
+{
+  "benchmark_id": "swarm-20260305-191215-b4c760f",
+  "timestamp": "2026-03-05 19:12:15",
+  "git": {
+    "commit": "b4c760f",
+    "branch": "main",
+    "dirty": true
+  },
+  "kernel": {
+    "host": "127.0.0.1",
+    "port": 6379,
+    "models_available": [
+      "llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M",
+      "qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m"
+    ]
+  },
+  "config": {
+    "single_model_id": "llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M",
+    "task_count": 6,
+    "repeat": 1,
+    "swarm_skipped": true,
+    "swarm_skip_reason": "Qwen 14B OOM on 31 GB — drop-before-load not sufficient for 14B model"
+  },
+  "scenarios": {
+    "single_model": {
+      "scenario": "single_model",
+      "error": "LOAD failed: ",
+      "results": []
+    },
+    "swarm_routing": {
+      "scenario": "swarm_routing",
+      "skipped": true,
+      "reason": "Qwen 14B OOM on 31 GB system — needs ≥64 GB RAM or GPU",
+      "aggregates": {}
+    }
+  },
+  "regression": {
+    "latency_p50": null,
+    "latency_p95": null,
+    "latency_mean": null,
+    "first_token_p50": null,
+    "first_token_p95": null,
+    "throughput_p50": null,
+    "throughput_p95": null,
+    "completion_rate": null
+  },
+  "verdict": {
+    "single_model_functional": false,
+    "swarm_skipped": true,
+    "latency_improved": null,
+    "throughput_improved": null,
+    "completion_maintained": null
+  }
+}

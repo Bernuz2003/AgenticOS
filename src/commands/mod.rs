@@ -51,6 +51,18 @@ pub fn execute_command(
                         .find(|m| m.path == resolved_path)
                         .and_then(|m| m.tokenizer_path.clone());
 
+                    // Drop-before-load: free the old engine's weights
+                    // BEFORE allocating the new one, so peak RAM = max(old, new)
+                    // instead of old + new.  Safe in a single-threaded event loop
+                    // because no other command can observe the empty slot.
+                    // NOTE: if the kernel becomes async/multi-threaded, this must
+                    // be replaced with a staged swap (load into temp, then swap
+                    // under lock) or a semaphore to reject concurrent EXEC while
+                    // the engine slot is None.
+                    {
+                        let mut lock = engine_state.lock().unwrap();
+                        *lock = None; // drops old engine, frees ~5-9 GB RAM
+                    }
                     match LLMEngine::load(
                         resolved_path.to_string_lossy().as_ref(),
                         family,
@@ -134,6 +146,16 @@ pub fn execute_command(
                 if let Some(selected) = model_catalog.select_for_workload(workload).cloned() {
                     let should_reload = *active_family != selected.family;
                     if should_reload {
+                        // Drop-before-load: release old engine weights before
+                        // loading the new model.  Avoids peak RAM = old + new.
+                        // Safe here: single-threaded event loop, no concurrent
+                        // EXEC can hit the empty slot during LLMEngine::load().
+                        // TODO(async): when migrating to async/multi-threaded,
+                        // guard with a ReadyState or reject EXEC while loading.
+                        {
+                            let mut lock = engine_state.lock().unwrap();
+                            *lock = None;
+                        }
                         let tokenizer_hint = selected.tokenizer_path.clone();
                         match LLMEngine::load(
                             selected.path.to_string_lossy().as_ref(),

@@ -1,81 +1,18 @@
-ts_ms=1771840764320 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771840764320 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771840764320 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- syscall_audit.log"
-ts_ms=1771840764320 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771841108751 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771841108751 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- syscall_audit.log"
-ts_ms=1771841108751 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771841108751 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771841136571 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771841136571 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- syscall_audit.log"
-ts_ms=1771841136571 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771841136571 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771842308236 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771842308236 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771842308236 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- syscall_audit.log"
-ts_ms=1771842308236 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771853277014 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- syscall_audit.log"
-ts_ms=1771853277015 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771853277015 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771853277015 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771860371018 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771860371018 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771860371018 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- syscall_audit.log"
-ts_ms=1771860371018 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771865890959 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771865890960 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771865890960 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- syscall_audit.log"
-ts_ms=1771865890961 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771865954056 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771865954056 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- syscall_audit.log"
-ts_ms=1771865954056 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771865954057 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771866190856 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771866190856 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- syscall_audit.log"
-ts_ms=1771866190856 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771866190856 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771866631910 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771866631910 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771866631910 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- syscall_audit.log\n- test_swap_1771866631908179097"
-ts_ms=1771866631910 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771866809972 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771866809973 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- test_swap_1771866809970103054\n- syscall_audit.log"
-ts_ms=1771866809973 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771866809973 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771866972172 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771866972172 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- test_swap_io_1771866972168711121\n- test_swap_1771866972168001110\n- syscall_audit.log"
-ts_ms=1771866972172 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771866972173 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771867102756 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771867102757 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771867102758 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- test_swap_1771867102750204652\n- syscall_audit.log"
-ts_ms=1771867102758 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771867135612 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771867135612 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771867135612 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- test_transport_swap_1771867102763912241\n- syscall_audit.log\n- test_swap_io_1771867135609317358\n- test_swap_1771867135608598994"
-ts_ms=1771867135612 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771867175612 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771867175612 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- test_transport_swap_1771867102763912241\n- syscall_audit.log\n- test_swap_1771867175608536718\n- test_swap_io_1771867175608231726\n- test_transport_swap_1771867135617818793"
-ts_ms=1771867175612 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771867175612 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771868742480 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771868742481 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771868742481 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- test_transport_swap_1771867102763912241\n- test_swap_1771868742475058065\n- syscall_audit.log\n- test_transport_swap_1771867135617818793"
-ts_ms=1771868742481 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771869865381 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771869865381 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- test_swap_io_1771869865378488165\n- test_swap_1771869865377832354\n- test_transport_swap_1771867102763912241\n- syscall_audit.log\n- test_transport_swap_1771867135617818793"
-ts_ms=1771869865381 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771869865381 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771870129863 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771870129864 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771870129864 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- test_transport_swap_1771867102763912241\n- test_swap_1771870129860377621\n- syscall_audit.log\n- test_transport_swap_1771867135617818793\n- test_swap_io_1771870129861249364"
-ts_ms=1771870129864 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771870333796 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
-ts_ms=1771870333797 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- test_transport_swap_1771867102763912241\n- test_swap_io_1771870333791120434\n- syscall_audit.log\n- test_transport_swap_1771867135617818793\n- test_swap_1771870333791043735"
-ts_ms=1771870333797 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
-ts_ms=1771870333797 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
-ts_ms=1771872872921 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- test_transport_swap_1771867102763912241\n- syscall_audit.log\n- test_transport_swap_1771867135617818793\n- test_swap_1771872872917130433"
-ts_ms=1771872872921 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
+timestamp=2026-03-06T10:59:31.377373
+
+=== KERNEL EVENTS (filtered view) ===
+[stdout] [2m2026-03-06T09:56:08.442962Z[0m [32m INFO[0m [2magentic_os_kernel::memory::core[0m[2m:[0m NeuralMemory: init (Candle) [3mtotal_mb[0m[2m=[0m64 [3mblocks[0m[2m=[0m4096 [3mparams_per_block[0m[2m=[0m4096
+[stdout] [2m2026-03-06T09:56:08.475267Z[0m [32m INFO[0m [2magentic_os_kernel[0m[2m:[0m AgenticOS Kernel ready [3mversion[0m[2m=[0m"0.5.0" [3maddr[0m[2m=[0m127.0.0.1:6379 [3mmemory_active[0m[2m=[0mtrue [3mmemory_swap_async[0m[2m=[0mtrue [3mswap_dir[0m[2m=[0m"workspace/swap" [3mcheckpoint_interval_secs[0m[2m=[0m0
+[stdout] [2m2026-03-06T09:57:18.476410Z[0m [32m INFO[0m [2magentic_os_kernel::engine::lifecycle[0m[2m:[0m ENGINE: Loading Master Model [3mpath[0m[2m=[0m"models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf" [3mfamily[0m[2m=[0mLlama
+[stdout] [2m2026-03-06T09:57:25.542344Z[0m [32m INFO[0m [2magentic_os_kernel::engine::lifecycle[0m[2m:[0m ENGINE: Weights loaded. Loading Tokenizer...
+[stdout] [2m2026-03-06T09:57:25.542366Z[0m [32m INFO[0m [2magentic_os_kernel::engine::lifecycle[0m[2m:[0m ENGINE: Using tokenizer [3mtokenizer_path[0m[2m=[0m"models/llama3.1-8b/tokenizer.json"
+[stdout] [2m2026-03-06T09:57:25.774510Z[0m [32m INFO[0m [2magentic_os_kernel::engine::lifecycle[0m[2m:[0m ENGINE: Special Tokens Identified [3meos_token_id[0m[2m=[0m128001 [3meot_token_id[0m[2m=[0m128009
+[stdout] [2m2026-03-06T09:57:25.774523Z[0m [32m INFO[0m [2magentic_os_kernel::engine::lifecycle[0m[2m:[0m ENGINE: Master Model & Tokenizer Ready. Backend abstraction enabled.
+[stdout] [2m2026-03-06T09:58:19.848555Z[0m [32m INFO[0m [2magentic_os_kernel::engine::lifecycle[0m[2m:[0m OS: Forking Agent Process (Zero-Copy) [3mpid[0m[2m=[0m1 [3mowner_id[0m[2m=[0m41
+[stdout] [2m2026-03-06T09:58:19.849125Z[0m [32m INFO[0m [2magentic_os_kernel::commands::metrics[0m[2m:[0m kernel_event [3mevent[0m[2m=[0m"process_spawn" [3mclient_id[0m[2m=[0m41 [3mpid[0m[2m=[0m1 [3mdetail[0m[2m=[0m"exec_started workload=Code priority=normal"
+
+=== SYSCALL LOG (filtered view) ===
+
 ts_ms=1771872872921 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
 ts_ms=1771872872921 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
 ts_ms=1771873323050 pid=10 mode=Host success=false kill=false duration_ms=0 cmd="READ_FILE: ../secret.txt" detail="SysCall Error: Path traversal denied."
@@ -154,3 +91,21 @@ ts_ms=1772712874010 pid=10 mode=Host success=false kill=false duration_ms=0 cmd=
 ts_ms=1772712874010 pid=22 mode=Host success=true kill=false duration_ms=0 cmd="LS" detail="Files:\n- swap\n- test_transport_swap_1771867102763912241\n- syscall_audit.log\n- test_transport_swap_1771867135617818793\n- test_swap_1772712874002759757"
 ts_ms=1772712874010 pid=22 mode=Host success=false kill=true duration_ms=0 cmd="LS" detail="SysCall Error: Rate limit exceeded (>1 calls in 60s)."
 ts_ms=1772712874012 pid=31 mode=Wasm success=false kill=false duration_ms=0 cmd="PYTHON: print('x')" detail="SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled."
+
+=== PROTOCOL TRACE ===
+[10:56:09.743] LIST_MODELS  → Models (2)\n- id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:56:18.236] MODEL_INFO llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M → id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M\nfamily=Llama\npath=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\ntokenizer=models/llama3.1-8b/tokenizer.json
+[10:56:23.048] LIST_MODELS  → Models (2)\n- id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:56:38.141] LIST_MODELS  → Models (2)\n- id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:56:53.142] LIST_MODELS  → Models (2)\n- id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:57:08.142] LIST_MODELS  → Models (2)\n- id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:57:25.847] LIST_MODELS  → Models (2)\n* id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:57:25.853] LIST_MODELS  → Models (2)\n* id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:57:38.045] LIST_MODELS  → Models (2)\n* id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:57:53.144] LIST_MODELS  → Models (2)\n* id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:58:08.047] LIST_MODELS  → Models (2)\n* id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:58:31.137] LIST_MODELS  → No complete control frame received before timeout.
+[10:58:39.241] LIST_MODELS  → Models (2)\n* id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:58:54.340] LIST_MODELS  → Models (2)\n* id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:59:09.440] LIST_MODELS  → Models (2)\n* id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
+[10:59:24.240] LIST_MODELS  → Models (2)\n* id=llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M family=Llama path=models/llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf\n- id=qwen2.5-14b/qwen2.5-14b-instruct-q4_k_m family=Qwen path=
