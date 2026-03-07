@@ -2,7 +2,6 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::{env_bool, env_u64, env_usize};
@@ -62,10 +61,17 @@ pub struct SysCallOutcome {
     pub should_kill_process: bool,
 }
 
-static RATE_STATES: OnceLock<Mutex<HashMap<u64, RateState>>> = OnceLock::new();
+/// Per-process syscall rate-limiting state — owned by Kernel, no global statics.
+pub(crate) struct SyscallRateMap {
+    states: HashMap<u64, RateState>,
+}
 
-fn rate_states() -> &'static Mutex<HashMap<u64, RateState>> {
-    RATE_STATES.get_or_init(|| Mutex::new(HashMap::new()))
+impl SyscallRateMap {
+    pub fn new() -> Self {
+        SyscallRateMap {
+            states: HashMap::new(),
+        }
+    }
 }
 
 fn syscall_config() -> SysCallConfig {
@@ -398,10 +404,9 @@ fn append_audit_log(
         .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
 }
 
-fn rate_limit_precheck(pid: u64, cfg: SysCallConfig) -> Result<(), String> {
-    let mut lock = rate_states().lock().expect("rate_states lock poisoned");
+fn rate_limit_precheck(pid: u64, cfg: SysCallConfig, rate_map: &mut SyscallRateMap) -> Result<(), String> {
     let now = Instant::now();
-    let state = lock.entry(pid).or_insert_with(|| RateState {
+    let state = rate_map.states.entry(pid).or_insert_with(|| RateState {
         calls_in_window: VecDeque::new(),
         consecutive_errors: 0,
     });
@@ -427,9 +432,8 @@ fn rate_limit_precheck(pid: u64, cfg: SysCallConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn rate_limit_postcheck(pid: u64, success: bool, cfg: SysCallConfig) -> bool {
-    let mut lock = rate_states().lock().expect("rate_states lock poisoned");
-    let state = lock.entry(pid).or_insert_with(|| RateState {
+fn rate_limit_postcheck(pid: u64, success: bool, cfg: SysCallConfig, rate_map: &mut SyscallRateMap) -> bool {
+    let state = rate_map.states.entry(pid).or_insert_with(|| RateState {
         calls_in_window: VecDeque::new(),
         consecutive_errors: 0,
     });
@@ -443,12 +447,12 @@ fn rate_limit_postcheck(pid: u64, success: bool, cfg: SysCallConfig) -> bool {
     }
 }
 
-pub fn handle_syscall(command_block: &str, pid: u64) -> SysCallOutcome {
+pub fn handle_syscall(command_block: &str, pid: u64, rate_map: &mut SyscallRateMap) -> SysCallOutcome {
     let cfg = syscall_config();
     let start = Instant::now();
     let clean_cmd = command_block.trim();
 
-    if let Err(e) = rate_limit_precheck(pid, cfg) {
+    if let Err(e) = rate_limit_precheck(pid, cfg, rate_map) {
         append_audit_log(
             pid,
             cfg.mode,
@@ -484,7 +488,7 @@ pub fn handle_syscall(command_block: &str, pid: u64) -> SysCallOutcome {
         Err(err) => (false, err),
     };
 
-    let kill_from_burst = rate_limit_postcheck(pid, success, cfg);
+    let kill_from_burst = rate_limit_postcheck(pid, success, cfg, rate_map);
     let mut final_output = output;
     if kill_from_burst {
         final_output.push_str("\nSysCall Guard: process killed due to repeated syscall failures.");
@@ -507,15 +511,8 @@ pub fn handle_syscall(command_block: &str, pid: u64) -> SysCallOutcome {
 }
 
 #[cfg(test)]
-pub fn reset_syscall_state_for_tests() {
-    if let Ok(mut lock) = rate_states().lock() {
-        lock.clear();
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    use super::{handle_syscall, reset_syscall_state_for_tests};
+    use super::{handle_syscall, SyscallRateMap};
     use std::sync::{Mutex, OnceLock};
 
     fn test_lock() -> &'static Mutex<()> {
@@ -526,21 +523,21 @@ mod tests {
     #[test]
     fn denies_path_traversal() {
         let _guard = test_lock().lock().unwrap();
-        reset_syscall_state_for_tests();
+        let mut rate_map = SyscallRateMap::new();
 
-        let out = handle_syscall("READ_FILE: ../secret.txt", 10);
+        let out = handle_syscall("READ_FILE: ../secret.txt", 10, &mut rate_map);
         assert!(out.output.contains("Path traversal") || out.output.contains("escapes workspace"));
     }
 
     #[test]
     fn rate_limit_can_kill_process() {
         let _guard = test_lock().lock().unwrap();
-        reset_syscall_state_for_tests();
+        let mut rate_map = SyscallRateMap::new();
         std::env::set_var("AGENTIC_SYSCALL_MAX_PER_WINDOW", "1");
         std::env::set_var("AGENTIC_SYSCALL_WINDOW_S", "60");
 
-        let _ = handle_syscall("LS", 22);
-        let second = handle_syscall("LS", 22);
+        let _ = handle_syscall("LS", 22, &mut rate_map);
+        let second = handle_syscall("LS", 22, &mut rate_map);
         assert!(second.should_kill_process);
         assert!(second.output.contains("Rate limit exceeded"));
 
@@ -551,11 +548,11 @@ mod tests {
     #[test]
     fn disable_host_fallback_rejects_unavailable_wasm_runner() {
         let _guard = test_lock().lock().unwrap();
-        reset_syscall_state_for_tests();
+        let mut rate_map = SyscallRateMap::new();
         std::env::set_var("AGENTIC_SANDBOX_MODE", "wasm");
         std::env::set_var("AGENTIC_ALLOW_HOST_FALLBACK", "false");
 
-        let out = handle_syscall("PYTHON: print('x')", 31);
+        let out = handle_syscall("PYTHON: print('x')", 31, &mut rate_map);
         assert!(out.output.contains("wasm") || out.output.contains("fallback disabled"));
 
         std::env::remove_var("AGENTIC_SANDBOX_MODE");

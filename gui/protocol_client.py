@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import socket
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -60,6 +61,78 @@ class ProtocolClient:
         import os
         self.host = host
         self.port = port if port else int(os.environ.get("AGENTIC_PORT", "6380"))
+        self._auth_token: Optional[str] = None
+        # Persistent socket for control-plane requests (protected by lock)
+        self._sock: Optional[socket.socket] = None
+        self._lock = threading.Lock()
+
+    def _load_token(self) -> str:
+        """Read auth token from workspace/.kernel_token (cached)."""
+        if self._auth_token is not None:
+            return self._auth_token
+        import os
+        token_path = os.path.join("workspace", ".kernel_token")
+        try:
+            with open(token_path, "r") as f:
+                self._auth_token = f.read().strip()
+        except FileNotFoundError:
+            self._auth_token = ""
+        return self._auth_token
+
+    def _authenticate(self, sock: socket.socket) -> None:
+        """Send AUTH command on a freshly connected socket."""
+        token = self._load_token()
+        if not token:
+            return
+        auth_payload = token.encode("utf-8")
+        auth_header = f"AUTH 1 {len(auth_payload)}\n".encode("utf-8")
+        sock.sendall(auth_header)
+        sock.sendall(auth_payload)
+        # Read and discard the AUTH response
+        buf = bytearray()
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            frames = consume_framed_messages(buf)
+            if frames:
+                break
+
+    def reload_token(self) -> None:
+        """Force re-read of the auth token on next connection."""
+        self._auth_token = None
+
+    def _ensure_connection(self, read_timeout_s: float) -> socket.socket:
+        """Return the persistent socket, reconnecting if needed."""
+        if self._sock is not None:
+            try:
+                # Quick liveness check — peek for errors
+                self._sock.settimeout(read_timeout_s)
+                return self._sock
+            except OSError:
+                self._close_persistent()
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(read_timeout_s)
+        sock.connect((self.host, self.port))
+        self._authenticate(sock)
+        self._sock = sock
+        return sock
+
+    def _close_persistent(self) -> None:
+        """Close the persistent socket (caller must hold _lock)."""
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+
+    def close(self) -> None:
+        """Public close — for shutdown cleanup."""
+        with self._lock:
+            self._close_persistent()
 
     def send_once(
         self,
@@ -69,6 +142,17 @@ class ProtocolClient:
         read_timeout_s: float = 5.0,
         inactivity_timeout_s: float = 0.5,
     ) -> ControlResponse:
+        with self._lock:
+            return self._send_once_locked(verb, payload, agent_id, read_timeout_s, inactivity_timeout_s)
+
+    def _send_once_locked(
+        self,
+        verb: str,
+        payload: str,
+        agent_id: str,
+        read_timeout_s: float,
+        inactivity_timeout_s: float,
+    ) -> ControlResponse:
         payload_bytes = payload.encode("utf-8")
         header = f"{verb} {agent_id} {len(payload_bytes)}\n".encode("utf-8")
 
@@ -76,9 +160,8 @@ class ProtocolClient:
         frame_buffer = bytearray()
         control: Optional[ControlResponse] = None
 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(read_timeout_s)
-            sock.connect((self.host, self.port))
+        try:
+            sock = self._ensure_connection(read_timeout_s)
             sock.sendall(header)
             if payload_bytes:
                 sock.sendall(payload_bytes)
@@ -88,6 +171,8 @@ class ProtocolClient:
                 try:
                     chunk = sock.recv(4096)
                     if not chunk:
+                        # Connection closed by kernel — force reconnect next time
+                        self._close_persistent()
                         break
                     frame_buffer.extend(chunk)
                     last_data_at = time.perf_counter()
@@ -106,6 +191,10 @@ class ProtocolClient:
                 except socket.timeout:
                     if time.perf_counter() - last_data_at >= inactivity_timeout_s:
                         break
+        except OSError:
+            # Connection error — teardown so next call reconnects
+            self._close_persistent()
+            raise
 
         if control is None:
             code = "TIMEOUT"
@@ -142,6 +231,7 @@ class ProtocolClient:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(connect_timeout_s)
             sock.connect((self.host, self.port))
+            self._authenticate(sock)
             sock.sendall(header)
             if payload_bytes:
                 sock.sendall(payload_bytes)

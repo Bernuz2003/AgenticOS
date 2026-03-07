@@ -16,6 +16,7 @@ dependencies = [
  "byteorder",
  "candle-core",
  "candle-transformers",
+ "getrandom 0.2.16",
  "hf-hub",
  "mio",
  "serde",

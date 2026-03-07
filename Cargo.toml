@@ -18,3 +18,4 @@ tokenizers = "0.22.2"
 byteorder = "1.5" # Utile per manipolare byte grezzi
 anyhow = "1.0" # Gestione errori più pulita per i file
 hf-hub = "0.4.3"
+getrandom = "0.2"

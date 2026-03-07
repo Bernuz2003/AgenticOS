@@ -273,6 +273,20 @@ impl ProcessScheduler {
             by_priority(ProcessPriority::Low),
         )
     }
+
+    /// Structured summary for JSON STATUS response.
+    pub fn summary_counts(&self) -> (usize, usize, usize, usize, usize) {
+        let by_priority = |p: ProcessPriority| -> usize {
+            self.priorities.values().filter(|&&v| v == p).count()
+        };
+        (
+            self.accounting.len(),
+            by_priority(ProcessPriority::Critical),
+            by_priority(ProcessPriority::High),
+            by_priority(ProcessPriority::Normal),
+            by_priority(ProcessPriority::Low),
+        )
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────

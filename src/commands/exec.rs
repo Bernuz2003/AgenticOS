@@ -5,7 +5,7 @@ use crate::protocol;
 use crate::scheduler::ProcessPriority;
 
 use super::context::CommandContext;
-use super::metrics::{inc_exec_started, log_event};
+use super::metrics::log_event;
 
 /// Handle the EXEC opcode: spawn a new inference process.
 ///
@@ -23,10 +23,17 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
         if let Some(selected) = ctx.model_catalog.select_for_workload(workload).cloned() {
             let should_reload = *ctx.active_family != selected.family;
             if should_reload {
-                {
-                    let mut lock = ctx.engine_state.lock().expect("engine_state lock poisoned");
-                    *lock = None;
+                if !ctx.in_flight.is_empty() {
+                    ctx.client.output_buffer.extend(protocol::response_err_code(
+                        "IN_FLIGHT",
+                        &format!(
+                            "Cannot switch model while {} process(es) are in-flight",
+                            ctx.in_flight.len()
+                        ),
+                    ));
+                    return None;
                 }
+                *ctx.engine_state = None;
                 let tokenizer_hint = selected.tokenizer_path.clone();
                 match LLMEngine::load(
                     selected.path.to_string_lossy().as_ref(),
@@ -34,8 +41,7 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
                     tokenizer_hint,
                 ) {
                     Ok(new_engine) => {
-                        let mut lock = ctx.engine_state.lock().expect("engine_state lock poisoned");
-                        *lock = Some(new_engine);
+                        *ctx.engine_state = Some(new_engine);
                         *ctx.active_family = selected.family;
                         ctx.model_catalog.selected_id = Some(selected.id.clone());
                         log_event(
@@ -60,12 +66,11 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
         }
     }
 
-    let mut lock = ctx.engine_state.lock().expect("engine_state lock poisoned");
-    if let Some(engine) = lock.as_mut() {
+    if let Some(engine) = ctx.engine_state.as_mut() {
         match engine.spawn_process(&prompt, 0, ctx.client_id) {
             Ok(pid) => {
                 if let Some(token_slots) = engine.process_max_tokens(pid) {
-                    if let Err(e) = ctx.memory.borrow_mut().register_process(pid, token_slots) {
+                    if let Err(e) = ctx.memory.register_process(pid, token_slots) {
                         engine.kill_process(pid);
                         ctx.client.output_buffer.extend(protocol::response_err_code(
                             "MEMORY_ADMISSION",
@@ -78,7 +83,7 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
                 ctx.scheduler
                     .register(pid, workload, ProcessPriority::Normal);
 
-                inc_exec_started();
+                ctx.metrics.inc_exec_started();
                 log_event(
                     "process_spawn",
                     ctx.client_id,

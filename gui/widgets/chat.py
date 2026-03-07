@@ -5,7 +5,7 @@ import re as _re
 import time
 from dataclasses import dataclass
 
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal, Qt, QTimer
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QComboBox,
@@ -70,6 +70,13 @@ class ChatSection(QWidget):
         self._streams: dict[int, _StreamState] = {}
         self._pending_slots: dict[int, int] = {}
         self._next_req_id = 1
+        self._render_dirty = False
+
+        # Render-throttle timer: flush at most every 200ms during streaming
+        self._render_timer = QTimer(self)
+        self._render_timer.setInterval(200)
+        self._render_timer.timeout.connect(self._flush_render)
+        self._render_timer.start()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 12)
@@ -235,7 +242,7 @@ class ChatSection(QWidget):
         state.text += text
         state.nbytes += len(text.encode("utf-8"))
         self._bubbles[state.bubble_index] = self._render_live_bubble(pid)
-        self._refresh_display()
+        self._render_dirty = True
 
     def finish_assistant_message(self, pid: int):
         state = self._streams.pop(pid, None)
@@ -340,12 +347,19 @@ class ChatSection(QWidget):
         self._refresh_display()
 
     def _refresh_display(self):
+        """Immediate full render — used for structural changes (new bubbles, finish)."""
+        self._render_dirty = False
         self.chat_display.setHtml(
             _CHAT_CSS + "<body>" + "".join(self._bubbles) + "</body>"
         )
         self.chat_display.verticalScrollBar().setValue(
             self.chat_display.verticalScrollBar().maximum()
         )
+
+    def _flush_render(self):
+        """Timer callback: render only if dirty (throttled to ≤5/sec)."""
+        if self._render_dirty:
+            self._refresh_display()
 
     def _clear_chat(self):
         self._bubbles.clear()

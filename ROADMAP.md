@@ -63,8 +63,9 @@ src/
 ├── scheduler.rs         # ProcessScheduler, ProcessPriority, ProcessQuota, ResourceAccounting
 ├── tools.rs             # Syscall sandbox (python/write_file/calc), rate-limit, audit
 ├── commands/
-│   ├── mod.rs           # execute_command dispatch incl. CHECKPOINT/RESTORE/ORCHESTRATE (~720 righe)
-│   ├── metrics.rs       # StatusMetrics, formattazione STATUS
+│   ├── mod.rs           # execute_command dispatch incl. CHECKPOINT/RESTORE/ORCHESTRATE
+│   ├── context.rs       # CommandContext<'a>: &mut NeuralMemory, &mut Option<LLMEngine>, &mut MetricsState
+│   ├── metrics.rs       # MetricsState (owned by Kernel), record/snapshot methods
 │   └── parsing.rs       # parse_generation_payload, parse_memw_payload
 ├── engine/
 │   ├── mod.rs           # LLMEngine, spawn/step/kill process
@@ -344,6 +345,34 @@ Applicato sia nel handler `LOAD` (riga ~57) che nel handler `EXEC` auto-switch (
 
 ---
 
+## Fase 2.7: Risoluzione criticità (C1–C14)
+
+### Criticità risolte
+**Status:** Phase A (C12, C14, C4) `DONE` ✅ | Phase B (C1, C2, C6) `DONE` ✅ | Phase C (C3, C5, C7) `DONE` ✅
+
+| Crit | Titolo | Note |
+|------|--------|------|
+| C1 | Inferenza bloccante nell'event loop | Inference worker thread + mpsc checkout/checkin |
+| C2 | Incoerenza modello di concorrenza | Tutto in `Kernel` struct, `&mut` split borrows, no Arc/Mutex/Rc/RefCell |
+| C3 | Nessuna autenticazione TCP | Token 32-byte hex al boot → `workspace/.kernel_token`, AUTH opcode, `AGENTIC_AUTH_DISABLED` env bypass |
+| C4 | `execute_command` monolitico | Refactored in `commands/` submodules con `CommandContext` |
+| C5 | STATUS flat → JSON strutturato | 8 `#[derive(Serialize)]` structs, GUI usa `json.loads()` ovunque, rimossi tutti `_ex()` regex helpers |
+| C6 | Metriche globali statiche | `MetricsState` + `SyscallRateMap` come campi di `Kernel` |
+| C7 | Qwen model reload per spawn | Guard in `spawn_process()`: reject concurrent spawn per backend non clonabili |
+| C12 | Porta 6379 hardcoded | `AGENTIC_PORT` env var (default 6380) |
+| C14 | Debito tecnico minore | dead_code cleanup, lingua mista, unwrap → proper errors |
+
+**Test:** 96/96 ✅ (94 pre-esistenti + 2 nuovi test AUTH)
+
+**Rimanenti (media/bassa, non bloccanti per Fase 3):**
+- C8 — GUI: connessione TCP nuova per ogni richiesta
+- C9 — GUI: thread spawn per ogni richiesta (no pool)
+- C10 — GUI: HTML rebuild per ogni token di streaming
+- C11 — GUI: N+1 query Processes (mitigato da JSON STATUS per-PID data)
+- C13 — Nessun recovery per swap worker thread crash
+
+---
+
 ## Roadmap futura — Fase 3: Intelligenza agentica
 
 ### 18) Tool registry dinamico
@@ -446,6 +475,36 @@ Fase 3 — Intelligenza agentica (aprile 2026)
 | 2026-03-05 | M15 | DONE | ARCHITECTURE.md (~500 righe): 14 sezioni, 8 diagrammi Mermaid, tabella 18 opcodes, glossario 20 termini. |
 | 2026-03-05 | M16 | DONE | Orchestrator: `orchestrator.rs` (~500 righe), opcode ORCHESTRATE, DAG validation + advance, fail_fast/best_effort, STATUS orch:, 94 test, clippy pulito. |
 | 2026-03-05 | M17 | DONE | Benchmark swarm: `eval_swarm.py` (520 righe), report JSON. Fix OOM con drop-before-load in LOAD+EXEC handlers. Scenario A (Llama 8B) funzionante, scenario B (swarm) skippato per limiti HW (31 GB insufficienti per Qwen 14B swap). |
+| 2026-03-06 | C1 | DONE | Non-blocking inference: checkout/checkin pattern in `inference_worker.rs`. Forward pass offloaded a thread dedicato via `mpsc` channels. Event loop non più bloccato. 94/94 test, zero warnings nuovi. |
+| 2026-03-06 | C2 | DONE | Concurrency model unificato: `Arc<Mutex<Option<LLMEngine>>>` → `Option<LLMEngine>`, `Rc<RefCell<NeuralMemory>>` → owned `NeuralMemory`. Tutto lo stato owned da `Kernel`, passato via `&mut` split borrows (NLL). Zero overhead da interior mutability. 16 file modificati, 94/94 test. |
+| 2026-03-06 | C6 | DONE | Metriche de-static: `MetricsState` da `static OnceLock<Mutex>` a campo Kernel (via `CommandContext.metrics`). `RATE_STATES` da static a `SyscallRateMap` campo Kernel (via `run_engine_tick`). `started_at: Instant` in `MetricsState`. Test isolati con istanze locali. 94/94 test. |
+
+---
+
+## Nota architetturale — Migrazione a Tokio
+
+### Decisione attuale
+Il kernel resta su **mio + thread dedicato** (checkout/checkin pattern per l'inferenza). Tokio è stato valutato ma scartato per costo/beneficio:
+
+- **Costo Tokio**: ~40-50% del codebase Rust da riscrivere (event loop mio → tokio runtime, `NeuralMemory` owned → `Arc<Mutex<>>` o `Arc<RwLock<>>`, tutti i 94 test da adattare). Stima: ~1-2 settimane. Con C2 completato (niente più `Rc<RefCell>`), la migrazione è più semplice.
+- **Costo checkout/checkin**: ~1 giorno. Zero dipendenze nuove, zero test rotti.
+
+### Quando rivalutare Tokio
+Il trigger è uno di questi scenari:
+1. **3+ worker thread indipendenti** — se servono tool remoti (M18), summarize meta-step (M19), e multi-model inference in parallelo, la coordinazione manuale con thread + mpsc diventa fragile. Tokio offre `select!`/`join!` nativi.
+2. **Kernel distribuito** — se servono nodi remoti, gRPC, o comunicazione inter-kernel, Tokio + tonic diventano lo stack naturale.
+3. **Backpressure complesso** — se il worker thread si satura e serve flow control sofisticato (bounded channels con politiche di drop/retry), Tokio offre primitivi migliori.
+
+### Benefici a lungo termine di Tokio
+- **Composizione async nativa**: `select!` per multiplexare canali, timer, I/O senza polling manuale
+- **Per-connection tasks**: ogni client gestito da un task leggero (spawn per connection)
+- **Backpressure**: `tokio::sync::mpsc` con bounded channels e `Permit`
+- **Ecosistema**: tonic (gRPC), reqwest, tower (middleware), tokio-console (debug live)
+- **Cancellation**: CancellationToken per shutdown gerarchico pulito
+
+### Cosa NON cambia con Tokio
+- La forward pass del modello (~150-250ms) è **CPU-bound** — resta in `spawn_blocking()` anche con Tokio
+- Il vantaggio di Tokio è per l'I/O e la coordinazione, non per il calcolo
 
 ---
 

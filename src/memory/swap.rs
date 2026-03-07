@@ -55,6 +55,7 @@ pub(super) struct SwapManager {
     tx: Option<Sender<SwapJob>>,
     rx: Option<Receiver<SwapResult>>,
     waiting: HashSet<u64>,
+    worker_crashes: u64,
 }
 
 impl SwapManager {
@@ -65,6 +66,7 @@ impl SwapManager {
             tx: None,
             rx: None,
             waiting: HashSet::new(),
+            worker_crashes: 0,
         }
     }
 
@@ -85,11 +87,15 @@ impl SwapManager {
 
         let validated = swap_io::resolve_valid_swap_dir(swap_dir)
             .map_err(MemoryError::Swap)?;
-        self.dir = validated.clone();
+        self.dir = validated;
+        self.spawn_worker()
+    }
 
+    /// Spawn (or re-spawn) the background worker thread.
+    fn spawn_worker(&mut self) -> Result<(), MemoryError> {
         let (tx_job, rx_job) = mpsc::channel::<SwapJob>();
         let (tx_result, rx_result) = mpsc::channel::<SwapResult>();
-        let worker_dir = validated;
+        let worker_dir = self.dir.clone();
 
         thread::Builder::new()
             .name("agentic_swap_worker".to_string())
@@ -152,6 +158,10 @@ impl SwapManager {
         self.waiting.len()
     }
 
+    pub fn worker_crashes(&self) -> u64 {
+        self.worker_crashes
+    }
+
     pub fn remove_waiting(&mut self, pid: u64) {
         self.waiting.remove(&pid);
     }
@@ -212,9 +222,33 @@ impl SwapManager {
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    self.enabled = false;
+                    self.worker_crashes += 1;
+                    tracing::error!(
+                        "Swap worker thread crashed (crash #{}) — attempting re-spawn",
+                        self.worker_crashes,
+                    );
+                    // Mark all in-flight PIDs as failed
+                    let lost_pids: Vec<u64> = self.waiting.drain().collect();
+                    for pid in lost_pids {
+                        deltas.swap_failures_inc += 1;
+                        events.push(SwapEvent {
+                            pid,
+                            success: false,
+                            detail: format!("swap job lost: worker crash (pid={})", pid),
+                        });
+                    }
+                    // Attempt one re-spawn
                     self.tx = None;
                     self.rx = None;
+                    if self.worker_crashes <= 1 {
+                        if let Err(e) = self.spawn_worker() {
+                            tracing::error!("Swap worker re-spawn failed: {}", e);
+                            self.enabled = false;
+                        }
+                    } else {
+                        tracing::error!("Swap worker crashed {} times — disabling swap", self.worker_crashes);
+                        self.enabled = false;
+                    }
                     break;
                 }
             }

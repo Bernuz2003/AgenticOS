@@ -23,6 +23,7 @@ pub enum OpCode {
     Checkpoint,     // Salva snapshot kernel su disco
     Restore,        // Ripristina stato kernel da disco
     Orchestrate,    // Registra ed esegue un DAG di task
+    Auth,           // Autenticazione client con token
 }
 
 #[derive(Debug)]
@@ -66,6 +67,7 @@ impl CommandHeader {
             "CHECKPOINT" => OpCode::Checkpoint,
             "RESTORE" => OpCode::Restore,
             "ORCHESTRATE" => OpCode::Orchestrate,
+            "AUTH" => OpCode::Auth,
             _ => return Err(ProtocolError::UnknownOpcode(parts[0].to_string())),
         };
 

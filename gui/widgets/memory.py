@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 from PySide6.QtCore import Signal, Qt, QTimer
 from PySide6.QtWidgets import (
     QFrame,
@@ -207,16 +205,18 @@ class MemorySection(QWidget):
 
     # ── Public API ───────────────────────────────────────────
 
-    def update_from_status(self, payload: str):
-        """Parse global STATUS payload and update memory stats."""
+    def update_from_status(self, data: dict):
+        """Parse global STATUS dict (JSON-decoded) and update memory stats."""
+        mem = data.get("memory", {})
+
         # Memory stats
-        for key, label_widget in self._stats.items():
-            val = self._ex(payload, f"mem_{key}", "—")
-            label_widget.setText(val)
+        for key in self._stats:
+            val = mem.get(key, "—")
+            self._stats[key].setText(str(val))
 
         # Usage bar
-        total = self._ex_int(payload, "mem_total_blocks", 0)
-        free = self._ex_int(payload, "mem_free_blocks", 0)
+        total = int(mem.get("total_blocks", 0))
+        free = int(mem.get("free_blocks", 0))
         used = total - free
         if total > 0:
             pct = int(used / total * 100)
@@ -227,9 +227,9 @@ class MemorySection(QWidget):
             self.usage_bar.setFormat("Memory inactive")
 
         # Swap stats
-        for key, label_widget in self._swap_stats.items():
-            val = self._ex(payload, f"mem_{key}", "—")
-            label_widget.setText(val)
+        for key in self._swap_stats:
+            val = mem.get(key, "—")
+            self._swap_stats[key].setText(str(val))
 
     def show_checkpoint_result(self, text: str):
         self.ckpt_output.setText(text[:300])
@@ -252,12 +252,4 @@ class MemorySection(QWidget):
             self.memw_requested.emit(pid, text)
             self.memw_text.clear()
 
-    @staticmethod
-    def _ex(payload: str, key: str, default: str = "") -> str:
-        match = re.search(rf"\b{re.escape(key)}=([^\s]+)", payload)
-        return match.group(1) if match else default
 
-    @staticmethod
-    def _ex_int(payload: str, key: str, default: int = 0) -> int:
-        match = re.search(rf"\b{re.escape(key)}=(\d+)", payload)
-        return int(match.group(1)) if match else default

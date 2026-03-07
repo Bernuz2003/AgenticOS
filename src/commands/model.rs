@@ -4,6 +4,17 @@ use crate::protocol;
 use super::context::CommandContext;
 
 pub(crate) fn handle_load(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+    // Cannot load a new model while processes are in-flight on the inference worker.
+    if !ctx.in_flight.is_empty() {
+        return protocol::response_err_code(
+            "IN_FLIGHT",
+            &format!(
+                "Cannot LOAD while {} process(es) are in-flight. KILL them first.",
+                ctx.in_flight.len()
+            ),
+        );
+    }
+
     let _ = ctx.model_catalog.refresh();
     let selector = String::from_utf8_lossy(payload).trim().to_string();
     match ctx.model_catalog.resolve_load_target(&selector) {
@@ -16,18 +27,14 @@ pub(crate) fn handle_load(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u
                 .and_then(|m| m.tokenizer_path.clone());
 
             // Drop-before-load: free old engine weights BEFORE allocating new.
-            {
-                let mut lock = ctx.engine_state.lock().expect("engine_state lock poisoned");
-                *lock = None;
-            }
+            *ctx.engine_state = None;
             match LLMEngine::load(
                 resolved_path.to_string_lossy().as_ref(),
                 family,
                 tokenizer_hint,
             ) {
                 Ok(new_engine) => {
-                    let mut lock = ctx.engine_state.lock().expect("engine_state lock poisoned");
-                    *lock = Some(new_engine);
+                    *ctx.engine_state = Some(new_engine);
                     *ctx.active_family = family;
 
                     if let Some(entry) = ctx

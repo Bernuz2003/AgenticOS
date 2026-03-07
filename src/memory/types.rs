@@ -16,6 +16,7 @@ pub struct MemorySnapshot {
     pub pending_swaps: usize,
     pub waiting_pids: usize,
     pub oom_events: u64,
+    pub swap_worker_crashes: u64,
 }
 
 #[derive(Debug, Clone)]

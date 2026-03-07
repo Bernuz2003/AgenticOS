@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 from PySide6.QtCore import Signal, Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
@@ -159,29 +157,20 @@ class ProcessesSection(QWidget):
 
     # ── Public API ───────────────────────────────────────────
 
-    def update_from_status(self, payload: str):
-        """Parse global STATUS payload and populate process table."""
-        # Extract PIDs
-        pid_match = re.search(r"active_pids=\[([^\]]*)\]", payload)
-        active_pids = []
-        if pid_match:
-            content = pid_match.group(1).strip()
-            active_pids = [p.strip() for p in content.split(",") if p.strip()]
-
-        waiting_match = re.search(r"waiting_pids=\[([^\]]*)\]", payload)
-        waiting_pids = []
-        if waiting_match:
-            content = waiting_match.group(1).strip()
-            waiting_pids = [p.strip() for p in content.split(",") if p.strip()]
-
+    def update_from_status(self, data: dict):
+        """Parse global STATUS dict (JSON-decoded) and populate process table."""
+        procs = data.get("processes", {})
+        active_pids = [str(p) for p in procs.get("active_pids", [])]
+        waiting_pids = [str(p) for p in procs.get("waiting_pids", [])]
         all_pids = active_pids + waiting_pids
 
         # Scheduler summary
-        tracked = self._ex(payload, "scheduler_tracked", "0")
-        crit = self._ex(payload, "priority_critical", "0")
-        high = self._ex(payload, "priority_high", "0")
-        norm = self._ex(payload, "priority_normal", "0")
-        low = self._ex(payload, "priority_low", "0")
+        sched = data.get("scheduler", {})
+        tracked = sched.get("tracked", 0)
+        crit = sched.get("priority_critical", 0)
+        high = sched.get("priority_high", 0)
+        norm = sched.get("priority_normal", 0)
+        low = sched.get("priority_low", 0)
         self.scheduler_label.setText(
             f"Scheduler: {tracked} tracked  │  "
             f"Critical: {crit}  High: {high}  Normal: {norm}  Low: {low}"
@@ -200,16 +189,43 @@ class ProcessesSection(QWidget):
         # Update table
         prev_pid = self._selected_pid()
         self.table.setRowCount(len(all_pids))
+
+        # Build lookup from active_processes (per-PID detail embedded in global STATUS)
+        _detail: dict[str, dict] = {}
+        for proc in procs.get("active_processes", []):
+            _detail[str(proc.get("pid", ""))] = proc
+
         for row, pid in enumerate(all_pids):
             state = "active" if pid in active_pids else "waiting"
-            old = _prev.get(pid)
+            detail = _detail.get(pid)
+            if detail:
+                workload = str(detail.get("workload", "—"))
+                priority = str(detail.get("priority", "—"))
+                tokens_gen = str(detail.get("tokens_generated", "—"))
+                quota_tokens = str(detail.get("quota_tokens", "—"))
+                syscalls_used = str(detail.get("syscalls_used", "—"))
+                quota_syscalls = str(detail.get("quota_syscalls", "—"))
+                elapsed = detail.get("elapsed_secs", "—")
+                tok_cell = f"{tokens_gen}/{quota_tokens}"
+                sys_cell = f"{syscalls_used}/{quota_syscalls}"
+                try:
+                    elapsed_cell = f"{float(elapsed):.1f}s"
+                except (ValueError, TypeError):
+                    elapsed_cell = str(elapsed)
+            else:
+                old = _prev.get(pid)
+                workload = old[1] if old else "—"
+                priority = old[2] if old else "—"
+                tok_cell = old[4] if old else "—"
+                sys_cell = old[5] if old else "—"
+                elapsed_cell = old[6] if old else "—"
             self.table.setItem(row, 0, QTableWidgetItem(pid))
-            self.table.setItem(row, 1, QTableWidgetItem(old[1] if old else "—"))
-            self.table.setItem(row, 2, QTableWidgetItem(old[2] if old else "—"))
+            self.table.setItem(row, 1, QTableWidgetItem(workload))
+            self.table.setItem(row, 2, QTableWidgetItem(priority))
             self.table.setItem(row, 3, QTableWidgetItem(state))
-            self.table.setItem(row, 4, QTableWidgetItem(old[4] if old else "—"))
-            self.table.setItem(row, 5, QTableWidgetItem(old[5] if old else "—"))
-            self.table.setItem(row, 6, QTableWidgetItem(old[6] if old else "—"))
+            self.table.setItem(row, 4, QTableWidgetItem(tok_cell))
+            self.table.setItem(row, 5, QTableWidgetItem(sys_cell))
+            self.table.setItem(row, 6, QTableWidgetItem(elapsed_cell))
 
         # Restore selection
         if prev_pid:
@@ -219,29 +235,27 @@ class ProcessesSection(QWidget):
                     self.table.setCurrentCell(row, 0)
                     break
 
-        # Auto-enrich: request per-PID STATUS for every active process
-        for pid in all_pids:
-            self.status_pid_requested.emit(pid)
+        # Update detail panel for currently selected PID (if it has inline data)
+        sel = self._selected_pid()
+        if sel and sel in _detail:
+            self.update_pid_detail(sel, _detail[sel])
 
-    def update_pid_detail(self, pid: str, payload: str):
-        """Parse per-PID STATUS or GET_QUOTA response and update row + detail."""
-        # If pid not provided, extract from payload
+    def update_pid_detail(self, pid: str, data: dict):
+        """Update row + detail from per-PID STATUS dict (JSON-decoded)."""
         if not pid:
-            pid = self._ex(payload, "pid", "")
+            pid = str(data.get("pid", ""))
         if not pid:
             return
 
         row = self._find_row(pid)
 
-        priority = self._ex(payload, "priority", "—")
-        workload = self._ex(payload, "workload", "—")
-        tokens_gen = self._ex(payload, "tokens_generated", "—")
-        syscalls_used = self._ex(payload, "syscalls_used", "—")
-        elapsed = self._ex(payload, "elapsed_secs", "—")
-        max_tokens = self._ex(payload, "max_tokens", "—")
-        max_syscalls = self._ex(payload, "max_syscalls", "—")
-        quota_tokens = self._ex(payload, "quota_tokens", max_tokens)
-        quota_syscalls = self._ex(payload, "quota_syscalls", max_syscalls)
+        priority = str(data.get("priority", "—"))
+        workload = str(data.get("workload", "—"))
+        tokens_gen = str(data.get("tokens_generated", "—"))
+        syscalls_used = str(data.get("syscalls_used", "—"))
+        elapsed = str(data.get("elapsed_secs", "—"))
+        quota_tokens = str(data.get("quota_tokens", data.get("max_tokens", "—")))
+        quota_syscalls = str(data.get("quota_syscalls", data.get("max_syscalls", "—")))
 
         if row >= 0:
             self.table.setItem(row, 1, QTableWidgetItem(workload))
@@ -267,10 +281,10 @@ class ProcessesSection(QWidget):
             if quota_syscalls not in {"—", ""}:
                 self.quota_syscalls.setText(str(quota_syscalls))
 
-    def show_quota(self, payload: str):
-        """Parse GET_QUOTA response."""
-        pid = self._ex(payload, "pid", "?")
-        self.update_pid_detail(pid, payload)
+    def show_quota(self, data: dict):
+        """Parse GET_QUOTA JSON response dict."""
+        pid = str(data.get("pid", "?"))
+        self.update_pid_detail(pid, data)
 
     def show_error(self, text: str):
         self.error_banner.setText(f"⚠ {text}")
@@ -323,7 +337,4 @@ class ProcessesSection(QWidget):
         if pid:
             self.get_quota_requested.emit(pid)
 
-    @staticmethod
-    def _ex(payload: str, key: str, default: str = "") -> str:
-        match = re.search(rf"\b{re.escape(key)}=([^\s]+)", payload)
-        return match.group(1) if match else default
+

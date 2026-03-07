@@ -53,6 +53,12 @@ impl RuntimeModel {
         }
     }
 
+    /// Clone the model weights for a new process (zero-copy for Llama).
+    ///
+    /// Returns `None` for Qwen2 because `candle_transformers 0.9`
+    /// `quantized_qwen2::ModelWeights` has private fields and does not
+    /// derive `Clone`.  The caller (spawn_process) must enforce a
+    /// single-process guard for non-cloneable backends.
     pub fn duplicate_if_supported(&self) -> Option<Self> {
         match self {
             Self::Llama(model) => Some(Self::Llama(model.clone())),

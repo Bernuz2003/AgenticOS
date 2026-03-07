@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 
 from PySide6.QtCore import Signal, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -152,24 +151,24 @@ class OrchestrationSection(QWidget):
 
     # ── Public API ───────────────────────────────────────────
 
-    def update_orch_status(self, payload: str):
-        """Parse orchestration STATUS response and update UI."""
-        orch_id = self._ex(payload, "orchestration_id")
+    def update_orch_status(self, data: dict):
+        """Update UI from orchestration STATUS dict (JSON-decoded)."""
+        orch_id = str(data.get("orchestration_id", ""))
         if orch_id:
             self._current_orch_id = orch_id
             self._orch_id_lbl.setText(f"ID: {orch_id}")
 
-        total = self._ex(payload, "total", "0")
-        completed = self._ex(payload, "completed", "0")
-        running = self._ex(payload, "running", "0")
-        pending = self._ex(payload, "pending", "0")
-        failed = self._ex(payload, "failed", "0")
-        skipped = self._ex(payload, "skipped", "0")
-        finished = self._ex(payload, "finished", "no")
-        elapsed = self._ex(payload, "elapsed_secs", "?")
-        policy = self._ex(payload, "policy", "?")
+        total = data.get("total", 0)
+        completed = data.get("completed", 0)
+        running = data.get("running", 0)
+        pending = data.get("pending", 0)
+        failed = data.get("failed", 0)
+        skipped = data.get("skipped", 0)
+        finished = data.get("finished", False)
+        elapsed = data.get("elapsed_secs", "?")
+        policy = data.get("policy", "?")
 
-        if finished.lower() in {"yes", "true", "1"}:
+        if finished:
             self._orch_finished = True
             self._poll_timer.stop()
 
@@ -179,29 +178,28 @@ class OrchestrationSection(QWidget):
             f"Finished: {finished}  •  Elapsed: {elapsed}s  •  Policy: {policy}"
         )
 
-        # Parse per-task lines: "task=t1 status=completed pid=42 error="
-        lines = payload.strip().splitlines()
-        task_lines = [l for l in lines if l.strip().startswith("task=")]
-        self.task_table.setRowCount(len(task_lines))
-        for row, line in enumerate(task_lines):
-            task_id = self._ex(line, "task", "?")
-            status = self._ex(line, "status", "?")
-            pid = self._ex(line, "pid", "—")
-            error = self._ex(line, "error", "")
+        # Parse per-task entries from JSON array
+        tasks = data.get("tasks", [])
+        self.task_table.setRowCount(len(tasks))
+        for row, entry in enumerate(tasks):
+            task_id = str(entry.get("task", "?"))
+            status = str(entry.get("status", "?"))
+            pid = str(entry.get("pid", "—")) if entry.get("pid") is not None else "—"
+            error = str(entry.get("error", "")) if entry.get("error") is not None else ""
             for col, val in enumerate([task_id, status, pid, error]):
                 item = QTableWidgetItem(val)
                 if col == 1:
                     item.setForeground(self._status_color(status))
                 self.task_table.setItem(row, col, item)
 
-    def show_submit_result(self, payload: str):
-        """Show result of ORCHESTRATE command."""
-        orch_id = self._ex(payload, "orchestration_id")
+    def show_submit_result(self, data: dict):
+        """Show result of ORCHESTRATE command (JSON-decoded dict)."""
+        orch_id = str(data.get("orchestration_id", ""))
         if orch_id:
             self._current_orch_id = orch_id
             self._orch_id_lbl.setText(f"ID: {orch_id}")
-        total = self._ex(payload, "total_tasks", "?")
-        spawned = self._ex(payload, "spawned", "?")
+        total = data.get("total_tasks", "?")
+        spawned = data.get("spawned", "?")
         self.summ_label.setText(
             f"Submitted — ID: {orch_id}  •  Tasks: {total}  •  Spawned: {spawned}"
         )
@@ -246,7 +244,4 @@ class OrchestrationSection(QWidget):
         }
         return mapping.get(status, QColor("#c0caf5"))
 
-    @staticmethod
-    def _ex(payload: str, key: str, default: str = "") -> str:
-        match = re.search(rf"\b{re.escape(key)}=([^\s]+)", payload)
-        return match.group(1) if match else default
+

@@ -4,6 +4,7 @@ mod config;
 mod commands;
 mod engine;
 mod errors;
+mod inference_worker;
 mod memory;
 mod model_catalog;
 mod orchestrator;
@@ -17,27 +18,39 @@ mod transport;
 
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc};
+use std::thread::JoinHandle;
 use std::time::Instant;
 
+use commands::MetricsState;
 use config::env_bool;
 use engine::LLMEngine;
+use inference_worker::{InferenceCmd, InferenceResult};
 use memory::{MemoryConfig, NeuralMemory};
 use model_catalog::ModelCatalog;
 use orchestrator::Orchestrator;
 use prompting::PromptFamily;
 use runtime::run_engine_tick;
 use scheduler::ProcessScheduler;
+use tools::SyscallRateMap;
 use transport::{handle_read, handle_write, needs_writable_interest, writable_interest, Client};
 
 const SERVER: Token = Token(0);
 
 /// Encapsulates all kernel state into a single structure.
+///
+/// # Concurrency model (C2)
+///
+/// All state lives on the main (mio event-loop) thread. No `Arc<Mutex>` is
+/// needed because nothing is shared across threads. The inference worker
+/// receives individual `AgentProcess` values via `mpsc` channels
+/// (checkout/checkin pattern) and never touches the engine or memory.
+///
+/// `NeuralMemory` is owned directly (no `Rc<RefCell>`) — every call site
+/// receives `&mut NeuralMemory` via split borrows on `Kernel`.
 struct Kernel {
     poll: Poll,
     events: Events,
@@ -45,8 +58,8 @@ struct Kernel {
     clients: HashMap<Token, Client>,
     unique_token: Token,
     log_connections: bool,
-    memory: Rc<RefCell<NeuralMemory>>,
-    engine_state: Arc<Mutex<Option<LLMEngine>>>,
+    memory: NeuralMemory,
+    engine_state: Option<LLMEngine>,
     shutdown_requested: Arc<AtomicBool>,
     model_catalog: ModelCatalog,
     active_family: PromptFamily,
@@ -54,6 +67,18 @@ struct Kernel {
     orchestrator: Orchestrator,
     checkpoint_interval_secs: u64,
     last_checkpoint: Instant,
+    // ── Inference worker (checkout/checkin) ──────────────────────
+    cmd_tx: mpsc::Sender<InferenceCmd>,
+    result_rx: mpsc::Receiver<InferenceResult>,
+    in_flight: HashSet<u64>,
+    pending_kills: Vec<u64>,
+    worker_handle: Option<JoinHandle<()>>,
+    // ── Metrics & rate-limiting (C6 — no global statics) ────────
+    metrics: MetricsState,
+    syscall_rates: SyscallRateMap,
+    // ── Auth (C3) ───────────────────────────────────────────────
+    auth_token: String,
+    auth_disabled: bool,
 }
 
 impl Kernel {
@@ -75,15 +100,16 @@ impl Kernel {
             hidden_dim: 256,
             total_memory_mb: 64,
         };
-        let memory = Rc::new(RefCell::new(
-            NeuralMemory::new(mem_config)
-                .map_err(|e| io::Error::other(e.to_string()))?,
-        ));
+        let memory = NeuralMemory::new(mem_config)
+            .map_err(|e| io::Error::other(e.to_string()))?;
         let memory_active = env_bool("AGENTIC_MEMORY_ACTIVE", true);
         let memory_swap_async = env_bool("AGENTIC_MEMORY_SWAP_ASYNC", true);
         let memory_swap_dir = std::env::var("AGENTIC_MEMORY_SWAP_DIR").ok();
-        memory.borrow_mut().set_active(memory_active);
-        if let Err(e) = memory.borrow_mut().configure_async_swap(
+        // Note: set_active and configure_async_swap require &mut to the owned NeuralMemory
+        // which is available here since we still own `memory` directly.
+        let mut memory = memory;
+        memory.set_active(memory_active);
+        if let Err(e) = memory.configure_async_swap(
             memory_swap_async,
             memory_swap_dir
                 .as_ref()
@@ -92,7 +118,7 @@ impl Kernel {
             tracing::error!(%e, "Failed to configure async swap worker");
         }
 
-        let engine_state: Arc<Mutex<Option<LLMEngine>>> = Arc::new(Mutex::new(None));
+        let engine_state: Option<LLMEngine> = None;
         let shutdown_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let model_catalog = ModelCatalog::discover("models")
             .map_err(io::Error::other)?;
@@ -104,6 +130,29 @@ impl Kernel {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
 
+        // ── Inference worker ────────────────────────────────────────
+        let (cmd_tx, cmd_rx) = mpsc::channel::<InferenceCmd>();
+        let (result_tx, result_rx) = mpsc::channel::<InferenceResult>();
+        let worker_handle = inference_worker::spawn_worker(result_tx, cmd_rx);
+
+        // ── Auth token (C3) ─────────────────────────────────────────
+        let auth_disabled = env_bool("AGENTIC_AUTH_DISABLED", false);
+        let auth_token = {
+            use std::io::Write as _;
+            let mut buf = [0u8; 32];
+            getrandom::getrandom(&mut buf).expect("failed to generate auth token");
+            let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+            let token_path = std::path::Path::new("workspace/.kernel_token");
+            if let Some(parent) = token_path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            let mut f = std::fs::File::create(token_path)
+                .expect("failed to write .kernel_token");
+            f.write_all(hex.as_bytes())
+                .expect("failed to write .kernel_token");
+            hex
+        };
+
         tracing::info!(
             version = env!("CARGO_PKG_VERSION"),
             %addr,
@@ -111,6 +160,7 @@ impl Kernel {
             memory_swap_async,
             swap_dir = memory_swap_dir.as_deref().unwrap_or("workspace/swap"),
             checkpoint_interval_secs,
+            auth_disabled,
             "AgenticOS Kernel ready"
         );
 
@@ -130,6 +180,15 @@ impl Kernel {
             orchestrator: Orchestrator::new(),
             checkpoint_interval_secs,
             last_checkpoint: Instant::now(),
+            cmd_tx,
+            result_rx,
+            in_flight: HashSet::new(),
+            pending_kills: Vec::new(),
+            worker_handle: Some(worker_handle),
+            metrics: MetricsState::new(),
+            syscall_rates: SyscallRateMap::new(),
+            auth_token,
+            auth_disabled,
         })
     }
 
@@ -137,6 +196,11 @@ impl Kernel {
         loop {
             if self.shutdown_requested.load(Ordering::SeqCst) {
                 tracing::info!("Kernel graceful shutdown requested. Closing event loop.");
+                // Signal the inference worker to stop.
+                let _ = self.cmd_tx.send(InferenceCmd::Shutdown);
+                if let Some(handle) = self.worker_handle.take() {
+                    let _ = handle.join();
+                }
                 break;
             }
 
@@ -158,7 +222,7 @@ impl Kernel {
                                     token,
                                     Interest::READABLE,
                                 )?;
-                                self.clients.insert(token, Client::new(stream));
+                                self.clients.insert(token, Client::new(stream, self.auth_disabled));
                             }
                             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                             Err(e) => tracing::error!(%e, "Accept error"),
@@ -171,14 +235,18 @@ impl Kernel {
                             if event.is_readable()
                                 && handle_read(
                                     client,
-                                    &self.memory,
-                                    &self.engine_state,
+                                    &mut self.memory,
+                                    &mut self.engine_state,
                                     &mut self.model_catalog,
                                     &mut self.active_family,
                                     &mut self.scheduler,
                                     &mut self.orchestrator,
                                     token.0,
                                     &self.shutdown_requested,
+                                    &self.in_flight,
+                                    &mut self.pending_kills,
+                                    &mut self.metrics,
+                                    &self.auth_token,
                                 )
                             {
                                 should_close = true;
@@ -213,13 +281,18 @@ impl Kernel {
             }
 
             run_engine_tick(
-                &self.engine_state,
-                &self.memory,
+                &mut self.engine_state,
+                &mut self.memory,
                 &mut self.clients,
                 &self.poll,
                 self.active_family,
                 &mut self.scheduler,
                 &mut self.orchestrator,
+                &self.cmd_tx,
+                &self.result_rx,
+                &mut self.in_flight,
+                &mut self.pending_kills,
+                &mut self.syscall_rates,
             );
 
             // ── Auto-checkpoint ────────────────────────────────────────
@@ -237,14 +310,12 @@ impl Kernel {
     /// Perform an automatic periodic checkpoint (best-effort, errors are logged).
     fn run_auto_checkpoint(&self) {
         use crate::checkpoint;
-        use crate::commands::snapshot_metrics_fn;
 
         let path = checkpoint::default_checkpoint_path();
-        let (uptime_s, total_cmd, total_err, total_exec, total_signals) = snapshot_metrics_fn();
+        let (uptime_s, total_cmd, total_err, total_exec, total_signals) = self.metrics.snapshot();
 
         let (processes, generation) = {
-            let lock = self.engine_state.lock().expect("engine_state lock poisoned");
-            if let Some(engine) = lock.as_ref() {
+            if let Some(engine) = self.engine_state.as_ref() {
                 let procs: Vec<checkpoint::ProcessSnapshot> = engine
                     .processes
                     .iter()
@@ -284,7 +355,7 @@ impl Kernel {
                 total_exec_started: total_exec,
                 total_signals,
             },
-            memory: checkpoint::snapshot_memory(&self.memory.borrow()),
+            memory: checkpoint::snapshot_memory(&self.memory),
         };
 
         match checkpoint::save_checkpoint(&snap, &path) {

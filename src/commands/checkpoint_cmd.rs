@@ -3,7 +3,7 @@ use crate::protocol;
 use crate::scheduler::{ProcessPriority, ProcessQuota};
 
 use super::context::CommandContext;
-use super::metrics::{log_event, snapshot_metrics};
+use super::metrics::log_event;
 
 pub(crate) fn handle_checkpoint(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
@@ -13,11 +13,10 @@ pub(crate) fn handle_checkpoint(ctx: &mut CommandContext<'_>, payload: &[u8]) ->
         std::path::PathBuf::from(&payload_text)
     };
 
-    let (uptime_s, total_cmd, total_err, total_exec, total_signals) = snapshot_metrics();
+    let (uptime_s, total_cmd, total_err, total_exec, total_signals) = ctx.metrics.snapshot();
 
     let (processes, generation, active_fam, sel_model) = {
-        let lock = ctx.engine_state.lock().expect("engine_state lock poisoned");
-        if let Some(engine) = lock.as_ref() {
+        if let Some(engine) = ctx.engine_state.as_ref() {
             let procs: Vec<checkpoint::ProcessSnapshot> = engine
                 .processes
                 .iter()
@@ -43,7 +42,7 @@ pub(crate) fn handle_checkpoint(ctx: &mut CommandContext<'_>, payload: &[u8]) ->
     };
 
     let sched_snap = checkpoint::snapshot_scheduler(ctx.scheduler);
-    let mem_snap = checkpoint::snapshot_memory(&ctx.memory.borrow());
+    let mem_snap = checkpoint::snapshot_memory(ctx.memory);
 
     let snapshot = checkpoint::KernelSnapshot {
         timestamp: checkpoint::now_timestamp(),

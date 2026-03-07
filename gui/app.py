@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import queue
 import re
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -45,6 +47,7 @@ class MainWindow(QMainWindow):
         self.client = ProtocolClient()
         self.kernel = KernelProcessManager(workspace_root=workspace_root)
         self.ui_queue: queue.Queue[UiEvent] = queue.Queue()
+        self._executor = ThreadPoolExecutor(max_workers=4)
 
         # Connection / retry config
         self._request_retries = 2
@@ -290,7 +293,7 @@ class MainWindow(QMainWindow):
                     except Exception:
                         pass
 
-        threading.Thread(target=task, daemon=True).start()
+        self._executor.submit(task)
 
     # ── STATUS ───────────────────────────────────────────────
 
@@ -318,7 +321,7 @@ class MainWindow(QMainWindow):
             finally:
                 self._status_in_flight = False
 
-        threading.Thread(target=task, daemon=True).start()
+        self._executor.submit(task)
 
     # ── LIST_MODELS ──────────────────────────────────────────
 
@@ -368,7 +371,7 @@ class MainWindow(QMainWindow):
             finally:
                 self._load_in_flight = False
 
-        threading.Thread(target=task, daemon=True).start()
+        self._executor.submit(task)
 
     # ── EXEC ─────────────────────────────────────────────────
 
@@ -488,11 +491,20 @@ class MainWindow(QMainWindow):
                 self.chat_section.show_error(msg, pid=pid, req_id=req_id)
 
             elif event.kind == "quota_response":
-                self.processes_section.show_quota(event.message)
+                try:
+                    quota_data = json.loads(event.message)
+                except (json.JSONDecodeError, TypeError):
+                    quota_data = {}
+                self.processes_section.show_quota(quota_data)
 
             elif event.kind == "pid_status":
-                pid = self._extract(event.message, "pid", "")
-                self.processes_section.update_pid_detail(pid, event.message)
+                try:
+                    pid_data = json.loads(event.message)
+                    pid = str(pid_data.get("pid", ""))
+                except (json.JSONDecodeError, TypeError):
+                    pid = ""
+                    pid_data = {}
+                self.processes_section.update_pid_detail(pid, pid_data)
 
             elif event.kind == "checkpoint_done":
                 self.memory_section.show_checkpoint_result(event.message)
@@ -504,10 +516,18 @@ class MainWindow(QMainWindow):
                 self.memory_section.show_memw_result(event.message)
 
             elif event.kind == "orch_submit":
-                self.orchestration_section.show_submit_result(event.message)
+                try:
+                    orch_data = json.loads(event.message)
+                except (json.JSONDecodeError, TypeError):
+                    orch_data = {}
+                self.orchestration_section.show_submit_result(orch_data)
 
             elif event.kind == "orch_status":
-                self.orchestration_section.update_orch_status(event.message)
+                try:
+                    orch_data = json.loads(event.message)
+                except (json.JSONDecodeError, TypeError):
+                    orch_data = {}
+                self.orchestration_section.update_orch_status(orch_data)
 
             elif event.kind == "protocol_trace":
                 parts = event.message.split("\x00", 2)
@@ -518,21 +538,21 @@ class MainWindow(QMainWindow):
                 pass  # Control log — could route to a debug panel in future
 
     def _apply_status(self, payload: str):
-        """Parse STATUS payload and update sidebar + models section."""
-        loaded = self._extract(payload, "loaded_model_id", "—")
-        selected = self._extract(payload, "selected_model_id", "—")
-        uptime = self._extract(payload, "uptime_s", "—")
+        """Parse JSON STATUS payload and update sidebar + models section."""
+        try:
+            data = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            return
 
-        # Active PIDs
-        pid_match = re.search(r"active_pids=\[([^\]]*)\]", payload)
-        if pid_match:
-            content = pid_match.group(1).strip()
-            self._active_pids = [p.strip() for p in content.split(",") if p.strip()]
-        else:
-            self._active_pids = []
+        model = data.get("model", {})
+        loaded = model.get("loaded_model_id", "")
+        procs = data.get("processes", {})
+        active_pids = procs.get("active_pids", [])
+
+        self._active_pids = [str(p) for p in active_pids]
 
         # Loaded model
-        if loaded and loaded not in {"<none>", "<unknown>", "—"}:
+        if loaded:
             self._loaded_model_id = loaded
         else:
             self._loaded_model_id = ""
@@ -540,16 +560,13 @@ class MainWindow(QMainWindow):
         self.models_section.update_loaded_model(self._loaded_model_id)
 
         # Pretty uptime
-        try:
-            secs = float(uptime)
-            if secs >= 3600:
-                uptime_str = f"{secs / 3600:.1f}h"
-            elif secs >= 60:
-                uptime_str = f"{secs / 60:.0f}m"
-            else:
-                uptime_str = f"{secs:.0f}s"
-        except (ValueError, TypeError):
-            uptime_str = uptime
+        secs = data.get("uptime_secs", 0)
+        if secs >= 3600:
+            uptime_str = f"{secs / 3600:.1f}h"
+        elif secs >= 60:
+            uptime_str = f"{secs / 60:.0f}m"
+        else:
+            uptime_str = f"{secs:.0f}s"
 
         # Pretty model name
         model_display = self._loaded_model_id.split("/")[-1] if self._loaded_model_id else "—"
@@ -567,9 +584,24 @@ class MainWindow(QMainWindow):
                 f"PIDs: {', '.join(self._active_pids[:3])}"
             )
 
-        # Feed processes and memory sections
-        self.processes_section.update_from_status(payload)
-        self.memory_section.update_from_status(payload)
+        # Feed processes and memory sections (pass parsed dict)
+        self.processes_section.update_from_status(data)
+        self.memory_section.update_from_status(data)
+
+    # ═══════════════════════════════════════════════════════════
+    #  CLOSE EVENT
+    # ═══════════════════════════════════════════════════════════
+
+    def closeEvent(self, event):
+        # Stop all timers
+        for timer in (self._queue_timer, self._status_timer, self._events_timer,
+                      self._audit_timer, self._models_timer):
+            timer.stop()
+        # Shutdown thread pool (don't wait — daemon semantics)
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        # Close persistent TCP connection
+        self.client.close()
+        super().closeEvent(event)
 
     # ═══════════════════════════════════════════════════════════
     #  KERNEL EVENTS → Logs section
@@ -638,11 +670,6 @@ class MainWindow(QMainWindow):
     def _format_control(verb: str, response: ControlResponse) -> str:
         status = "OK" if response.ok else "ERR"
         return f"[{verb}] status={status} code={response.code} duration={response.duration_s:.3f}s\n{response.payload}\n"
-
-    @staticmethod
-    def _extract(payload: str, key: str, default: str = "") -> str:
-        match = re.search(rf"\b{re.escape(key)}=([^\s]+)", payload)
-        return match.group(1) if match else default
 
 
 def main():

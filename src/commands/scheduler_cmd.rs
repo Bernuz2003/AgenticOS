@@ -4,6 +4,8 @@ use crate::scheduler::ProcessPriority;
 use super::context::CommandContext;
 use super::metrics::log_event;
 
+use serde_json;
+
 pub(crate) fn handle_set_priority(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     let parts: Vec<&str> = payload_text.splitn(2, char::is_whitespace).collect();
@@ -41,14 +43,17 @@ pub(crate) fn handle_get_quota(ctx: &mut CommandContext<'_>, payload: &[u8]) -> 
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     if let Ok(pid) = payload_text.parse::<u64>() {
         if let Some(snap) = ctx.scheduler.snapshot(pid) {
-            protocol::response_ok_code(
-                "GET_QUOTA",
-                &format!(
-                    "pid={} priority={} workload={:?} max_tokens={} max_syscalls={} tokens_generated={} syscalls_used={} elapsed_secs={:.2}",
-                    pid, snap.priority, snap.workload, snap.quota.max_tokens, snap.quota.max_syscalls,
-                    snap.tokens_generated, snap.syscalls_used, snap.elapsed_secs
-                ),
-            )
+            let json = serde_json::json!({
+                "pid": pid,
+                "priority": format!("{}", snap.priority),
+                "workload": format!("{:?}", snap.workload),
+                "max_tokens": snap.quota.max_tokens,
+                "max_syscalls": snap.quota.max_syscalls,
+                "tokens_generated": snap.tokens_generated,
+                "syscalls_used": snap.syscalls_used,
+                "elapsed_secs": format!("{:.2}", snap.elapsed_secs).parse::<f64>().unwrap_or(snap.elapsed_secs),
+            });
+            protocol::response_ok_code("GET_QUOTA", &json.to_string())
         } else {
             protocol::response_err_code(
                 "PID_NOT_FOUND",

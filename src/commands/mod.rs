@@ -11,10 +11,9 @@ mod process_cmd;
 mod scheduler_cmd;
 mod status;
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
@@ -26,25 +25,54 @@ use crate::scheduler::ProcessScheduler;
 use crate::transport::Client;
 
 use self::context::CommandContext;
-use self::metrics::record_command;
 
-// Re-export for auto-checkpoint in main.rs.
-pub(crate) use self::metrics::snapshot_metrics as snapshot_metrics_fn;
+// Re-export for other modules.
+pub(crate) use self::metrics::MetricsState;
 
 #[allow(clippy::too_many_arguments)]
 pub fn execute_command(
     client: &mut Client,
     header: crate::protocol::CommandHeader,
     payload: Vec<u8>,
-    memory: &Rc<RefCell<NeuralMemory>>,
-    engine_state: &Arc<Mutex<Option<LLMEngine>>>,
+    memory: &mut NeuralMemory,
+    engine_state: &mut Option<LLMEngine>,
     model_catalog: &mut ModelCatalog,
     active_family: &mut PromptFamily,
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
     client_id: usize,
     shutdown_requested: &Arc<AtomicBool>,
+    in_flight: &HashSet<u64>,
+    pending_kills: &mut Vec<u64>,
+    metrics: &mut MetricsState,
+    auth_token: &str,
 ) {
+    // ── C3: Auth gate — only AUTH and PING allowed before authentication ──
+    if !client.authenticated && !matches!(header.opcode, OpCode::Auth | OpCode::Ping) {
+        client
+            .output_buffer
+            .extend(crate::protocol::response_err_code("AUTH_REQUIRED", "Authenticate first with AUTH <token>"));
+        return;
+    }
+
+    // Handle AUTH before creating CommandContext (avoids borrow conflict).
+    if matches!(header.opcode, OpCode::Auth) {
+        let token_attempt = String::from_utf8_lossy(&payload).trim().to_string();
+        let response = if token_attempt == auth_token {
+            client.authenticated = true;
+            crate::protocol::response_ok_code("AUTH", "OK")
+        } else {
+            crate::protocol::response_err_code("AUTH_FAILED", "Invalid auth token")
+        };
+        if response.starts_with(b"+OK") {
+            metrics.record_command(true);
+        } else {
+            metrics.record_command(false);
+        }
+        client.output_buffer.extend(response);
+        return;
+    }
+
     let mut ctx = CommandContext {
         client,
         memory,
@@ -55,6 +83,9 @@ pub fn execute_command(
         orchestrator,
         client_id,
         shutdown_requested,
+        in_flight,
+        pending_kills,
+        metrics,
     };
 
     // Handlers that may write directly to client.output_buffer and return None.
@@ -82,12 +113,13 @@ pub fn execute_command(
         OpCode::Orchestrate => {
             if let Some(r) = orchestration_cmd::handle_orchestrate(&mut ctx, &payload) { r } else { return; }
         }
+        OpCode::Auth => unreachable!("AUTH handled above"),
     };
 
     if response.starts_with(b"+OK") {
-        record_command(true);
+        ctx.metrics.record_command(true);
     } else {
-        record_command(false);
+        ctx.metrics.record_command(false);
     }
 
     ctx.client.output_buffer.extend(response);

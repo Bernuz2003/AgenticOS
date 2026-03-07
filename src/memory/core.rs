@@ -209,6 +209,7 @@ impl NeuralMemory {
             pending_swaps: self.swap.waiting_count(),
             waiting_pids: self.swap.waiting_count(),
             oom_events: self.counters.oom_events,
+            swap_worker_crashes: self.swap.worker_crashes(),
         }
     }
 

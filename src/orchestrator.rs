@@ -402,7 +402,6 @@ impl Orchestrator {
     // ── Query ───────────────────────────────────────────────────────────
 
     /// Look up an orchestration by id.
-    #[cfg(test)]
     pub fn get(&self, orch_id: u64) -> Option<&Orchestration> {
         self.orchestrations.get(&orch_id)
     }

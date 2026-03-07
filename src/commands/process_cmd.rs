@@ -1,19 +1,25 @@
 use crate::protocol;
 
 use super::context::CommandContext;
-use super::metrics::{inc_signal_count, log_event};
+use super::metrics::log_event;
 
 pub(crate) fn handle_term(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     if payload_text.is_empty() {
         protocol::response_err_code("MISSING_PID", "TERM requires PID payload")
     } else if let Ok(pid) = payload_text.parse::<u64>() {
-        let mut lock = ctx.engine_state.lock().expect("engine_state lock poisoned");
-        if let Some(engine) = lock.as_mut() {
+        // If in-flight, defer as pending kill (TERM ≈ graceful but process is mid-step).
+        if ctx.in_flight.contains(&pid) {
+            ctx.pending_kills.push(pid);
+            ctx.metrics.inc_signal_count();
+            log_event("process_term", ctx.client_id, Some(pid), "deferred_term_in_flight");
+            return protocol::response_ok_code("TERM", &format!("Termination queued for in-flight PID {}", pid));
+        }
+        if let Some(engine) = ctx.engine_state.as_mut() {
             if engine.terminate_process(pid) {
-                let _ = ctx.memory.borrow_mut().release_process(pid);
+                let _ = ctx.memory.release_process(pid);
                 ctx.scheduler.unregister(pid);
-                inc_signal_count();
+                ctx.metrics.inc_signal_count();
                 log_event("process_term", ctx.client_id, Some(pid), "graceful_termination_requested");
                 protocol::response_ok_code("TERM", &format!("Termination requested for PID {}", pid))
             } else {
@@ -32,12 +38,18 @@ pub(crate) fn handle_kill(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u
     if payload_text.is_empty() {
         protocol::response_err_code("MISSING_PID", "KILL requires PID payload")
     } else if let Ok(pid) = payload_text.parse::<u64>() {
-        let mut lock = ctx.engine_state.lock().expect("engine_state lock poisoned");
-        if let Some(engine) = lock.as_mut() {
+        // If the PID is currently in-flight on the inference worker, defer the kill.
+        if ctx.in_flight.contains(&pid) {
+            ctx.pending_kills.push(pid);
+            ctx.metrics.inc_signal_count();
+            log_event("process_kill", ctx.client_id, Some(pid), "deferred_kill_in_flight");
+            return protocol::response_ok_code("KILL", &format!("Kill queued for in-flight PID {}", pid));
+        }
+        if let Some(engine) = ctx.engine_state.as_mut() {
             engine.kill_process(pid);
-            let _ = ctx.memory.borrow_mut().release_process(pid);
+            let _ = ctx.memory.release_process(pid);
             ctx.scheduler.unregister(pid);
-            inc_signal_count();
+            ctx.metrics.inc_signal_count();
             log_event("process_kill", ctx.client_id, Some(pid), "killed_immediately");
             protocol::response_ok_code("KILL", &format!("Killed PID {}", pid))
         } else {

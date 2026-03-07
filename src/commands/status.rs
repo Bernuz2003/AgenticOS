@@ -1,19 +1,157 @@
+use serde::Serialize;
+
 use crate::protocol;
 
 use super::context::CommandContext;
-use super::metrics::snapshot_metrics;
+
+// ── JSON response types ─────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub(crate) struct StatusResponse {
+    pub uptime_secs: u64,
+    pub total_commands: u64,
+    pub total_errors: u64,
+    pub total_exec_started: u64,
+    pub total_signals: u64,
+    pub model: ModelStatus,
+    pub generation: Option<GenerationStatus>,
+    pub memory: MemoryStatus,
+    pub scheduler: SchedulerStatus,
+    pub processes: ProcessesStatus,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ModelStatus {
+    pub loaded: bool,
+    pub loaded_model_id: String,
+    pub loaded_family: String,
+    pub loaded_model_path: String,
+    pub selected_model_id: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct GenerationStatus {
+    pub temperature: f64,
+    pub top_p: f64,
+    pub seed: u64,
+    pub max_tokens: usize,
+}
+
+#[derive(Serialize)]
+pub(crate) struct MemoryStatus {
+    pub active: bool,
+    pub total_blocks: usize,
+    pub free_blocks: usize,
+    pub tracked_pids: usize,
+    pub allocated_tensors: usize,
+    pub alloc_bytes: usize,
+    pub evictions: u64,
+    pub swap_count: u64,
+    pub swap_faults: u64,
+    pub swap_failures: u64,
+    pub pending_swaps: usize,
+    pub waiting_pids: usize,
+    pub oom_events: u64,
+    pub swap_worker_crashes: u64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct SchedulerStatus {
+    pub tracked: usize,
+    pub priority_critical: usize,
+    pub priority_high: usize,
+    pub priority_normal: usize,
+    pub priority_low: usize,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ProcessesStatus {
+    pub active_pids: Vec<u64>,
+    pub waiting_pids: Vec<u64>,
+    pub in_flight_pids: Vec<u64>,
+    pub active_processes: Vec<PidStatusResponse>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct PidStatusResponse {
+    pub pid: u64,
+    pub owner_id: usize,
+    pub state: String,
+    pub tokens: usize,
+    pub index_pos: usize,
+    pub max_tokens: usize,
+    pub priority: String,
+    pub workload: String,
+    pub quota_tokens: u64,
+    pub quota_syscalls: u64,
+    pub tokens_generated: usize,
+    pub syscalls_used: usize,
+    pub elapsed_secs: f64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct OrchStatusResponse {
+    pub orchestration_id: u64,
+    pub total: usize,
+    pub completed: usize,
+    pub running: usize,
+    pub pending: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub finished: bool,
+    pub elapsed_secs: f64,
+    pub policy: String,
+    pub tasks: Vec<OrchTaskEntry>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct OrchTaskEntry {
+    pub task: String,
+    pub status: String,
+    pub pid: Option<u64>,
+    pub error: Option<String>,
+}
+
+// ── Handler ─────────────────────────────────────────────────────────────
 
 pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let requested = String::from_utf8_lossy(payload).trim().to_string();
-    let lock = ctx.engine_state.lock().expect("engine_state lock poisoned");
-    let (uptime_s, total_cmd, total_err, total_exec, total_signals) = snapshot_metrics();
+    let (uptime_s, total_cmd, total_err, total_exec, total_signals) = ctx.metrics.snapshot();
 
-    if let Some(engine) = lock.as_ref() {
-        if requested.is_empty() {
-            let active = engine.list_active_pids();
-            let waiting = engine.list_waiting_pids();
-            let cfg = engine.generation_config();
-            let mem = ctx.memory.borrow().snapshot();
+    // ── Orchestration status ───────────────────────────────────────
+    if let Some(orch_id_str) = requested.strip_prefix("orch:") {
+        return match orch_id_str.parse::<u64>() {
+            Ok(orch_id) => build_orch_status(ctx, orch_id),
+            Err(_) => protocol::response_err_code(
+                "STATUS_INVALID",
+                "Orchestration ID must be numeric (orch:<N>)",
+            ),
+        };
+    }
+
+    // ── Per-PID status ─────────────────────────────────────────────
+    if !requested.is_empty() {
+        return match requested.parse::<u64>() {
+            Ok(pid) => build_pid_status(ctx, pid),
+            Err(_) => protocol::response_err_code(
+                "STATUS_INVALID",
+                "STATUS payload must be empty, numeric PID, or orch:<N>",
+            ),
+        };
+    }
+
+    // ── Global status (JSON) ───────────────────────────────────────
+    let mem = ctx.memory.snapshot();
+    let (sched_tracked, sched_crit, sched_high, sched_norm, sched_low) =
+        ctx.scheduler.summary_counts();
+    let selected_model_id = ctx
+        .model_catalog
+        .selected_id
+        .clone()
+        .unwrap_or_default();
+
+    let (model_status, gen_status, processes_status) =
+        if let Some(engine) = ctx.engine_state.as_ref() {
             let loaded_path = engine.loaded_model_path().to_string();
             let loaded_family = engine.loaded_family();
             let loaded_model_id = ctx
@@ -22,96 +160,207 @@ pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec
                 .iter()
                 .find(|entry| entry.path.to_string_lossy() == loaded_path)
                 .map(|entry| entry.id.clone())
-                .unwrap_or_else(|| "<unknown>".to_string());
-            let selected_model_id = ctx
-                .model_catalog
-                .selected_id
-                .clone()
-                .unwrap_or_else(|| "<none>".to_string());
-            let sched_summary = ctx.scheduler.summary();
-            protocol::response_ok_code(
-                "STATUS",
-                &format!(
-                    "uptime_s={} total_commands={} total_errors={} total_exec_started={} total_signals={} active_processes={} waiting_processes={} active_pids={:?} waiting_pids={:?} selected_model_id={} loaded_model_id={} loaded_family={:?} loaded_model_path={} generation=temperature:{} top_p:{} seed:{} max_tokens:{} mem_active={} mem_total_blocks={} mem_free_blocks={} mem_tracked_pids={} mem_allocated_tensors={} mem_alloc_bytes={} mem_evictions={} mem_swap_count={} mem_swap_faults={} mem_swap_failures={} mem_pending_swaps={} mem_waiting_pids={} mem_oom_events={} {}",
-                    uptime_s,
-                    total_cmd,
-                    total_err,
-                    total_exec,
-                    total_signals,
-                    active.len(),
-                    waiting.len(),
-                    active,
-                    waiting,
-                    selected_model_id,
+                .unwrap_or_default();
+            let cfg = engine.generation_config();
+            (
+                ModelStatus {
+                    loaded: true,
                     loaded_model_id,
-                    loaded_family,
-                    loaded_path,
-                    cfg.temperature,
-                    cfg.top_p,
-                    cfg.seed,
-                    cfg.max_tokens,
-                    mem.active,
-                    mem.total_blocks,
-                    mem.free_blocks,
-                    mem.tracked_pids,
-                    mem.allocated_tensors,
-                    mem.alloc_bytes,
-                    mem.evictions,
-                    mem.swap_count,
-                    mem.swap_faults,
-                    mem.swap_failures,
-                    mem.pending_swaps,
-                    mem.waiting_pids,
-                    mem.oom_events,
-                    sched_summary
-                ),
+                    loaded_family: format!("{:?}", loaded_family),
+                    loaded_model_path: loaded_path,
+                    selected_model_id: selected_model_id.clone(),
+                },
+                Some(GenerationStatus {
+                    temperature: cfg.temperature,
+                    top_p: cfg.top_p,
+                    seed: cfg.seed,
+                    max_tokens: cfg.max_tokens,
+                }),
+                {
+                    let active_pids = engine.list_active_pids();
+                    let waiting_pids = engine.list_waiting_pids();
+                    let all_pids: Vec<u64> = active_pids.iter().chain(waiting_pids.iter()).copied().collect();
+                    let active_processes: Vec<PidStatusResponse> = all_pids
+                        .iter()
+                        .filter_map(|&pid| {
+                            let process = engine.processes.get(&pid)?;
+                            let sched = ctx.scheduler.snapshot(pid);
+                            Some(PidStatusResponse {
+                                pid,
+                                owner_id: process.owner_id,
+                                state: format!("{:?}", process.state),
+                                tokens: process.tokens.len(),
+                                index_pos: process.index_pos,
+                                max_tokens: process.max_tokens,
+                                priority: sched.as_ref().map(|s| format!("{}", s.priority)).unwrap_or_default(),
+                                workload: sched.as_ref().map(|s| format!("{:?}", s.workload)).unwrap_or_default(),
+                                quota_tokens: sched.as_ref().map(|s| s.quota.max_tokens as u64).unwrap_or(0),
+                                quota_syscalls: sched.as_ref().map(|s| s.quota.max_syscalls as u64).unwrap_or(0),
+                                tokens_generated: sched.as_ref().map(|s| s.tokens_generated).unwrap_or(0),
+                                syscalls_used: sched.as_ref().map(|s| s.syscalls_used).unwrap_or(0),
+                                elapsed_secs: sched.as_ref().map(|s| s.elapsed_secs).unwrap_or(0.0),
+                            })
+                        })
+                        .collect();
+                    ProcessesStatus {
+                        active_pids,
+                        waiting_pids,
+                        in_flight_pids: ctx.in_flight.iter().copied().collect(),
+                        active_processes,
+                    }
+                },
             )
-        } else if let Some(orch_id_str) = requested.strip_prefix("orch:") {
-            if let Ok(orch_id) = orch_id_str.parse::<u64>() {
-                if let Some(status_text) = ctx.orchestrator.format_status(orch_id) {
-                    protocol::response_ok_code("STATUS", &status_text)
-                } else {
-                    protocol::response_err_code(
-                        "ORCH_NOT_FOUND",
-                        &format!("Orchestration {} not found", orch_id),
-                    )
-                }
-            } else {
-                protocol::response_err_code(
-                    "STATUS_INVALID",
-                    "Orchestration ID must be numeric (orch:<N>)",
-                )
-            }
-        } else if let Ok(pid) = requested.parse::<u64>() {
-            if let Some(line) = engine.process_status_line(pid) {
-                let sched_info = ctx.scheduler.snapshot(pid).map(|s| {
-                    format!(
-                        " priority={} workload={:?} quota_tokens={} quota_syscalls={} tokens_generated={} syscalls_used={} elapsed_secs={:.2}",
-                        s.priority, s.workload, s.quota.max_tokens, s.quota.max_syscalls,
-                        s.tokens_generated, s.syscalls_used, s.elapsed_secs
-                    )
-                }).unwrap_or_default();
-                protocol::response_ok_code("STATUS", &format!("{}{}", line, sched_info))
-            } else {
-                protocol::response_err_code(
-                    "PID_NOT_FOUND",
-                    &format!("PID {} not found", pid),
-                )
-            }
         } else {
-            protocol::response_err_code(
-                "STATUS_INVALID",
-                "STATUS payload must be empty or numeric PID",
+            (
+                ModelStatus {
+                    loaded: false,
+                    loaded_model_id: String::new(),
+                    loaded_family: "Unknown".to_string(),
+                    loaded_model_path: String::new(),
+                    selected_model_id: selected_model_id.clone(),
+                },
+                None,
+                ProcessesStatus {
+                    active_pids: vec![],
+                    waiting_pids: vec![],
+                    in_flight_pids: vec![],
+                    active_processes: vec![],
+                },
             )
+        };
+
+    let resp = StatusResponse {
+        uptime_secs: uptime_s,
+        total_commands: total_cmd,
+        total_errors: total_err,
+        total_exec_started: total_exec,
+        total_signals,
+        model: model_status,
+        generation: gen_status,
+        memory: MemoryStatus {
+            active: mem.active,
+            total_blocks: mem.total_blocks,
+            free_blocks: mem.free_blocks,
+            tracked_pids: mem.tracked_pids,
+            allocated_tensors: mem.allocated_tensors,
+            alloc_bytes: mem.alloc_bytes,
+            evictions: mem.evictions,
+            swap_count: mem.swap_count,
+            swap_faults: mem.swap_faults,
+            swap_failures: mem.swap_failures,
+            pending_swaps: mem.pending_swaps,
+            waiting_pids: mem.waiting_pids,
+            oom_events: mem.oom_events,
+            swap_worker_crashes: mem.swap_worker_crashes,
+        },
+        scheduler: SchedulerStatus {
+            tracked: sched_tracked,
+            priority_critical: sched_crit,
+            priority_high: sched_high,
+            priority_normal: sched_norm,
+            priority_low: sched_low,
+        },
+        processes: processes_status,
+    };
+
+    let json = serde_json::to_string(&resp).expect("StatusResponse is always serializable");
+    protocol::response_ok_code("STATUS", &json)
+}
+
+// ── Per-PID status (JSON) ───────────────────────────────────────────────
+
+fn build_pid_status(ctx: &mut CommandContext<'_>, pid: u64) -> Vec<u8> {
+    let engine = match ctx.engine_state.as_ref() {
+        Some(e) => e,
+        None => {
+            return protocol::response_err_code("NO_ENGINE", "No model loaded");
         }
-    } else {
-        protocol::response_ok_code(
-            "STATUS",
-            &format!(
-                "uptime_s={} total_commands={} total_errors={} total_exec_started={} total_signals={} active_processes=0 active_pids=[] selected_model_id={} loaded_model_id=<none> loaded_family=Unknown loaded_model_path=<none> no_model_loaded=true",
-                uptime_s, total_cmd, total_err, total_exec, total_signals,
-                ctx.model_catalog.selected_id.clone().unwrap_or_else(|| "<none>".to_string())
-            ),
-        )
-    }
+    };
+
+    let process = match engine.processes.get(&pid) {
+        Some(p) => p,
+        None => {
+            return protocol::response_err_code(
+                "PID_NOT_FOUND",
+                &format!("PID {} not found", pid),
+            );
+        }
+    };
+
+    let sched = ctx.scheduler.snapshot(pid);
+    let resp = PidStatusResponse {
+        pid,
+        owner_id: process.owner_id,
+        state: format!("{:?}", process.state),
+        tokens: process.tokens.len(),
+        index_pos: process.index_pos,
+        max_tokens: process.max_tokens,
+        priority: sched.as_ref().map(|s| format!("{}", s.priority)).unwrap_or_default(),
+        workload: sched.as_ref().map(|s| format!("{:?}", s.workload)).unwrap_or_default(),
+        quota_tokens: sched.as_ref().map(|s| s.quota.max_tokens as u64).unwrap_or(0),
+        quota_syscalls: sched.as_ref().map(|s| s.quota.max_syscalls as u64).unwrap_or(0),
+        tokens_generated: sched.as_ref().map(|s| s.tokens_generated).unwrap_or(0),
+        syscalls_used: sched.as_ref().map(|s| s.syscalls_used).unwrap_or(0),
+        elapsed_secs: sched.as_ref().map(|s| s.elapsed_secs).unwrap_or(0.0),
+    };
+
+    let json = serde_json::to_string(&resp).expect("PidStatusResponse is always serializable");
+    protocol::response_ok_code("STATUS", &json)
+}
+
+// ── Orchestration status (JSON) ─────────────────────────────────────────
+
+fn build_orch_status(ctx: &mut CommandContext<'_>, orch_id: u64) -> Vec<u8> {
+    let orch = match ctx.orchestrator.get(orch_id) {
+        Some(o) => o,
+        None => {
+            return protocol::response_err_code(
+                "ORCH_NOT_FOUND",
+                &format!("Orchestration {} not found", orch_id),
+            );
+        }
+    };
+
+    let (pending, running, completed, failed, skipped) = orch.counts();
+    let total = orch.tasks.len();
+    let elapsed = orch.created_at.elapsed().as_secs_f64();
+    let finished = orch.is_finished();
+
+    let tasks: Vec<OrchTaskEntry> = orch
+        .topo_order
+        .iter()
+        .map(|task_id| {
+            let status = &orch.status[task_id];
+            let (pid, error) = match status {
+                crate::orchestrator::TaskStatus::Running { pid } => (Some(*pid), None),
+                crate::orchestrator::TaskStatus::Failed { error } => {
+                    (None, Some(error.clone()))
+                }
+                _ => (None, None),
+            };
+            OrchTaskEntry {
+                task: task_id.clone(),
+                status: status.label().to_string(),
+                pid,
+                error,
+            }
+        })
+        .collect();
+
+    let resp = OrchStatusResponse {
+        orchestration_id: orch_id,
+        total,
+        completed,
+        running,
+        pending,
+        failed,
+        skipped,
+        finished,
+        elapsed_secs: elapsed,
+        policy: format!("{:?}", orch.failure_policy),
+        tasks,
+    };
+
+    let json = serde_json::to_string(&resp).expect("OrchStatusResponse is always serializable");
+    protocol::response_ok_code("STATUS", &json)
 }

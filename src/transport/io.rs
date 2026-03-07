@@ -1,10 +1,10 @@
-use std::cell::RefCell;
+use std::collections::HashSet;
 use std::io::{self, Read, Write};
-use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::commands::execute_command;
+use crate::commands::MetricsState;
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
@@ -18,14 +18,18 @@ use super::{parse_available_commands, Client, ParsedCommand};
 #[allow(clippy::too_many_arguments)]
 pub fn handle_read(
     client: &mut Client,
-    memory: &Rc<RefCell<NeuralMemory>>,
-    engine_state: &Arc<Mutex<Option<LLMEngine>>>,
+    memory: &mut NeuralMemory,
+    engine_state: &mut Option<LLMEngine>,
     model_catalog: &mut ModelCatalog,
     active_family: &mut PromptFamily,
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
     client_id: usize,
     shutdown_requested: &Arc<AtomicBool>,
+    in_flight: &HashSet<u64>,
+    pending_kills: &mut Vec<u64>,
+    metrics: &mut MetricsState,
+    auth_token: &str,
 ) -> bool {
     let mut chunk = [0; 4096];
     match client.stream.read(&mut chunk) {
@@ -61,6 +65,10 @@ pub fn handle_read(
                 orchestrator,
                 client_id,
                 shutdown_requested,
+                in_flight,
+                pending_kills,
+                metrics,
+                auth_token,
             ),
             ParsedCommand::Err(e) => {
                 client

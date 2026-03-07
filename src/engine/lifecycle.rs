@@ -69,13 +69,23 @@ impl LLMEngine {
 
             if let Some(dup) = master.duplicate_if_supported() {
                 dup
-            } else {
+            } else if self.processes.is_empty() {
+                // First process for a non-cloneable backend (e.g. Qwen2):
+                // reload is acceptable because there's nothing else running.
                 tracing::info!(
                     family = ?self.family,
                     pid,
-                    "ENGINE: Runtime backend not cloneable; reloading model instance"
+                    "ENGINE: Runtime backend not cloneable; reloading model instance (first process)"
                 );
                 RuntimeModel::load_from_gguf(&self.model_path, self.family, &self.device)?
+            } else {
+                // C7 guard: reject concurrent spawn for non-cloneable backends.
+                return Err(E::msg(format!(
+                    "Cannot spawn additional process: {:?} backend does not support model cloning. \
+                     Terminate existing processes first (active PIDs: {:?}).",
+                    self.family,
+                    self.processes.keys().collect::<Vec<_>>()
+                )));
             }
         };
 
