@@ -101,6 +101,8 @@ pub(crate) struct OrchStatusResponse {
     pub finished: bool,
     pub elapsed_secs: f64,
     pub policy: String,
+    pub truncations: usize,
+    pub output_chars_stored: usize,
     pub tasks: Vec<OrchTaskEntry>,
 }
 
@@ -179,19 +181,36 @@ pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec
                 {
                     let active_pids = engine.list_active_pids();
                     let waiting_pids = engine.list_waiting_pids();
-                    let all_pids: Vec<u64> = active_pids.iter().chain(waiting_pids.iter()).copied().collect();
+                    let in_flight_pids: Vec<u64> = ctx.in_flight.iter().copied().collect();
+                    let all_pids: Vec<u64> = active_pids.iter()
+                        .chain(waiting_pids.iter())
+                        .chain(in_flight_pids.iter())
+                        .copied()
+                        .collect();
                     let active_processes: Vec<PidStatusResponse> = all_pids
                         .iter()
-                        .filter_map(|&pid| {
-                            let process = engine.processes.get(&pid)?;
+                        .map(|&pid| {
                             let sched = ctx.scheduler.snapshot(pid);
-                            Some(PidStatusResponse {
+                            let (owner_id, state, tokens, index_pos, max_tokens) =
+                                if let Some(process) = engine.processes.get(&pid) {
+                                    (
+                                        process.owner_id,
+                                        format!("{:?}", process.state),
+                                        process.tokens.len(),
+                                        process.index_pos,
+                                        process.max_tokens,
+                                    )
+                                } else {
+                                    // In-flight (checked out for inference)
+                                    (0, "InFlight".to_string(), 0, 0, 0)
+                                };
+                            PidStatusResponse {
                                 pid,
-                                owner_id: process.owner_id,
-                                state: format!("{:?}", process.state),
-                                tokens: process.tokens.len(),
-                                index_pos: process.index_pos,
-                                max_tokens: process.max_tokens,
+                                owner_id,
+                                state,
+                                tokens,
+                                index_pos,
+                                max_tokens,
                                 priority: sched.as_ref().map(|s| format!("{}", s.priority)).unwrap_or_default(),
                                 workload: sched.as_ref().map(|s| format!("{:?}", s.workload)).unwrap_or_default(),
                                 quota_tokens: sched.as_ref().map(|s| s.quota.max_tokens as u64).unwrap_or(0),
@@ -199,13 +218,13 @@ pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec
                                 tokens_generated: sched.as_ref().map(|s| s.tokens_generated).unwrap_or(0),
                                 syscalls_used: sched.as_ref().map(|s| s.syscalls_used).unwrap_or(0),
                                 elapsed_secs: sched.as_ref().map(|s| s.elapsed_secs).unwrap_or(0.0),
-                            })
+                            }
                         })
                         .collect();
                     ProcessesStatus {
                         active_pids,
                         waiting_pids,
-                        in_flight_pids: ctx.in_flight.iter().copied().collect(),
+                        in_flight_pids,
                         active_processes,
                     }
                 },
@@ -358,6 +377,8 @@ fn build_orch_status(ctx: &mut CommandContext<'_>, orch_id: u64) -> Vec<u8> {
         finished,
         elapsed_secs: elapsed,
         policy: format!("{:?}", orch.failure_policy),
+        truncations: orch.truncated_outputs,
+        output_chars_stored: orch.output_chars_stored,
         tasks,
     };
 

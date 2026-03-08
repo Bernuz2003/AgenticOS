@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -89,13 +90,33 @@ class ModelCard(QFrame):
         self.badge.style().unpolish(self.badge)
         self.badge.style().polish(self.badge)
 
-    def set_details(self, family: str, path: str, best_for: str = ""):
+    def set_details(
+        self,
+        family: str,
+        path: str,
+        best_for: str = "",
+        architecture: str = "",
+        backend: str = "",
+        backend_preference: str = "",
+        driver_status: str = "",
+        metadata_source: str = "",
+    ):
         parts = [f"Family: {family}"]
         filename = Path(path).stem if path else ""
+        if architecture:
+            parts.append(f"Arch: {architecture}")
+        if backend:
+            parts.append(f"Driver: {backend}")
+        if backend_preference and backend_preference != backend:
+            parts.append(f"Pref: {backend_preference}")
+        if driver_status:
+            parts.append(f"Driver state: {driver_status}")
         if filename:
             parts.append(f"File: {filename}")
         if best_for:
             parts.append(f"Best for: {best_for}")
+        if metadata_source:
+            parts.append(f"Metadata: {metadata_source}")
         self.detail_label.setText("  │  ".join(parts))
 
     def set_pretty_name(self, name: str):
@@ -104,12 +125,7 @@ class ModelCard(QFrame):
 
 # ── Capability routing map ───────────────────────────────────
 
-_WORKLOAD_PREFERENCE = {
-    "fast": ("speed", "Llama"),
-    "general": ("speed", "Llama"),
-    "code": ("quality", "Qwen"),
-    "reasoning": ("quality", "Qwen"),
-}
+_WORKLOAD_ORDER = ("fast", "general", "code", "reasoning")
 
 
 class ModelsSection(QWidget):
@@ -168,21 +184,21 @@ class ModelsSection(QWidget):
         self._routing_grid.setSpacing(4)
         routing_layout.addLayout(self._routing_grid)
 
-        self._routing_labels: dict[str, QLabel] = {}
-        for row, (workload, (pref, _)) in enumerate(_WORKLOAD_PREFERENCE.items()):
+        self._routing_labels: dict[str, tuple[QLabel, QLabel]] = {}
+        for row, workload in enumerate(_WORKLOAD_ORDER):
             wl_label = QLabel(f"  {workload}")
             wl_label.setObjectName("card_detail")
             arrow = QLabel("→")
             arrow.setObjectName("card_detail")
             target = QLabel("—")
             target.setObjectName("mini_status_value")
-            pref_label = QLabel(f"(pref: {pref})")
-            pref_label.setObjectName("mini_status_label")
+            source_label = QLabel("(waiting for recommendation)")
+            source_label.setObjectName("mini_status_label")
             self._routing_grid.addWidget(wl_label, row, 0)
             self._routing_grid.addWidget(arrow, row, 1)
             self._routing_grid.addWidget(target, row, 2)
-            self._routing_grid.addWidget(pref_label, row, 3)
-            self._routing_labels[workload] = target
+            self._routing_grid.addWidget(source_label, row, 3)
+            self._routing_labels[workload] = (target, source_label)
 
         layout.addWidget(routing_group)
 
@@ -195,21 +211,23 @@ class ModelsSection(QWidget):
     # ── Public API ───────────────────────────────────────────
 
     def update_models(self, payload: str):
-        """Parse LIST_MODELS response and rebuild cards."""
-        # Clear existing cards
-        for card in self._cards.values():
-            card.setParent(None)
-            card.deleteLater()
+        """Parse LIST_MODELS JSON response and rebuild cards."""
+        self._clear_cards_layout()
         self._cards.clear()
 
-        models = self._parse_model_lines(payload)
+        models, routing = self._parse_models_payload(payload)
         for m in models:
             card = ModelCard(m["id"])
             card.set_pretty_name(self._pretty_name(m["id"], m.get("family", "")))
             card.set_details(
                 family=m.get("family", "Unknown"),
                 path=m.get("path", ""),
-                best_for=self._best_for(m.get("family", "")),
+                best_for=self._best_for(m.get("capabilities")),
+                architecture=m.get("architecture", ""),
+                backend=m.get("resolved_backend", ""),
+                backend_preference=m.get("backend_preference", ""),
+                driver_status=self._driver_status(m),
+                metadata_source=self._metadata_label(m.get("metadata_source", "")),
             )
             card.load_clicked.connect(self._on_load)
             card.select_clicked.connect(self._on_select)
@@ -222,14 +240,39 @@ class ModelsSection(QWidget):
 
         # Update loaded state
         self._refresh_card_states()
-        self._update_routing_map(models)
+        self._update_routing_map(models, routing)
+        if not models:
+            self.info_output.setText("LIST_MODELS did not return a recognizable payload.")
 
     def update_loaded_model(self, model_id: str):
         self._loaded_model_id = model_id
         self._refresh_card_states()
 
     def show_info(self, text: str):
-        self.info_output.setText(text[:500])
+        try:
+            data = json.loads(text)
+        except Exception:
+            self.info_output.setText(text[:500])
+            return
+
+        tokenizer = data.get("tokenizer_path") or "<none>"
+        selected = "yes" if data.get("selected") else "no"
+        architecture = data.get("architecture") or "unknown"
+        backend = data.get("backend_preference") or "auto"
+        resolved_backend = data.get("resolved_backend") or "unresolved"
+        metadata = self._metadata_label(data.get("metadata_source") or "")
+        capabilities = self._best_for(data.get("capabilities")) or "not declared"
+        driver_source = data.get("driver_resolution_source") or "unresolved"
+        driver_reason = data.get("driver_resolution_rationale") or ""
+        driver_status = self._driver_status(data)
+        self.info_output.setText(
+            f"ID: {data.get('id', '—')}  •  Family: {data.get('family', '—')}  •  Arch: {architecture}  •  Selected: {selected}\n"
+            f"Path: {data.get('path', '—')}\n"
+            f"Tokenizer: {tokenizer}  •  Driver: {resolved_backend}  •  Pref: {backend}  •  Metadata: {metadata}\n"
+            f"Driver source: {driver_source}  •  Driver state: {driver_status}\n"
+            f"Capabilities: {capabilities}\n"
+            f"Driver rationale: {driver_reason}"
+        )
 
     def set_loading(self, model_id: str):
         if model_id in self._cards:
@@ -251,30 +294,99 @@ class ModelsSection(QWidget):
         for mid, card in self._cards.items():
             card.set_state(loaded=(mid == self._loaded_model_id))
 
-    def _update_routing_map(self, models: list[dict]):
-        families: dict[str, str] = {}
-        for m in models:
-            families[m.get("family", "")] = self._pretty_name(m["id"], m.get("family", ""))
+    def _clear_cards_layout(self):
+        while self._cards_container.count():
+            item = self._cards_container.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
 
-        for workload, (_, preferred_family) in _WORKLOAD_PREFERENCE.items():
-            target_name = families.get(preferred_family, "—")
-            if workload in self._routing_labels:
-                self._routing_labels[workload].setText(target_name)
+    def _update_routing_map(self, models: list[dict], routing: dict[str, dict]):
+        known_models = {
+            m["id"]: self._pretty_name(m["id"], m.get("family", ""))
+            for m in models
+        }
+
+        for workload in _WORKLOAD_ORDER:
+            target_label, source_label = self._routing_labels[workload]
+            routed = routing.get(workload, {})
+            routed_id = routed.get("model_id", "")
+            if routed_id:
+                target_label.setText(known_models.get(routed_id, routed_id))
+            else:
+                target_label.setText("—")
+
+            source = routed.get("source", "")
+            rationale = routed.get("rationale", "")
+            capability_key = routed.get("capability_key", "")
+            capability_score = routed.get("capability_score")
+            details = [source] if source else ["no routing hint"]
+            if capability_key:
+                if isinstance(capability_score, (int, float)):
+                    details.append(f"{capability_key}={capability_score:.2f}")
+                else:
+                    details.append(capability_key)
+            if rationale:
+                details.append(rationale)
+            source_label.setText("  |  ".join(details))
 
     @staticmethod
-    def _parse_model_lines(payload: str) -> list[dict]:
+    def _parse_models_payload(payload: str) -> tuple[list[dict], dict[str, dict]]:
+        try:
+            data = json.loads(payload)
+        except Exception:
+            return ModelsSection._parse_legacy_model_lines(payload), {}
+
+        models = data.get("models", []) if isinstance(data, dict) else []
+        routing_entries = data.get("routing_recommendations", []) if isinstance(data, dict) else []
+        routing = {
+            str(entry.get("workload", "")): {
+                "model_id": str(entry.get("model_id", "") or ""),
+                "source": str(entry.get("source", "") or ""),
+                "rationale": str(entry.get("rationale", "") or ""),
+                "capability_key": str(entry.get("capability_key", "") or ""),
+                "capability_score": entry.get("capability_score"),
+            }
+            for entry in routing_entries
+            if entry.get("workload")
+        }
+        normalized = []
+        for entry in models:
+            if not isinstance(entry, dict) or "id" not in entry:
+                continue
+            normalized.append(
+                {
+                    "id": str(entry.get("id", "")),
+                    "family": str(entry.get("family", "Unknown")),
+                    "architecture": str(entry.get("architecture", "") or ""),
+                    "path": str(entry.get("path", "")),
+                    "backend_preference": str(entry.get("backend_preference", "") or ""),
+                    "resolved_backend": str(entry.get("resolved_backend", "") or ""),
+                    "driver_resolution_source": str(entry.get("driver_resolution_source", "") or ""),
+                    "driver_resolution_rationale": str(entry.get("driver_resolution_rationale", "") or ""),
+                    "driver_available": entry.get("driver_available"),
+                    "driver_load_supported": entry.get("driver_load_supported"),
+                    "metadata_source": str(entry.get("metadata_source", "") or ""),
+                    "capabilities": entry.get("capabilities") if isinstance(entry.get("capabilities"), dict) else None,
+                }
+            )
+        return normalized, routing
+
+    @staticmethod
+    def _parse_legacy_model_lines(payload: str) -> list[dict]:
         models = []
         for line in payload.splitlines():
             line = line.strip()
             if "id=" not in line:
                 continue
-            m: dict[str, str] = {}
+            entry: dict[str, str] = {}
             for key in ("id", "family", "path"):
                 match = re.search(rf"{key}=([^\s]+)", line)
                 if match:
-                    m[key] = match.group(1)
-            if "id" in m:
-                models.append(m)
+                    entry[key] = match.group(1)
+            if "id" in entry:
+                models.append(entry)
         return models
 
     @staticmethod
@@ -283,6 +395,7 @@ class ModelsSection(QWidget):
         pretty = source.replace("_", " ").replace("-", " ").strip()
         pretty = re.sub(r"(?i)meta\s*", "", pretty)
         pretty = re.sub(r"(?i)qwen\s*2\.?5", "Qwen 2.5", pretty)
+        pretty = re.sub(r"(?i)qwen\s*3\.?5", "Qwen 3.5", pretty)
         pretty = re.sub(r"(?i)llama\s*3\.?1", "Llama 3.1", pretty)
         pretty = re.sub(r"(?i)\b(\d+)b\b", lambda m: f"{m.group(1)}B", pretty)
         pretty = re.sub(r"\s+", " ", pretty).strip()
@@ -291,9 +404,33 @@ class ModelsSection(QWidget):
         return f"{pretty} ({family})" if family else pretty
 
     @staticmethod
-    def _best_for(family: str) -> str:
-        if family == "Llama":
-            return "fast, general"
-        if family == "Qwen":
-            return "code, reasoning"
-        return ""
+    def _best_for(capabilities: dict | None) -> str:
+        if not isinstance(capabilities, dict) or not capabilities:
+            return ""
+
+        ranked: list[tuple[str, float]] = []
+        for key, value in capabilities.items():
+            if isinstance(value, (int, float)):
+                ranked.append((str(key), float(value)))
+
+        if not ranked:
+            return ""
+
+        ranked.sort(key=lambda item: item[1], reverse=True)
+        return ", ".join(f"{name} {score:.2f}" for name, score in ranked[:3])
+
+    @staticmethod
+    def _metadata_label(metadata_source: str) -> str:
+        if not metadata_source:
+            return "none"
+        return Path(metadata_source).name
+
+    @staticmethod
+    def _driver_status(data: dict) -> str:
+        available = data.get("driver_available")
+        load_supported = data.get("driver_load_supported")
+        if available is False or load_supported is False:
+            return "stub/unavailable"
+        if available is True and load_supported is True:
+            return "loadable"
+        return "unresolved"

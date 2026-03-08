@@ -20,7 +20,7 @@ class MemorySection(QWidget):
 
     checkpoint_requested = Signal(str)          # optional path
     restore_requested = Signal(str)             # optional path
-    memw_requested = Signal(str, str)       # (pid, raw_text)
+    memw_requested = Signal(str, str)       # (pid, utf-8 bytes body)
     refresh_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None):
@@ -138,6 +138,14 @@ class MemorySection(QWidget):
         ckpt_title.setObjectName("card_title")
         ckpt_layout.addWidget(ckpt_title)
 
+        ckpt_hint = QLabel(
+            "RESTORE reapplies metadata only: scheduler state, selected model hint, generation config. "
+            "It does not resume live processes, model weights, tensors, or output buffers."
+        )
+        ckpt_hint.setObjectName("card_detail")
+        ckpt_hint.setWordWrap(True)
+        ckpt_layout.addWidget(ckpt_hint)
+
         path_row = QHBoxLayout()
         path_row.addWidget(QLabel("Path (optional):"))
         self.ckpt_path = QLineEdit()
@@ -177,6 +185,14 @@ class MemorySection(QWidget):
         memw_title.setObjectName("card_title")
         memw_layout.addWidget(memw_title)
 
+        memw_hint = QLabel(
+            "Low-level diagnostic write. The payload is sent as raw UTF-8 bytes after '<pid>\\n'. "
+            "The current backend expects 4-byte-aligned f32 payloads; misaligned writes are rejected."
+        )
+        memw_hint.setObjectName("card_detail")
+        memw_hint.setWordWrap(True)
+        memw_layout.addWidget(memw_hint)
+
         pid_row = QHBoxLayout()
         pid_row.addWidget(QLabel("PID:"))
         self.memw_pid = QLineEdit()
@@ -187,7 +203,7 @@ class MemorySection(QWidget):
         memw_layout.addLayout(pid_row)
 
         self.memw_text = QTextEdit()
-        self.memw_text.setPlaceholderText("Raw bytes / text payload to write into NeuralMemory...")
+        self.memw_text.setPlaceholderText("Diagnostic byte payload (typed text will be UTF-8 encoded before send)...")
         self.memw_text.setMaximumHeight(80)
         memw_layout.addWidget(self.memw_text)
 
@@ -233,6 +249,25 @@ class MemorySection(QWidget):
 
     def show_checkpoint_result(self, text: str):
         self.ckpt_output.setText(text[:300])
+
+    def show_restore_result(self, text: str):
+        try:
+            import json
+
+            data = json.loads(text)
+        except Exception:
+            self.ckpt_output.setText(text[:400])
+            return
+
+        limits = data.get("limitations", [])
+        limits_text = "; ".join(limits) if limits else "metadata-only"
+        self.ckpt_output.setText(
+            "RESTORE applied: "
+            f"cleared={data.get('cleared_scheduler_entries', 0)}  •  "
+            f"restored={data.get('restored_scheduler_entries', 0)}  •  "
+            f"selected_model={data.get('selected_model', '<none>')}\n"
+            f"Limits: {limits_text}"
+        )
 
     def show_memw_result(self, text: str):
         self.ckpt_output.setText(f"MEMW: {text[:300]}")

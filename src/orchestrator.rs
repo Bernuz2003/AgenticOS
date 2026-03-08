@@ -13,7 +13,11 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
+use crate::config::env_usize;
 use crate::model_catalog::WorkloadClass;
+
+const DEFAULT_ORCH_MAX_OUTPUT_CHARS: usize = 4096;
+const TRUNCATION_MARKER: &str = "\n[TRUNCATED]\n";
 
 // ── JSON schema ─────────────────────────────────────────────────────────
 
@@ -99,6 +103,8 @@ pub struct Orchestration {
     pub status: HashMap<String, TaskStatus>,
     /// Accumulated LLM output per task id.
     pub output: HashMap<String, String>,
+    pub truncated_outputs: usize,
+    pub output_chars_stored: usize,
     pub created_at: Instant,
 }
 
@@ -156,6 +162,7 @@ pub struct Orchestrator {
     next_id: u64,
     /// Maps active PID → (orchestration_id, task_id).
     pid_to_task: HashMap<u64, (u64, String)>,
+    max_output_chars: usize,
 }
 
 impl Orchestrator {
@@ -164,6 +171,10 @@ impl Orchestrator {
             orchestrations: HashMap::new(),
             next_id: 1,
             pid_to_task: HashMap::new(),
+            max_output_chars: env_usize(
+                "AGENTIC_ORCH_MAX_OUTPUT_CHARS",
+                DEFAULT_ORCH_MAX_OUTPUT_CHARS,
+            ),
         }
     }
 
@@ -227,6 +238,8 @@ impl Orchestrator {
             topo_order,
             status,
             output: HashMap::new(),
+            truncated_outputs: 0,
+            output_chars_stored: 0,
             created_at: Instant::now(),
         };
 
@@ -286,10 +299,14 @@ impl Orchestrator {
     pub fn append_output(&mut self, pid: u64, text: &str) {
         if let Some((orch_id, task_id)) = self.pid_to_task.get(&pid) {
             if let Some(orch) = self.orchestrations.get_mut(orch_id) {
-                orch.output
-                    .entry(task_id.clone())
-                    .or_default()
-                    .push_str(text);
+                let entry = orch.output.entry(task_id.clone()).or_default();
+                append_with_cap(
+                    entry,
+                    text,
+                    self.max_output_chars,
+                    &mut orch.truncated_outputs,
+                );
+                orch.output_chars_stored = orch.output.values().map(|v| v.len()).sum();
             }
         }
     }
@@ -469,6 +486,64 @@ fn build_task_prompt(task: &TaskNodeDef, outputs: &HashMap<String, String>) -> S
             task.prompt
         )
     }
+}
+
+fn append_with_cap(target: &mut String, incoming: &str, cap: usize, truncations: &mut usize) {
+    if cap == 0 {
+        return;
+    }
+
+    if target.len() >= cap {
+        if !target.contains(TRUNCATION_MARKER) {
+            ensure_truncation_marker(target, cap);
+            *truncations += 1;
+        }
+        return;
+    }
+
+    let remaining = cap.saturating_sub(target.len());
+    if incoming.len() <= remaining {
+        target.push_str(incoming);
+        return;
+    }
+
+    let keep = truncate_to_char_boundary(incoming, remaining.saturating_sub(TRUNCATION_MARKER.len()));
+    if keep > 0 {
+        target.push_str(&incoming[..keep]);
+    }
+    ensure_truncation_marker(target, cap);
+    *truncations += 1;
+}
+
+fn ensure_truncation_marker(target: &mut String, cap: usize) {
+    if target.contains(TRUNCATION_MARKER) {
+        return;
+    }
+
+    if cap <= TRUNCATION_MARKER.len() {
+        target.clear();
+        target.push_str(&TRUNCATION_MARKER[..cap]);
+        return;
+    }
+
+    while target.len() + TRUNCATION_MARKER.len() > cap {
+        target.pop();
+        while !target.is_char_boundary(target.len()) {
+            target.pop();
+        }
+    }
+    target.push_str(TRUNCATION_MARKER);
+}
+
+fn truncate_to_char_boundary(text: &str, max_len: usize) -> usize {
+    if max_len >= text.len() {
+        return text.len();
+    }
+    let mut idx = max_len;
+    while idx > 0 && !text.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
 }
 
 /// Topological sort (Kahn's algorithm).  Tie-breaks alphabetically for
@@ -938,5 +1013,21 @@ mod tests {
         };
         let prompt = build_task_prompt(&task, &HashMap::new());
         assert_eq!(prompt, "do it");
+    }
+
+    #[test]
+    fn append_output_truncates_and_marks_status() {
+        let mut orch = Orchestrator::new();
+        orch.max_output_chars = 24;
+
+        let (id, spawns) = orch.register(make_linear_graph(), 1).unwrap();
+        let pid_a = 100;
+        orch.register_pid(pid_a, id, &spawns[0].task_id);
+        orch.append_output(pid_a, "abcdefghijklmnopqrstuvwxyz");
+
+        let stored = orch.get(id).unwrap().output.get("A").cloned().unwrap_or_default();
+        assert!(stored.contains("[TRUNCATED]"));
+        assert!(orch.get(id).unwrap().truncated_outputs >= 1);
+        assert!(orch.get(id).unwrap().output_chars_stored <= 24);
     }
 }

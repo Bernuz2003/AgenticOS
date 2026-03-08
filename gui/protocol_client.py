@@ -103,6 +103,12 @@ class ProtocolClient:
         """Force re-read of the auth token on next connection."""
         self._auth_token = None
 
+    def reset_session(self) -> None:
+        """Drop socket and auth cache after kernel lifecycle changes."""
+        with self._lock:
+            self._close_persistent()
+            self._auth_token = None
+
     def _ensure_connection(self, read_timeout_s: float) -> socket.socket:
         """Return the persistent socket, reconnecting if needed."""
         if self._sock is not None:

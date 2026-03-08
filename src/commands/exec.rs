@@ -20,48 +20,66 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
     let _ = ctx.model_catalog.refresh();
     let can_scheduler_switch = auto_switch || hinted_workload.is_some();
     if can_scheduler_switch {
-        if let Some(selected) = ctx.model_catalog.select_for_workload(workload).cloned() {
-            let should_reload = *ctx.active_family != selected.family;
-            if should_reload {
-                if !ctx.in_flight.is_empty() {
-                    ctx.client.output_buffer.extend(protocol::response_err_code(
-                        "IN_FLIGHT",
-                        &format!(
-                            "Cannot switch model while {} process(es) are in-flight",
-                            ctx.in_flight.len()
-                        ),
-                    ));
-                    return None;
-                }
-                *ctx.engine_state = None;
-                let tokenizer_hint = selected.tokenizer_path.clone();
-                match LLMEngine::load(
-                    selected.path.to_string_lossy().as_ref(),
-                    selected.family,
-                    tokenizer_hint,
-                ) {
-                    Ok(new_engine) => {
-                        *ctx.engine_state = Some(new_engine);
-                        *ctx.active_family = selected.family;
-                        ctx.model_catalog.selected_id = Some(selected.id.clone());
-                        log_event(
-                            "scheduler_model_switch",
-                            ctx.client_id,
-                            None,
-                            &format!(
-                                "workload={:?} model_id={} family={:?}",
-                                workload, selected.id, selected.family
-                            ),
-                        );
+        match ctx.model_catalog.resolve_workload_target(workload) {
+            Ok(Some(target)) => {
+                let selected_path = target.path.to_string_lossy().to_string();
+                let should_reload = match ctx.engine_state.as_ref() {
+                    Some(engine) => {
+                    engine.loaded_model_path() != selected_path
+                            || engine.loaded_family() != target.family
+                            || engine.loaded_backend_id() != target.driver_resolution.resolved_backend_id
                     }
-                    Err(e) => {
+                    None => true,
+                };
+                if should_reload {
+                    if !ctx.in_flight.is_empty() {
                         ctx.client.output_buffer.extend(protocol::response_err_code(
-                            "SCHEDULER_LOAD_FAILED",
-                            &format!("{}", e),
+                            "IN_FLIGHT",
+                            &format!(
+                                "Cannot switch model while {} process(es) are in-flight",
+                                ctx.in_flight.len()
+                            ),
                         ));
                         return None;
                     }
+                    *ctx.engine_state = None;
+                    match LLMEngine::load_target(&target) {
+                        Ok(new_engine) => {
+                            let loaded_backend = new_engine.loaded_backend_id().to_string();
+                            *ctx.engine_state = Some(new_engine);
+                            if let Some(model_id) = target.model_id.as_ref() {
+                                ctx.model_catalog.selected_id = Some(model_id.clone());
+                            }
+                            log_event(
+                                "scheduler_model_switch",
+                                ctx.client_id,
+                                None,
+                                &format!(
+                                    "workload={:?} model_id={} family={:?} backend={}",
+                                    workload,
+                                    target.model_id.clone().unwrap_or_else(|| "<external-path>".to_string()),
+                                    target.family,
+                                    loaded_backend
+                                ),
+                            );
+                        }
+                        Err(e) => {
+                            ctx.client.output_buffer.extend(protocol::response_err_code(
+                                "SCHEDULER_LOAD_FAILED",
+                                &format!("{}", e),
+                            ));
+                            return None;
+                        }
+                    }
                 }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                ctx.client.output_buffer.extend(protocol::response_err_code(
+                    "SCHEDULER_TARGET_FAILED",
+                    &e.to_string(),
+                ));
+                return None;
             }
         }
     }

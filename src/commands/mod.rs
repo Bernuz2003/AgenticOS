@@ -19,7 +19,6 @@ use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
-use crate::prompting::PromptFamily;
 use crate::protocol::OpCode;
 use crate::scheduler::ProcessScheduler;
 use crate::transport::Client;
@@ -37,7 +36,6 @@ pub fn execute_command(
     memory: &mut NeuralMemory,
     engine_state: &mut Option<LLMEngine>,
     model_catalog: &mut ModelCatalog,
-    active_family: &mut PromptFamily,
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
     client_id: usize,
@@ -78,7 +76,6 @@ pub fn execute_command(
         memory,
         engine_state,
         model_catalog,
-        active_family,
         scheduler,
         orchestrator,
         client_id,

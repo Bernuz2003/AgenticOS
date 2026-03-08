@@ -167,7 +167,7 @@ class MainWindow(QMainWindow):
             lambda path: self._send_with_event("RESTORE", path, "restore_done")
         )
         self.memory_section.memw_requested.connect(
-            lambda pid, data: self._send_with_event("MEMW", f"{pid}|{data}", "memw_done")
+            lambda pid, data: self._send_with_event("MEMW", f"{pid}\n{data}", "memw_done")
         )
         self.memory_section.refresh_requested.connect(
             lambda: self._refresh_status(force=True)
@@ -228,17 +228,26 @@ class MainWindow(QMainWindow):
     # ═══════════════════════════════════════════════════════════
 
     def _start_kernel(self):
+        self.client.reset_session()
         ok, msg = self.kernel.start()
         if not ok:
             QMessageBox.critical(self, "AgenticOS", msg)
             return
+        self.client.reset_session()
         QTimer.singleShot(900, lambda: self._refresh_status(force=True))
         QTimer.singleShot(1200, lambda: self._refresh_models(silent=True, force=True))
 
     def _stop_kernel(self):
+        self.client.reset_session()
         ok, msg = self.kernel.stop()
         if not ok:
             QMessageBox.critical(self, "AgenticOS", msg)
+        self.client.reset_session()
+        self._is_connected = False
+        self._last_status_payload = ""
+        self._loaded_model_id = ""
+        self._active_pids = []
+        self.models_section.update_loaded_model("")
         self.sidebar.update_status(online=False)
 
     # ═══════════════════════════════════════════════════════════
@@ -277,7 +286,11 @@ class MainWindow(QMainWindow):
                     read_timeout_s=read_timeout_s,
                     inactivity_timeout_s=inactivity_timeout_s,
                 )
-                if success_event_kind:
+                if not response.ok:
+                    message = f"{verb} failed [{response.code}]: {response.payload}"
+                    kind = "error" if show_error_popup else "background_error"
+                    self.ui_queue.put(UiEvent(kind=kind, message=message))
+                elif success_event_kind:
                     self.ui_queue.put(UiEvent(kind=success_event_kind, message=response.payload))
                 if include_control_log:
                     self.ui_queue.put(UiEvent(kind="control", message=self._format_control(verb, response)))
@@ -315,7 +328,15 @@ class MainWindow(QMainWindow):
                     verb="STATUS", payload="",
                     read_timeout_s=6.0, inactivity_timeout_s=0.35,
                 )
-                self.ui_queue.put(UiEvent(kind="status", message=response.payload))
+                if response.ok:
+                    self.ui_queue.put(UiEvent(kind="status", message=response.payload))
+                else:
+                    self.ui_queue.put(
+                        UiEvent(
+                            kind="background_error",
+                            message=f"STATUS failed [{response.code}]: {response.payload}",
+                        )
+                    )
             except Exception as exc:
                 self.ui_queue.put(UiEvent(kind="background_error", message=f"STATUS failed: {exc}"))
             finally:
@@ -356,15 +377,21 @@ class MainWindow(QMainWindow):
         def task():
             try:
                 self._update_client_config()
-                self._send_once_with_retry(
+                select_response = self._send_once_with_retry(
                     "SELECT_MODEL", model_id,
                     read_timeout_s=8.0, inactivity_timeout_s=0.6,
                 )
-                self._send_once_with_retry(
+                if not select_response.ok:
+                    raise RuntimeError(
+                        f"SELECT_MODEL failed [{select_response.code}]: {select_response.payload}"
+                    )
+                load_response = self._send_once_with_retry(
                     "LOAD", "",
                     read_timeout_s=self._load_read_timeout_s,
                     inactivity_timeout_s=self._load_inactivity_timeout_s,
                 )
+                if not load_response.ok:
+                    raise RuntimeError(f"LOAD failed [{load_response.code}]: {load_response.payload}")
                 self.ui_queue.put(UiEvent(kind="refresh_after_load", message=model_id))
             except Exception as exc:
                 self.ui_queue.put(UiEvent(kind="error", message=f"LOAD failed: {exc}"))
@@ -381,6 +408,10 @@ class MainWindow(QMainWindow):
         if "no_model_loaded=true" in self._last_status_payload.lower():
             self.chat_section.show_error("Nessun modello caricato — usa Models → Load prima di Chat.")
             return
+
+        outbound_prompt = prompt
+        if workload and workload != "auto":
+            outbound_prompt = f"capability={workload}; {prompt}"
 
         req_id = self.chat_section.begin_user_message(prompt)
 
@@ -401,12 +432,25 @@ class MainWindow(QMainWindow):
                                 message=f"{pid}\x00{req_id}",
                             ))
                     elif kind == "DATA" and code.lower() == "raw":
+                        finish_match = re.search(
+                            r"\[PROCESS_FINISHED\s+pid=(\d+)\s+tokens_generated=(\d+)\s+elapsed_secs=([0-9.]+)\]",
+                            text,
+                        )
+                        if finish_match:
+                            self.ui_queue.put(UiEvent(
+                                kind="exec_metrics",
+                                message=(
+                                    f"{finish_match.group(1)}\x00"
+                                    f"{finish_match.group(2)}\x00"
+                                    f"{finish_match.group(3)}"
+                                ),
+                            ))
                         self.ui_queue.put(UiEvent(
                             kind="exec_stream",
                             message=f"{pid}\x00{text}",
                         ))
 
-                result = self._exec_stream_with_retry(prompt=prompt, on_frame=on_frame)
+                result = self._exec_stream_with_retry(prompt=outbound_prompt, on_frame=on_frame)
                 if pid > 0:
                     self.ui_queue.put(UiEvent(
                         kind="exec_done", message=f"{pid}\x00{req_id}",
@@ -483,6 +527,14 @@ class MainWindow(QMainWindow):
                 parts = event.message.split("\x00", 1)
                 self.chat_section.finish_assistant_message(int(parts[0]))
 
+            elif event.kind == "exec_metrics":
+                pid_str, tok_str, elapsed_str = event.message.split("\x00", 2)
+                self.chat_section.apply_process_metrics(
+                    int(pid_str),
+                    int(tok_str),
+                    float(elapsed_str),
+                )
+
             elif event.kind == "exec_error":
                 parts = event.message.split("\x00", 2)
                 pid = int(parts[0]) if len(parts) > 0 else 0
@@ -510,7 +562,7 @@ class MainWindow(QMainWindow):
                 self.memory_section.show_checkpoint_result(event.message)
 
             elif event.kind == "restore_done":
-                self.memory_section.show_checkpoint_result(event.message)
+                self.memory_section.show_restore_result(event.message)
 
             elif event.kind == "memw_done":
                 self.memory_section.show_memw_result(event.message)
@@ -548,8 +600,9 @@ class MainWindow(QMainWindow):
         loaded = model.get("loaded_model_id", "")
         procs = data.get("processes", {})
         active_pids = procs.get("active_pids", [])
+        in_flight_pids = procs.get("in_flight_pids", [])
 
-        self._active_pids = [str(p) for p in active_pids]
+        self._active_pids = [str(p) for p in active_pids] + [str(p) for p in in_flight_pids]
 
         # Loaded model
         if loaded:

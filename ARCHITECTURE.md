@@ -1,8 +1,8 @@
 # AgenticOS — Architecture
 
-> Versione: `0.5.0` · Aggiornamento: 2026-03-05
+> Versione: `0.5.0` · Aggiornamento: 2026-03-07
 
-AgenticOS è un **kernel per agenti LLM** — un runtime TCP event-driven che gestisce processi autonomi basati su Large Language Model.
+AgenticOS è un **AI workstation OS local-first, single-node**: un kernel per agenti LLM che espone un runtime TCP event-driven e una GUI di controllo per gestire processi autonomi basati su Large Language Model.
 Ogni processo possiede un'istanza del modello, genera token in streaming, può invocare tool di sistema (syscall) e comunicare con altri processi.
 
 Questo documento descrive l'architettura interna del kernel, i flussi end-to-end, i sottosistemi e il protocollo di comunicazione.
@@ -53,9 +53,10 @@ Questo documento descrive l'architettura interna del kernel, i flussi end-to-end
 
 **Caratteristiche chiave:**
 - **Single-thread event-driven** — il loop principale è non-blocking (`mio` epoll).
+- **Local-first e single-node** — la priorita' e' correttezza e affidabilita' del runtime locale, non concorrenza forte o distribuzione.
 - **Process-centric** — ogni `EXEC` crea un processo con la propria copia del modello, stato di generazione e buffer syscall.
 - **Paged memory** — allocatore a blocchi fisici con page table, eviction LRU e swap asincrono su disco.
-- **Priority scheduler** — 4 livelli di priorità (Low → Critical), quote token e syscall per workload class.
+- **Priority scheduler** — 4 livelli di priorità (Low → Critical), quote token e syscall per workload class. Governa ordine e limiti locali; non e' un motore di parallelismo forte.
 - **Syscall sandbox** — i processi LLM invocano tool (Python, file I/O, calc) tramite pattern `[[COMMAND: args]]`, con rate-limit, timeout e audit.
 - **Multi-model** — catalogo auto-discovery, routing capability-aware, hot-swap tra famiglie LLM.
 
@@ -246,8 +247,10 @@ VERB AgentID ContentLength\n
 ```
 
 - **VERB** — opcode case-insensitive (18 comandi).
-- **AgentID** — identificativo client (stringa, nessuna autenticazione).
+- **AgentID** — identificativo client (stringa, usato per tracing e compatibilita').
 - **ContentLength** — lunghezza payload in byte (0 se nessun payload).
+
+Prima di qualunque comando applicativo su una connessione fresca, il client invia `AUTH <token>` usando il valore scritto dal kernel in `workspace/.kernel_token` (bypassabile solo in sviluppo con `AGENTIC_AUTH_DISABLED=true`).
 
 ### Formato risposta
 
@@ -268,17 +271,17 @@ DATA raw Length\r\n<binary>             ← streaming token data
 | `Term` | `TERM` | PID | `+OK TERM ...` | Terminazione graceful (state → Finished) |
 | `Status` | `STATUS` | — oppure PID | `+OK STATUS ...` | Stato globale kernel oppure singolo PID |
 | `Shutdown` | `SHUTDOWN` | — | `+OK SHUTDOWN ...` | Richiede shutdown graceful del kernel |
-| `MemoryWrite` | `MEMW` | `pid\|data` o `pid\ndata` | `+OK MEMW ...` | Scrivi tensore in NeuralMemory per PID |
-| `ListModels` | `LIST_MODELS` | — | `+OK LIST_MODELS ...` | Lista modelli disponibili |
+| `MemoryWrite` | `MEMW` | `pid\ndata` | `+OK MEMW ...` | Scrivi payload raw per PID; backend attuale richiede body allineato a 4 byte (`f32`) |
+| `ListModels` | `LIST_MODELS` | — | `+OK LIST_MODELS ...` | Lista modelli disponibili (JSON strutturato) |
 | `SelectModel` | `SELECT_MODEL` | model_id | `+OK SELECT_MODEL ...` | Seleziona modello di default |
-| `ModelInfo` | `MODEL_INFO` | model_id (opz.) | `+OK MODEL_INFO ...` | Info dettagliate modello |
+| `ModelInfo` | `MODEL_INFO` | model_id (opz.) | `+OK MODEL_INFO ...` | Info dettagliate modello (JSON strutturato) |
 | `SetGen` | `SET_GEN` | `key=val,...` | `+OK SET_GEN ...` | Configura parametri generazione |
 | `GetGen` | `GET_GEN` | — | `+OK GET_GEN ...` | Legge parametri generazione correnti |
 | `SetPriority` | `SET_PRIORITY` | `PID level` | `+OK SET_PRIORITY ...` | Imposta priorità processo |
 | `GetQuota` | `GET_QUOTA` | PID | `+OK GET_QUOTA ...` | Legge quota/accounting processo |
 | `SetQuota` | `SET_QUOTA` | `PID max_tokens=N,...` | `+OK SET_QUOTA ...` | Modifica quote di un processo |
 | `Checkpoint` | `CHECKPOINT` | path (opz.) | `+OK CHECKPOINT ...` | Salva snapshot kernel su disco |
-| `Restore` | `RESTORE` | path (opz.) | `+OK RESTORE ...` | Ripristina stato kernel da disco |
+| `Restore` | `RESTORE` | path (opz.) | `+OK RESTORE ...` | Reapplica metadata restore-able (`metadata_only_clear_and_apply`) |
 
 ### Esempio sessione
 
@@ -293,7 +296,7 @@ DATA raw Length\r\n<binary>             ← streaming token data
 ← +OK EXEC 48\r\nProcess Started PID: 1 workload=General priority=normal
 ← DATA raw 5\r\nHello
 ← DATA raw 7\r\n, world
-← DATA raw 31\r\n[PROCESS_FINISHED pid=1]
+← DATA raw 66\r\n[PROCESS_FINISHED pid=1 tokens_generated=128 elapsed_secs=18.4]
 ```
 
 ---
@@ -306,12 +309,12 @@ DATA raw Length\r\n<binary>             ← streaming token data
 
 ```
 LLMEngine
-├── master_model: Option<RuntimeModel>    # Pesi GGUF caricati (Llama o Qwen2)
+├── master_model: Option<RuntimeModel>    # Pesi GGUF caricati tramite driver risolto
 ├── tokenizer: Tokenizer                  # HuggingFace tokenizer
 ├── device: Device                        # Sempre CPU
 ├── processes: HashMap<u64, AgentProcess> # Processi attivi
 ├── generation: GenerationConfig          # Parametri di sampling globali
-├── family: PromptFamily                  # Famiglia prompt attiva
+├── family: PromptFamily                  # Famiglia prompt derivata dal backend/modello attivo
 └── eos/eot_token_id                      # Token di stop
 ```
 
@@ -324,7 +327,7 @@ AgentProcess
 ├── id: u64                     # PID univoco
 ├── owner_id: usize             # Socket token del client proprietario
 ├── state: ProcessState         # Ready → Running → Finished
-├── model: RuntimeModel         # Copia (clone Llama / reload Qwen2)
+├── model: RuntimeModel         # Copia/istanza del backend risolto
 ├── logits_processor            # Sampler (seed = base_seed + pid)
 ├── tokens: Vec<u32>            # Buffer token (prompt + generati)
 ├── index_pos: usize            # Posizione corrente nella sequenza
@@ -358,6 +361,7 @@ La generazione si ferma quando:
 
 - **Llama** — `model.clone()` (zero-alloc, shared weights via `Arc`)
 - **Qwen2** — full reload da disco (clone non supportato dalla libreria candle)
+- **Architetture future** — il runtime non assume piu' che ogni modello `Qwen` sia caricabile col backend `Qwen2`: il control plane deve prima risolvere un driver compatibile con `general.architecture`.
 
 ---
 
@@ -450,6 +454,7 @@ graph LR
 ```
 
 In ogni engine tick, i processi attivi sono ordinati per priorità decrescente. A parità, il PID più basso viene servito prima (FIFO).
+Questo scheduler governa **chi viene servito per primo** e **quanto puo' consumare**, ma non introduce parallelismo di esecuzione oltre al worker dedicato per l'inferenza.
 
 ### Quota enforcement
 
@@ -527,17 +532,29 @@ Quando un processo genera testo contenente il pattern `[[COMMAND: args]]`, il ke
 ### Auto-discovery
 
 All'avvio, `ModelCatalog::discover("models/")` scansiona ricorsivamente la directory e registra tutti i file `.gguf`.
-Per ogni modello viene inferita la famiglia (`Llama`, `Qwen`, `Mistral`) dal nome del file e cercato il `tokenizer.json` associato.
+Per ogni modello il catalogo cerca il `tokenizer.json` associato, legge i metadata nativi da GGUF/tokenizer quando disponibili e conserva sia la `family` logica sia l'`architecture` reale dichiarata dal file (`general.architecture`).
 
 ```
 models/
 ├── llama3.1-8b/
-│   ├── Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf  → family=Llama
+│   ├── Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf  → family=Llama, architecture=llama
 │   └── tokenizer.json
-└── qwen2.5-14b/
-    ├── qwen2.5-14b-instruct-q4_k_m.gguf         → family=Qwen
+├── qwen2.5-14b/
+│   ├── qwen2.5-14b-instruct-q4_k_m.gguf         → family=Qwen, architecture=qwen2
+│   └── tokenizer.json
+└── qwen3.5-9b/
+    ├── Qwen3.5-9B-Q4_K_M.gguf                   → family=Qwen, architecture=qwen35
     └── tokenizer.json
 ```
+
+### Driver resolution contract
+
+Il control plane risolve un `ResolvedModelTarget` composto da path, family, tokenizer hint, metadata e driver resolution. La scelta del driver usa due livelli:
+
+1. `family` per la compatibilita' logica del modello.
+2. `architecture` per evitare fallback falsi-positivi verso loader interni incompatibili.
+
+Questo significa che un modello `Qwen` con `general.architecture=qwen35` viene scoperto e descritto correttamente dal catalogo, ma non viene inoltrato automaticamente a `candle.quantized_qwen2`. Se nessun driver registrato supporta quell'architettura, `LOAD` fallisce prima del backend load con errore esplicito e machine-readable.
 
 ### Capability routing
 
@@ -601,7 +618,7 @@ Il kernel può salvare un'istantanea del proprio stato su disco per resilienza a
 | Configurazione generazione | Connessioni TCP |
 | Modello selezionato | Output buffer dei client |
 
-**Al restore:** le entry dello scheduler vengono ripristinate, ma i processi richiedono un nuovo `LOAD` + `EXEC`. I tensori swap su disco (`workspace/swap/`) sopravvivono indipendentemente.
+**Al restore:** il kernel richiede stato idle, azzera la porzione restore-able gia' presente e riapplica lo snapshot in modalita' `metadata_only_clear_and_apply`. Scheduler entries, selected model hint e generation config vengono ripristinati; processi live, pesi, tensori e output buffer non vengono mai ripresi.
 
 ### Auto-checkpoint
 

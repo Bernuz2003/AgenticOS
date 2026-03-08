@@ -2,28 +2,68 @@ use anyhow::{Error as E, Result};
 use candle_core::{DType, Device, Tensor};
 use std::path::PathBuf;
 
-use crate::backend::RuntimeModel;
+use crate::backend::{DriverResolution, RuntimeModel};
+use crate::model_catalog::{ModelMetadata, ResolvedModelTarget};
 use crate::process::{AgentProcess, ProcessState};
-use crate::prompting::{should_stop_on_text, GenerationConfig};
+use crate::prompting::{
+    format_interprocess_user_message_with_metadata,
+    format_system_injection_with_metadata,
+    should_stop_on_text_with_metadata,
+    GenerationConfig,
+};
 
 use super::tokenizer::{resolve_special_tokens, resolve_tokenizer_path};
 use super::LLMEngine;
 
 impl LLMEngine {
-    pub fn load(path: &str, family: crate::prompting::PromptFamily, tokenizer_hint: Option<PathBuf>) -> Result<Self> {
+    pub fn load_target(target: &ResolvedModelTarget) -> Result<Self> {
+        Self::load(
+            target.path.to_string_lossy().as_ref(),
+            target.family,
+            target.tokenizer_path.clone(),
+            target.metadata.clone(),
+            target.driver_resolution.clone(),
+        )
+    }
+
+    fn load(
+        path: &str,
+        family: crate::prompting::PromptFamily,
+        tokenizer_hint: Option<PathBuf>,
+        metadata: Option<ModelMetadata>,
+        driver_resolution: DriverResolution,
+    ) -> Result<Self> {
         tracing::info!(path, ?family, "ENGINE: Loading Master Model");
 
         let device = Device::Cpu;
-        let model = RuntimeModel::load_from_gguf(path, family, &device)?;
+        let model = RuntimeModel::load_from_gguf(
+            path,
+            family,
+            &driver_resolution.resolved_backend_id,
+            &device,
+        )?;
+        let resolved_family = model.family();
+        let backend_id = model.backend_id();
 
-        tracing::info!("ENGINE: Weights loaded. Loading Tokenizer...");
+        tracing::info!(
+            backend_id,
+            resolution_source = driver_resolution.resolution_source,
+            resolution_rationale = driver_resolution.resolution_rationale,
+            ?resolved_family,
+            "ENGINE: Weights loaded. Loading Tokenizer..."
+        );
 
         let tokenizer_path = resolve_tokenizer_path(path, tokenizer_hint)
             .ok_or_else(|| E::msg("Tokenizer not found for selected model (fail-fast policy)."))?;
         tracing::info!(?tokenizer_path, "ENGINE: Using tokenizer");
         let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_path).map_err(E::msg)?;
 
-        let (eos_token_id, eot_token_id) = resolve_special_tokens(&tokenizer, family).map_err(E::msg)?;
+        let (eos_token_id, eot_token_id) = resolve_special_tokens(
+            &tokenizer,
+            resolved_family,
+            metadata.as_ref(),
+        )
+        .map_err(E::msg)?;
 
         tracing::info!(
             eos_token_id,
@@ -35,12 +75,16 @@ impl LLMEngine {
         Ok(Self {
             master_model: Some(model),
             model_path: path.to_string(),
+            backend_id: backend_id.to_string(),
+            driver_resolution_source: driver_resolution.resolution_source.to_string(),
+            driver_resolution_rationale: driver_resolution.resolution_rationale,
             tokenizer,
             device,
             processes: std::collections::HashMap::new(),
             next_pid: 1,
-            family,
-            generation: GenerationConfig::defaults_for(family),
+            family: resolved_family,
+            metadata,
+            generation: GenerationConfig::defaults_for(resolved_family),
             eos_token_id,
             eot_token_id,
         })
@@ -74,10 +118,16 @@ impl LLMEngine {
                 // reload is acceptable because there's nothing else running.
                 tracing::info!(
                     family = ?self.family,
+                    backend_id = self.backend_id,
                     pid,
                     "ENGINE: Runtime backend not cloneable; reloading model instance (first process)"
                 );
-                RuntimeModel::load_from_gguf(&self.model_path, self.family, &self.device)?
+                RuntimeModel::load_from_gguf(
+                    &self.model_path,
+                    self.family,
+                    &self.backend_id,
+                    &self.device,
+                )?
             } else {
                 // C7 guard: reject concurrent spawn for non-cloneable backends.
                 return Err(E::msg(format!(
@@ -141,7 +191,7 @@ impl LLMEngine {
         }
 
         if let Some(ref t) = text_output {
-            if should_stop_on_text(self.family, t) {
+            if should_stop_on_text_with_metadata(self.family, t, self.metadata.as_ref()) {
                 should_stop = true;
             }
         }
@@ -288,7 +338,65 @@ impl LLMEngine {
         &self.model_path
     }
 
+    pub fn loaded_backend_id(&self) -> &str {
+        &self.backend_id
+    }
+
+    pub fn driver_resolution_source(&self) -> &str {
+        &self.driver_resolution_source
+    }
+
+    pub fn driver_resolution_rationale(&self) -> &str {
+        &self.driver_resolution_rationale
+    }
+
     pub fn loaded_family(&self) -> crate::prompting::PromptFamily {
         self.family
+    }
+
+    pub fn model_metadata(&self) -> Option<&ModelMetadata> {
+        self.metadata.as_ref()
+    }
+
+    pub fn format_system_message(&self, content: &str) -> String {
+        format_system_injection_with_metadata(content, self.family, self.metadata.as_ref())
+    }
+
+    pub fn format_interprocess_message(&self, from_pid: u64, message: &str) -> String {
+        format_interprocess_user_message_with_metadata(
+            from_pid,
+            message,
+            self.family,
+            self.metadata.as_ref(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model_catalog::ModelCatalog;
+    use crate::prompting::PromptFamily;
+
+    #[test]
+    #[ignore = "uses the real local Qwen3.5 artifacts to validate generic discovery and rejection"]
+    fn qwen35_catalog_target_is_rejected_before_backend_load() {
+        let model_id = "qwen3.5-9b/Qwen3.5-9B-Q4_K_M";
+        let catalog = ModelCatalog::discover("models").expect("discover models");
+        let entry = catalog.find_by_id(model_id).expect("qwen3.5 entry present");
+
+        assert_eq!(entry.family, PromptFamily::Qwen);
+        assert!(
+            entry.tokenizer_path.is_some(),
+            "qwen3.5 tokenizer must be discoverable"
+        );
+        assert_eq!(
+            entry.metadata.as_ref().and_then(|meta| meta.architecture.as_deref()),
+            Some("qwen35")
+        );
+
+        let err = catalog
+            .resolve_load_target(model_id)
+            .expect_err("qwen3.5 should fail generic driver resolution until a compatible backend exists");
+        assert!(err.to_string().contains("qwen35"));
     }
 }

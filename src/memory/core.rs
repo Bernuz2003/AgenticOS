@@ -246,6 +246,12 @@ impl NeuralMemory {
             return Err(MemoryError::TensorNotFound(id));
         }
 
+        if raw_data.len() % 4 != 0 {
+            return Err(MemoryError::MisalignedPayload {
+                bytes: raw_data.len(),
+            });
+        }
+
         self.clear_tensor_pages(id, true);
 
         let f32_data: Vec<f32> = raw_data
@@ -381,6 +387,24 @@ mod tests {
 
         let snapshot_after_release = mem.snapshot();
         assert_eq!(snapshot_after_release.tracked_pids, 0);
+    }
+
+    #[test]
+    fn write_for_pid_bytes_rejects_misaligned_payload() {
+        let mut mem = NeuralMemory::new(MemoryConfig {
+            block_size: 4,
+            hidden_dim: 4,
+            total_memory_mb: 1,
+        })
+        .expect("memory init");
+
+        mem.set_token_slot_quota_per_pid(32);
+        mem.register_process(9, 16).expect("register pid");
+
+        let err = mem
+            .write_for_pid_bytes(9, b"12345")
+            .expect_err("misaligned payload should fail");
+        assert!(err.to_string().contains("not aligned to 4 bytes"));
     }
 
     #[test]

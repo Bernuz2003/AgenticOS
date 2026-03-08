@@ -32,7 +32,6 @@ use inference_worker::{InferenceCmd, InferenceResult};
 use memory::{MemoryConfig, NeuralMemory};
 use model_catalog::ModelCatalog;
 use orchestrator::Orchestrator;
-use prompting::PromptFamily;
 use runtime::run_engine_tick;
 use scheduler::ProcessScheduler;
 use tools::SyscallRateMap;
@@ -62,7 +61,6 @@ struct Kernel {
     engine_state: Option<LLMEngine>,
     shutdown_requested: Arc<AtomicBool>,
     model_catalog: ModelCatalog,
-    active_family: PromptFamily,
     scheduler: ProcessScheduler,
     orchestrator: Orchestrator,
     checkpoint_interval_secs: u64,
@@ -122,7 +120,6 @@ impl Kernel {
         let shutdown_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let model_catalog = ModelCatalog::discover("models")
             .map_err(io::Error::other)?;
-        let active_family: PromptFamily = PromptFamily::Llama;
         let scheduler = ProcessScheduler::new();
 
         let checkpoint_interval_secs: u64 = std::env::var("AGENTIC_CHECKPOINT_INTERVAL_SECS")
@@ -175,7 +172,6 @@ impl Kernel {
             engine_state,
             shutdown_requested,
             model_catalog,
-            active_family,
             scheduler,
             orchestrator: Orchestrator::new(),
             checkpoint_interval_secs,
@@ -238,7 +234,6 @@ impl Kernel {
                                     &mut self.memory,
                                     &mut self.engine_state,
                                     &mut self.model_catalog,
-                                    &mut self.active_family,
                                     &mut self.scheduler,
                                     &mut self.orchestrator,
                                     token.0,
@@ -285,7 +280,6 @@ impl Kernel {
                 &mut self.memory,
                 &mut self.clients,
                 &self.poll,
-                self.active_family,
                 &mut self.scheduler,
                 &mut self.orchestrator,
                 &self.cmd_tx,
@@ -340,10 +334,21 @@ impl Kernel {
             }
         };
 
+        let active_family = self
+            .engine_state
+            .as_ref()
+            .map(|engine| format!("{:?}", engine.loaded_family()))
+            .or_else(|| {
+                self.model_catalog
+                    .selected_entry()
+                    .map(|entry| format!("{:?}", entry.family))
+            })
+            .unwrap_or_else(|| "Unknown".to_string());
+
         let snap = checkpoint::KernelSnapshot {
             timestamp: checkpoint::now_timestamp(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            active_family: format!("{:?}", self.active_family),
+            active_family,
             selected_model: self.model_catalog.selected_id.clone(),
             generation,
             processes,

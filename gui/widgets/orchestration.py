@@ -167,6 +167,8 @@ class OrchestrationSection(QWidget):
         finished = data.get("finished", False)
         elapsed = data.get("elapsed_secs", "?")
         policy = data.get("policy", "?")
+        truncations = data.get("truncations", 0)
+        output_chars = data.get("output_chars_stored", 0)
 
         if finished:
             self._orch_finished = True
@@ -175,7 +177,8 @@ class OrchestrationSection(QWidget):
         self.summ_label.setText(
             f"Total {total}  •  Completed {completed}  •  Running {running}  •  "
             f"Pending {pending}  •  Failed {failed}  •  Skipped {skipped}\n"
-            f"Finished: {finished}  •  Elapsed: {elapsed}s  •  Policy: {policy}"
+            f"Finished: {finished}  •  Elapsed: {elapsed}s  •  Policy: {policy}  •  "
+            f"Truncations: {truncations}  •  Stored chars: {output_chars}"
         )
 
         # Parse per-task entries from JSON array

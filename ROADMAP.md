@@ -4,7 +4,9 @@ Questo file è la fonte unica di verità per il piano del progetto.
 
 ## Come usarla
 
+- Prima di iniziare ogni slice, rileggere questa roadmap insieme a `CRITICITY_TO_FIX.md`.
 - Aggiornare lo stato di ogni punto a fine attività (`TODO` → `IN_PROGRESS` → `DONE`).
+- Aggiornare a fine slice sia la roadmap sia `CRITICITY_TO_FIX.md` con delta, DoD e validazione eseguita.
 - Registrare data, note sintetiche e commit/riferimenti utili.
 - Non aprire un nuovo punto senza una **Definition of Done (DoD)** verificabile.
 
@@ -12,11 +14,11 @@ Questo file è la fonte unica di verità per il piano del progetto.
 
 ## Stato attuale (snapshot)
 
-- **Data snapshot:** 2026-03-05
+- **Data snapshot:** 2026-03-07
 - **Versione:** `v0.5.0`
 - **Runtime:** server TCP event-driven (`mio 1.0`) + engine LLM process-centric (`candle 0.9`)
 - **Codebase:** ~5.800 righe Rust (kernel) + ~1.300 righe Python (GUI PySide6)
-- **Test suite:** 94 test verdi (`cargo test --release`), clippy pulito, CI GitHub Actions
+- **Test suite:** 109 test verdi (`cargo test --release`), clippy con soli warning di debito minore residuo, CI GitHub Actions
 - **Modelli supportati:** Llama 3.1 (Q4_K_M) + Qwen 2.5 (Q4_K_M) con auto-discovery e capability routing
 - **Dipendenze chiave:** `candle-core/candle-transformers 0.9.1`, `tokenizers 0.22.2`, `mio 1.0`, `thiserror 2.0`, `tracing 0.1`, `serde 1.0`, `serde_json 1.0`
 
@@ -348,7 +350,7 @@ Applicato sia nel handler `LOAD` (riga ~57) che nel handler `EXEC` auto-switch (
 ## Fase 2.7: Risoluzione criticità (C1–C14)
 
 ### Criticità risolte
-**Status:** Phase A (C12, C14, C4) `DONE` ✅ | Phase B (C1, C2, C6) `DONE` ✅ | Phase C (C3, C5, C7) `DONE` ✅
+**Status:** Phase A (C12, C14, C4) `DONE` ✅ | Phase B (C1, C2, C6) `DONE` ✅ | Phase C (C3, C5, C7) `DONE` ✅ | Phase D (C8, C9, C10, C11, C13) `DONE` ✅
 
 | Crit | Titolo | Note |
 |------|--------|------|
@@ -359,23 +361,273 @@ Applicato sia nel handler `LOAD` (riga ~57) che nel handler `EXEC` auto-switch (
 | C5 | STATUS flat → JSON strutturato | 8 `#[derive(Serialize)]` structs, GUI usa `json.loads()` ovunque, rimossi tutti `_ex()` regex helpers |
 | C6 | Metriche globali statiche | `MetricsState` + `SyscallRateMap` come campi di `Kernel` |
 | C7 | Qwen model reload per spawn | Guard in `spawn_process()`: reject concurrent spawn per backend non clonabili |
+| C8 | GUI: connessione TCP nuova per ogni richiesta | `ProtocolClient` persistente con reconnect + lock |
+| C9 | GUI: thread spawn per ogni richiesta | `ThreadPoolExecutor(max_workers=4)` per control-plane, thread dedicato solo per EXEC stream |
+| C10 | GUI: HTML rebuild per ogni token di streaming | Render throttle 200 ms con `_render_dirty` in Chat |
+| C11 | GUI: N+1 query Processes | STATUS globale include `active_processes`, tabella popolata senza richieste extra |
 | C12 | Porta 6379 hardcoded | `AGENTIC_PORT` env var (default 6380) |
+| C13 | Nessun recovery per swap worker thread crash | re-spawn singolo + counter `swap_worker_crashes` in STATUS |
 | C14 | Debito tecnico minore | dead_code cleanup, lingua mista, unwrap → proper errors |
+| C15 | Contratto `MEMW` incoerente | Canonical format `<pid>\n<raw-bytes>`, rifiuto payload disallineati, GUI Memory riallineata |
+| C16 | `RESTORE` ambiguo | `metadata_only_clear_and_apply`, rifiuto su kernel busy, risposta JSON con limiti espliciti |
+| C17 | Workload hint Chat non inoltrato | `capability=<hint>;` inoltrato solo fuori da `auto` |
+| C18 | API modelli flat-text | `LIST_MODELS` e `MODEL_INFO` JSON, GUI e benchmark senza regex |
+| C19 | Metriche Chat approssimate | marker finale con contatori reali scheduler, fallback `approx` esplicito |
+| C20 | Contesto orchestrazione non bounded | cap `AGENTIC_ORCH_MAX_OUTPUT_CHARS`, marker `[TRUNCATED]`, contatori in `STATUS orch:` |
+| C21 | Drift documentale/runtime | docs sincronizzate su auth, restore metadata-only, scheduler governance, focus local-first |
 
-**Test:** 96/96 ✅ (94 pre-esistenti + 2 nuovi test AUTH)
+**Test:** 100/100 ✅ (96 precedenti + 4 nuove regressioni hardening)
 
-**Rimanenti (media/bassa, non bloccanti per Fase 3):**
-- C8 — GUI: connessione TCP nuova per ogni richiesta
-- C9 — GUI: thread spawn per ogni richiesta (no pool)
-- C10 — GUI: HTML rebuild per ogni token di streaming
-- C11 — GUI: N+1 query Processes (mitigato da JSON STATUS per-PID data)
-- C13 — Nessun recovery per swap worker thread crash
+**Esito fase critica:** le osservazioni della critica coerenti col prodotto sono state integrate in tre assi: contratti machine-readable, operator trust della GUI e bound espliciti sul runtime locale. Il progetto non apre per ora un cantiere Tokio/distributed.
+
+---
+
+## Roadmap attiva — Fase 2.8: AI Workstation OS hardening
+
+### Decisione di prodotto
+
+AgenticOS prosegue come **AI workstation OS local-first, single-node**.
+
+Questo significa che il focus immediato e':
+- massima correttezza del kernel locale e del control plane
+- contratti protocollo/GUI solidi e machine-readable
+- osservabilita' e restore onesti rispetto a cio' che il sistema puo' realmente fare
+- disciplina del contesto e della memoria prima di introdurre feature agentiche piu' ambiziose
+
+Non e' invece una priorita' immediata:
+- rincorrere concorrenza forte o multi-worker generalizzato
+- migrare ora a Tokio
+- ampliare lo scope verso distribuzione o coordinazione remota multi-nodo
+
+### 18) Protocollo, stato e documentazione coerenti
+**Status:** `DONE` ✅
+
+**Obiettivi**
+- Chiudere i gap di correttezza tra protocollo, backend, GUI e documentazione.
+- Rendere esplicite le semantiche reali di `MEMW` e `RESTORE`.
+- Uniformare le API dei modelli al formato JSON gia' adottato da `STATUS`.
+
+**DoD**
+- [x] **18.1** `MEMW` ha un contratto unico, lossless e documentato; niente troncamento silenzioso.
+- [x] **18.2** `RESTORE` e' transazionale sulla parte restore-able oppure rinominato/documentato in modo onesto.
+- [x] **18.3** `LIST_MODELS` e `MODEL_INFO` restituiscono JSON strutturato.
+- [x] **18.4** `ARCHITECTURE.md`, `ROADMAP.md`, `gui/README.md` riflettono auth, restore metadata-only e focus local-first.
+- [x] **18.5** Suite test verde, clippy pulito o con warning residuali esplicitamente tracciati.
+
+**Note di design**
+- Questa milestone chiude C15, C16, C18 e C21 lato protocollo/documentazione.
+- Lo scheduler va descritto per cio' che e' oggi: governance/ordering locale, non parallelismo forte.
+
+**Esito**
+- Adottati i punti coerenti della critica: contratti machine-readable, semantiche oneste e niente affordance ambigue tra GUI e kernel.
+
+**Stima:** ~6-9h
+
+---
+
+### 19) GUI fidelity & operator trust
+**Status:** `DONE` ✅
+
+**Obiettivi**
+- Far coincidere esattamente quello che la GUI promette con quello che il kernel esegue.
+- Eliminare le affordance ingannevoli e le metriche non affidabili.
+- Rafforzare la GUI come control center della workstation locale.
+
+**DoD**
+- [x] **19.1** Il workload hint della Chat (`auto/fast/code/reasoning/general`) viene davvero inoltrato al kernel.
+- [x] **19.2** Le metriche Chat mostrano contatori reali per PID oppure sono marcate chiaramente come stime.
+- [x] **19.3** La sezione Memory descrive `MEMW` come strumento low-level coerente con il backend.
+- [x] **19.4** La sezione Models usa payload JSON e non parsing regex.
+- [x] **19.5** Verifica Python-side aggiornata: `python -m compileall gui src/eval_swarm.py` verde e runbook GUI sincronizzato.
+
+**Note di design**
+- Questa milestone chiude C17 e C19, e completa il lato GUI di C15/C18.
+- L'obiettivo non e' un redesign estetico ulteriore, ma fiducia operativa dell'utente.
+
+**Esito**
+- La GUI non promette piu' comportamenti inesistenti: hint inoltrati davvero, metriche finali reali, descrizioni Memory/Models coerenti col protocollo.
+
+**Stima:** ~3-5h
+
+---
+
+### 20) Orchestration context discipline
+**Status:** `DONE` ✅
+
+**Obiettivi**
+- Evitare che i DAG crescano senza bound nei buffer di output e nei prompt derivati.
+- Preparare il terreno a un context management piu' sofisticato senza anticipare tutta la milestone futura.
+- Rendere visibile in `STATUS orch:` quanta compaction/truncation viene applicata.
+
+**DoD**
+- [x] **20.1** Cap configurabile sull'output memorizzato per task/orchestrazione.
+- [x] **20.2** Prompt dei task dipendenti costruiti con truncation/compaction esplicita.
+- [x] **20.3** `STATUS orch:N` espone contatori di truncation/compression.
+- [x] **20.4** Test su grafi con output voluminoso e dipendenze parallele.
+- [x] **20.5** Suite test verde, clippy pulito.
+
+**Note di design**
+- Questa milestone chiude C20 e riduce il rischio prima della futura milestone di context window management.
+- Il focus resta locale: bounds e disciplina prima di strategie agentiche piu' costose.
+
+**Esito**
+- Il runtime local-first non accumula piu' output orchestrati senza bound e rende visibili truncation e footprint del contesto all'operatore.
+
+**Stima:** ~4-6h
+
+---
+
+## Roadmap attiva — Fase 2.9: Future-Model Flexibility
+
+### Decisione architetturale
+
+Qwen3.5 non va integrato come eccezione isolata: viene usato come pressione progettuale per rendere AgenticOS stabile nel tempo rispetto a famiglie, backend e metadata futuri.
+
+Questo significa che il focus immediato e':
+- separare il kernel dalla logica specifica del singolo backend modello
+- trattare il runtime LLM come un driver intercambiabile, inclusi driver esterni futuri
+- leggere a runtime metadata, tokenizer contract e chat template con fallback sensati
+- sostituire il routing family-first con capability dichiarate e verificabili
+
+Questo NON significa, in questa fase:
+- aprire subito un cantiere multimodale completo
+- riscrivere NeuralMemory per architetture non-Transformer
+- cambiare il perimetro local-first/single-node
+
+### 21) Model Abstraction Layer
+**Status:** `DONE` ✅
+
+**Obiettivi**
+- Separare il kernel dal backend concreto di inferenza.
+- Sostituire il coupling enum-based di `RuntimeModel` con un contratto stabile di backend.
+- Preparare il supporto architetturale a driver interni ed esterni senza rompere Llama 3.1 e Qwen 2.5.
+
+**DoD**
+- [x] **21.1** Contratto backend introdotto (`ModelBackend` / wrapper `RuntimeModel`) in [src/backend.rs](src/backend.rs).
+- [x] **21.2** Adattato il lifecycle per usare metadata del backend risolto in [src/engine/lifecycle.rs](src/engine/lifecycle.rs).
+- [x] **21.3** Rimossi i path runtime/control-plane che dipendevano da una `PromptFamily` globale invece del contratto del modello/backend attivo.
+- [x] **21.4** Esporre identificativo backend e vincoli runtime nel catalogo/info modello.
+- [x] **21.5** Suite test verde, senza regressioni funzionali su Llama/Qwen legacy.
+
+**Note di design**
+- Questa milestone e' il prerequisito per C22 e blocca quasi tutto il resto del cantiere future-model-flexibility.
+- Il primo slice implementato mantiene i backend Candle interni ma apre il perimetro per driver esterni successivi.
+
+**Esito attuale**
+- Avviato il disaccoppiamento del backend: `RuntimeModel` non e' piu' un enum chiuso; i driver interni Llama/Qwen2 sono stati adattati dietro un contratto trait-based.
+- Il catalogo espone ora `resolved_backend`, stato del driver e razionale di risoluzione; `LLMEngine` carica il backend risolto invece di trattare `backend_preference` come dato passivo.
+- `runtime.rs`, `commands/*`, `transport/io.rs` e il checkpoint flow non usano piu' `active_family` come pivot implicito: il runtime decide in base al modello/backend effettivamente caricato.
+- `model_catalog.rs` espone ora un `ResolvedModelTarget` che centralizza family, metadata, tokenizer e driver resolution; `commands/model.rs`, `commands/exec.rs` e `engine/lifecycle.rs` non ricostruiscono piu' queste decisioni in modo disperso.
+- Validazione aggiornata: `cargo test --release` verde a 112/112 dopo la centralizzazione del load target e del contratto di backend.
+
+**Stima:** ~5-8h
+
+---
+
+### 22) Metadata-Driven Prompting & Tokenizer
+**Status:** `DONE` ✅
+
+**Obiettivi**
+- Rendere metadata first-class nel catalogo modelli.
+- Far dipendere template, special tokens e tokenizer contract da metadata runtime con fallback hardcoded solo per retrocompatibilita'.
+- Preparare il supporto a sidecar metadata subito e parsing nativo GGUF/tokenizer config come step successivo.
+
+**DoD**
+- [x] **22.1** `ModelMetadata` introdotto nel catalogo con supporto a sidecar `metadata.json` / `<model>.metadata.json`.
+- [x] **22.2** `LIST_MODELS` e `MODEL_INFO` espongono metadata source, backend preference e capability dichiarate.
+- [x] **22.3** `prompting.rs` consuma chat template, assistant preamble e stop markers runtime quando disponibili.
+- [x] **22.4** `engine/tokenizer.rs` consuma special tokens runtime quando disponibili.
+- [x] **22.5** Fallback family-based esplicito e testato per modelli legacy privi di metadata.
+- [x] **22.6** Parsing nativo da GGUF/tokenizer config introdotto in forma additiva, con overlay sidecar esplicito.
+
+**Note di design**
+- Partenza pragmatica: sidecar metadata prima, parsing nativo da GGUF/tokenizer config dopo.
+- Il percorso deve essere additive e non rompere i modelli gia' presenti nel repository.
+
+**Esito attuale**
+- `model_catalog.rs` unisce ora metadata nativi e sidecar: legge `general.architecture` e `tokenizer.chat_template` dal GGUF quando disponibili, estrae token speciali e stop markers dal `tokenizer.json`, e applica il sidecar solo come overlay esplicito.
+- Il catalogo espone `metadata_source` distinguendo fonti native (`gguf`, `tokenizer`) e sidecar, senza rompere i path legacy gia' introdotti in engine/runtime.
+- Validazione aggiornata: `cargo test --release` verde a 112/112, inclusi i nuovi test sul parsing nativo del catalogo.
+
+**Stima:** ~6-9h
+
+---
+
+### 23) Capability Routing v2
+**Status:** `DONE` ✅
+
+**Obiettivi**
+- Spostare il routing da precedenze statiche per famiglia a capability dichiarate dai modelli.
+- Mantenere euristiche statiche solo come fallback per modelli legacy.
+- Rendere osservabile nella GUI il motivo della selezione modello.
+
+**DoD**
+- [x] **23.1** `select_for_workload()` usa capability dichiarate come prima fonte, con fallback alle euristiche family-based.
+- [x] **23.2** `routing_recommendations` espone chiaramente il path capability-driven vs fallback.
+- [x] **23.3** GUI Models mostra capability, metadata source, backend preference e razionale del routing quando presenti.
+- [x] **23.4** Test unitari su modelli con e senza metadata.
+
+**Note di design**
+- Questa milestone chiude il gap C25 solo quando il fallback legacy resta esplicito, stabile e testato.
+
+**Esito attuale**
+- Routing capability-driven completato nella prima forma operativa: il catalogo espone `source`, `rationale`, `capability_key`, `capability_score`, e la GUI rende osservabile il perche' della selezione.
+
+**Stima:** ~4-6h
+
+---
+
+### 24) External Driver Plane
+**Status:** `DONE` ✅
+
+**Obiettivi**
+- Introdurre una separazione netta tra control plane del kernel e driver plane del modello.
+- Predisporre il supporto a driver esterni senza imporre subito una dipendenza produttiva completa.
+- Definire registry e policy di risoluzione modello -> driver.
+
+**DoD**
+- [x] **24.1** Registry dei driver con capability minime e identificativo backend.
+- [x] **24.2** Policy di risoluzione modello -> driver basata su metadata e requisiti runtime.
+- [x] **24.3** Supporto almeno a un driver esterno mock/stub per validare la separazione architetturale.
+- [x] **24.4** Errori espliciti quando nessun driver soddisfa i requisiti del modello.
+
+**Esito attuale**
+- Introdotto un driver registry esplicito con backend interni loadable e uno stub esterno `external-llamacpp`.
+- La risoluzione modello -> driver e' ora parte del control plane: `backend_preference` puo' essere soddisfatta, fallbackata o rifiutata con razionale machine-readable.
+- `LIST_MODELS` e `MODEL_INFO` espongono `resolved_backend`, stato del driver e ragione della risoluzione.
+
+**Stima:** ~6-10h
+
+---
+
+### 25) Qwen3.5 Integration Pilot
+**Status:** `DONE` ✅
+
+**Obiettivi**
+- Usare Qwen3.5 come primo caso guida del nuovo strato model-agnostic.
+- Validare che il design regga backend/metadata piu' complessi senza reintrodurre coupling nel kernel.
+- Produrre una checklist concreta per integrare famiglie future con costo marginale basso.
+
+**DoD**
+- [x] **25.1** Matrice compatibilita' Qwen3.5: tokenizer, template, special tokens, driver richiesto, limiti runtime.
+- [x] **25.2** Caricamento e discovery coerenti col nuovo strato metadata/driver.
+- [x] **25.3** Nessun fix Qwen3.5-specific deve violare il contratto generale del driver layer.
+- [x] **25.4** Aggiornamento documentale in `ARCHITECTURE.md` con i nuovi contratti.
+
+**Esito 2026-03-08**
+- Il catalogo scopre `models/qwen3.5-9b/Qwen3.5-9B-Q4_K_M.gguf`, risolve il `tokenizer.json` locale e conserva `general.architecture=qwen35` come metadata first-class.
+- `LIST_MODELS` e `MODEL_INFO` espongono ora anche `architecture`, oltre a `resolved_backend`, `driver_resolution_source` e `driver_resolution_rationale`.
+- La policy modello -> driver e' diventata architecture-aware: `PromptFamily::Qwen` non implica piu' fallback automatico verso `candle.quantized_qwen2` quando il GGUF dichiara `qwen35`.
+- Il `LOAD` di Qwen3.5 viene rifiutato in modo esplicito e machine-readable prima del backend load, perche' Candle 0.9.1 nel repo supporta solo `quantized_qwen2`; il prossimo passo funzionale e' aggiungere un driver compatibile (`qwen35` o esterno), non un branch speciale nel kernel.
+- Validazione: `cargo test` = 114 passed, 1 ignored; smoke test locale su `models/qwen3.5-9b` verde per discovery/tokenizer/architecture-aware rejection.
+
+**Stima:** ~4-8h
 
 ---
 
 ## Roadmap futura — Fase 3: Intelligenza agentica
 
-### 18) Tool registry dinamico
+### 26) Tool registry dinamico
 **Status:** `TODO`
 
 **Obiettivi**
@@ -384,14 +636,14 @@ Applicato sia nel handler `LOAD` (riga ~57) che nel handler `EXEC` auto-switch (
 - Abilitare estensibilità senza modificare il codice kernel.
 
 **DoD**
-- [ ] **18.1** `ToolDescriptor` struct: nome, descrizione, schema input (JSON Schema), backend (host/wasm/remote).
-- [ ] **18.2** `ToolRegistry` con `register(descriptor)` / `unregister(name)` / `list()` / `resolve(name)`.
-- [ ] **18.3** Opcodes protocollo: `REGISTER_TOOL <json>`, `LIST_TOOLS`, `TOOL_INFO <name>`.
-- [ ] **18.4** Dispatch syscall aggiornato: lookup nel registry prima del dispatch hardcoded.
-- [ ] **18.5** Tool remoto: possibilità di registrare un tool che fa HTTP call a un endpoint esterno.
-- [ ] **18.6** Integrazione GUI: pannello tool con lista, dettagli, register/unregister.
-- [ ] **18.7** Test: register + invoke, unregister + fallback, tool remoto mock.
-- [ ] **18.8** Suite test verde, clippy pulito.
+- [ ] **26.1** `ToolDescriptor` struct: nome, descrizione, schema input (JSON Schema), backend (host/wasm/remote).
+- [ ] **26.2** `ToolRegistry` con `register(descriptor)` / `unregister(name)` / `list()` / `resolve(name)`.
+- [ ] **26.3** Opcodes protocollo: `REGISTER_TOOL <json>`, `LIST_TOOLS`, `TOOL_INFO <name>`.
+- [ ] **26.4** Dispatch syscall aggiornato: lookup nel registry prima del dispatch hardcoded.
+- [ ] **26.5** Tool remoto: possibilità di registrare un tool che fa HTTP call a un endpoint esterno.
+- [ ] **26.6** Integrazione GUI: pannello tool con lista, dettagli, register/unregister.
+- [ ] **26.7** Test: register + invoke, unregister + fallback, tool remoto mock.
+- [ ] **26.8** Suite test verde, clippy pulito.
 
 **Note di design**
 - Il registry è in-memory (non persistente nel primo rilascio). Checkpoint/restore (M14) può serializzarlo in futuro.
@@ -402,7 +654,7 @@ Applicato sia nel handler `LOAD` (riga ~57) che nel handler `EXEC` auto-switch (
 
 ---
 
-### 19) Context window management
+### 27) Context window management
 **Status:** `TODO`
 
 **Obiettivi**
@@ -411,14 +663,14 @@ Applicato sia nel handler `LOAD` (riga ~57) che nel handler `EXEC` auto-switch (
 - Abilitare strategie di compressione contesto (summarization, sliding window, retrieval).
 
 **DoD**
-- [ ] **19.1** Tracking context usage: ogni processo traccia token count corrente vs window size del modello caricato.
-- [ ] **19.2** Strategia `sliding_window`: mantiene ultimi N token, scarta i più vecchi con boundary allineato a turni conversazione.
-- [ ] **19.3** Strategia `summarize`: quando il contesto supera soglia, genera un riassunto dei turni più vecchi usando il modello stesso e lo sostituisce al contesto originale.
-- [ ] **19.4** Strategia `retrieve`: integrazione con NeuralMemory per storage/retrieval semantico di frammenti di contesto evicted (RAG-like from memory store).
-- [ ] **19.5** Strategia selezionabile per processo via hint su `EXEC` (`context_strategy=sliding|summarize|retrieve`).
-- [ ] **19.6** Metriche context in `STATUS`: `context_tokens_used`, `context_window_size`, `context_compressions`.
-- [ ] **19.7** Test unitari: overflow detection, sliding window boundary, summarize trigger.
-- [ ] **19.8** Suite test verde, clippy pulito.
+- [ ] **27.1** Tracking context usage: ogni processo traccia token count corrente vs window size del modello caricato.
+- [ ] **27.2** Strategia `sliding_window`: mantiene ultimi N token, scarta i più vecchi con boundary allineato a turni conversazione.
+- [ ] **27.3** Strategia `summarize`: quando il contesto supera soglia, genera un riassunto dei turni più vecchi usando il modello stesso e lo sostituisce al contesto originale.
+- [ ] **27.4** Strategia `retrieve`: integrazione con NeuralMemory per storage/retrieval semantico di frammenti di contesto evicted (RAG-like from memory store).
+- [ ] **27.5** Strategia selezionabile per processo via hint su `EXEC` (`context_strategy=sliding|summarize|retrieve`).
+- [ ] **27.6** Metriche context in `STATUS`: `context_tokens_used`, `context_window_size`, `context_compressions`.
+- [ ] **27.7** Test unitari: overflow detection, sliding window boundary, summarize trigger.
+- [ ] **27.8** Suite test verde, clippy pulito.
 
 **Note di design**
 - La strategia `summarize` introduce un "meta-step" nel runtime: il processo genera un riassunto prima di proseguire. Richiede attenzione al budget token (la summarization stessa consuma quota).
@@ -443,9 +695,21 @@ Fase 2.5 — GUI Redesign (marzo 2026)
   ├─ M10.1 Refactor strutturale      ~8-10h   (sidebar + Chat + Models + Logs + theme)
   └─ M10.2 Sezioni avanzate          ~6-8h    (Processes + Memory + Orchestration)
 
+Fase 2.8 — AI Workstation OS hardening (marzo 2026)
+  ├─ M18  Protocollo & stato coerenti    ~6-9h   (correttezza local-first)
+  ├─ M19  GUI fidelity & trust           ~3-5h   (GUI coerente col kernel)
+  └─ M20  Orchestration discipline       ~4-6h   (bound contesto prima di M22)
+
+Fase 2.9 — Future-Model Flexibility (marzo 2026)
+  ├─ M21  Model Abstraction Layer        ~5-8h   (backend trait + disaccoppiamento runtime)
+  ├─ M22  Metadata-driven prompting      ~6-9h   (sidecar ora, parsing nativo dopo)
+  ├─ M23  Capability routing v2          ~4-6h   (routing dichiarativo + fallback legacy)
+  ├─ M24  External driver plane          ~6-10h  (registry e model-driver resolution)
+  └─ M25  Qwen3.5 integration pilot      ~4-8h   (caso guida, non eccezione)
+
 Fase 3 — Intelligenza agentica (aprile 2026)
-  ├─ M18  Tool registry dinamico     ~4-6h    (estensibilità)
-  └─ M19  Context window mgmt        ~6-10h   (qualità agentica)
+  ├─ M26  Tool registry dinamico         ~4-6h   (estensibilità)
+  └─ M27  Context window mgmt            ~6-10h  (qualità agentica)
 ```
 
 ---
@@ -478,20 +742,32 @@ Fase 3 — Intelligenza agentica (aprile 2026)
 | 2026-03-06 | C1 | DONE | Non-blocking inference: checkout/checkin pattern in `inference_worker.rs`. Forward pass offloaded a thread dedicato via `mpsc` channels. Event loop non più bloccato. 94/94 test, zero warnings nuovi. |
 | 2026-03-06 | C2 | DONE | Concurrency model unificato: `Arc<Mutex<Option<LLMEngine>>>` → `Option<LLMEngine>`, `Rc<RefCell<NeuralMemory>>` → owned `NeuralMemory`. Tutto lo stato owned da `Kernel`, passato via `&mut` split borrows (NLL). Zero overhead da interior mutability. 16 file modificati, 94/94 test. |
 | 2026-03-06 | C6 | DONE | Metriche de-static: `MetricsState` da `static OnceLock<Mutex>` a campo Kernel (via `CommandContext.metrics`). `RATE_STATES` da static a `SyscallRateMap` campo Kernel (via `run_engine_tick`). `started_at: Instant` in `MetricsState`. Test isolati con istanze locali. 94/94 test. |
+| 2026-03-07 | AD1 | DECIDED | AgenticOS confermato come AI workstation OS local-first single-node. Priorita' immediata: chiudere C15-C21. `mio` confermato, Tokio rinviato finche' non emergono requisiti reali di concorrenza forte. |
+| 2026-03-07 | M18 | DONE | Protocollo e stato riallineati: `MEMW` canonico e lossless, `RESTORE` metadata-only clear+apply, model APIs JSON, docs sincronizzate. |
+| 2026-03-07 | M19 | DONE | GUI fidelity: workload hint realmente inoltrato, metriche Chat reali o `approx`, Memory/Models coerenti col protocollo. |
+| 2026-03-07 | M20 | DONE | Orchestration discipline: cap configurabile, marker `[TRUNCATED]`, contatori di truncation/output in `STATUS orch:` e GUI. |
+| 2026-03-07 | M21 | IN_PROGRESS | Avviato il Model Abstraction Layer: `RuntimeModel` non piu' enum chiuso, backend interni Llama/Qwen2 adattati dietro trait, lifecycle allineato ai metadata del backend. Catalogo/info modello espongono backend risolto e vincoli runtime. Test verdi 109/109. |
+| 2026-03-07 | M22 | IN_PROGRESS | Metadata runtime-first end-to-end: sidecar nel catalogo, `LLMEngine` carica metadata, `prompting.rs` e `engine/tokenizer.rs` consumano template/stop markers/special tokens con fallback legacy testato. |
+| 2026-03-07 | M23 | DONE | Capability routing v2 prima tranche chiusa: routing recommendations spiegabili (`source`, `rationale`, score), GUI Models aggiornata per capability/backend/metadata source, test verdi 105/105. |
+| 2026-03-07 | M24 | DONE | Driver plane prima tranche chiusa: registry driver esplicito, risoluzione modello -> driver, stub esterno `external-llamacpp`, errori chiari su driver non risolvibili. Test verdi 109/109. |
 
 ---
 
 ## Nota architetturale — Migrazione a Tokio
 
 ### Decisione attuale
-Il kernel resta su **mio + thread dedicato** (checkout/checkin pattern per l'inferenza). Tokio è stato valutato ma scartato per costo/beneficio:
+Il kernel resta su **mio + thread dedicato** (checkout/checkin pattern per l'inferenza).
+
+La decisione di prodotto del 2026-03-07 e' che AgenticOS evolve prima come **AI workstation OS local-first, single-node**. Di conseguenza Tokio e' ancora fuori scope nel breve termine: prima si chiudono correttezza, contratti e affidabilita' locale; solo dopo si rivaluta un eventuale salto verso concorrenza forte.
+
+Tokio e' stato valutato ma scartato per costo/beneficio:
 
 - **Costo Tokio**: ~40-50% del codebase Rust da riscrivere (event loop mio → tokio runtime, `NeuralMemory` owned → `Arc<Mutex<>>` o `Arc<RwLock<>>`, tutti i 94 test da adattare). Stima: ~1-2 settimane. Con C2 completato (niente più `Rc<RefCell>`), la migrazione è più semplice.
 - **Costo checkout/checkin**: ~1 giorno. Zero dipendenze nuove, zero test rotti.
 
 ### Quando rivalutare Tokio
 Il trigger è uno di questi scenari:
-1. **3+ worker thread indipendenti** — se servono tool remoti (M18), summarize meta-step (M19), e multi-model inference in parallelo, la coordinazione manuale con thread + mpsc diventa fragile. Tokio offre `select!`/`join!` nativi.
+1. **3+ worker thread indipendenti** — se servono tool remoti (M26), summarize meta-step (M27), e multi-model inference in parallelo, la coordinazione manuale con thread + mpsc diventa fragile. Tokio offre `select!`/`join!` nativi.
 2. **Kernel distribuito** — se servono nodi remoti, gRPC, o comunicazione inter-kernel, Tokio + tonic diventano lo stack naturale.
 3. **Backpressure complesso** — se il worker thread si satura e serve flow control sofisticato (bounded channels con politiche di drop/retry), Tokio offre primitivi migliori.
 

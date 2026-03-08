@@ -406,18 +406,19 @@ def main() -> None:
     if not models.ok:
         print(f"ERROR: LIST_MODELS failed: {models.payload}")
         raise SystemExit(1)
-    print(f"✓ Models discovered:\n{models.payload}")
+    try:
+        models_data = json.loads(models.payload)
+    except json.JSONDecodeError:
+        print(f"ERROR: LIST_MODELS returned non-JSON payload: {models.payload}")
+        raise SystemExit(1)
+    print(f"✓ Models discovered: {models_data.get('total_models', 0)} entries")
 
     # Auto-detect first model for single-model scenario.
-    model_lines = [l.strip() for l in models.payload.strip().splitlines() if l.strip()]
-    available_ids = []
-    for line in model_lines:
-        # Lines like: "- id=llama3.1-8b/... family=Llama path=..."
-        if "id=" in line:
-            after = line.split("id=", 1)[1]
-            model_id = after.split()[0] if after else ""
-            if model_id:
-                available_ids.append(model_id)
+    available_ids = [
+        str(entry.get("id", ""))
+        for entry in models_data.get("models", [])
+        if isinstance(entry, dict) and entry.get("id")
+    ]
 
     if len(available_ids) < 1:
         print("ERROR: Need at least 1 model in models/ directory")

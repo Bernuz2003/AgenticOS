@@ -6,10 +6,11 @@ Interfaccia desktop PySide6 per controllare il kernel e osservare il runtime in 
 
 - Gestione kernel integrata: start/stop.
 - Comandi rapidi: `PING`, `STATUS`, `LIST_MODELS`, `MODEL_INFO`, `GET_GEN`, `SHUTDOWN`.
-- Pannello guidato Modelli: refresh `LIST_MODELS`, selezione da menu a tendina (auto-discovery), `SELECT_MODEL`, `LOAD`, `MODEL_INFO`.
+- Pannello guidato Modelli: refresh `LIST_MODELS` JSON, selezione da menu a tendina (auto-discovery), `SELECT_MODEL`, `LOAD`, `MODEL_INFO` JSON.
 - Pannello guidato Generation: `GET_GEN` + `SET_GEN` con campi `temperature/top_p/seed/max_tokens`.
 - Comandi custom protocollo (`VERB payload`).
 - `EXEC` in streaming con render live dei frame `DATA raw`.
+- Hint workload Chat coerente col kernel: se l'utente seleziona `fast/code/reasoning/general`, la GUI inoltra `capability=<hint>;` al prompt; `auto` non aggiunge nulla.
 - Azioni processo: `TERM <pid>`, `KILL <pid>`.
 - Osservabilità:
   - polling `STATUS` ogni 2s,
@@ -32,10 +33,15 @@ python3 -m gui.app
 ## Note
 
 - La GUI usa il protocollo TCP locale su `127.0.0.1:6380` (configurabile via `AGENTIC_PORT`).
+- Ogni connessione viene autenticata automaticamente leggendo `workspace/.kernel_token` e inviando `AUTH` sul socket appena aperto.
 - Se `target/release/agentic_os_kernel` esiste, viene usato per l’avvio kernel; altrimenti fallback a `cargo run --release`.
 - `Stop Local Kernel` ferma il processo avviato dalla GUI (livello OS), mentre `Kernel SHUTDOWN` invia il comando protocollo di spegnimento graceful.
 - `Stop PID (TERM)` richiede chiusura gentile del processo agentico; `Kill PID (KILL)` forza la chiusura immediata.
 - `Refresh Runtime Status` aggiorna stato runtime (`active_pids`, errori, uptime, memoria, stato modello).
+- `LIST_MODELS` e `MODEL_INFO` sono payload JSON machine-readable; la GUI non usa regex per ricostruire il catalogo.
+- `MEMW` e' presentato come tool diagnostico low-level: payload canonico `<pid>\n<raw-bytes>`, con rifiuto esplicito dei body non allineati a 4 byte.
+- `RESTORE` e' metadata-only: reapplica scheduler state, selected model hint e generation config, ma non ripristina processi live, pesi, tensori o output buffer.
+- Le metriche Chat finali arrivano dal kernel (`tokens_generated`, `elapsed_secs`); durante lo streaming la GUI etichetta le stime come `approx`.
 - `LOAD` usa un timeout esteso lato GUI (fino a 180s) per evitare falsi negativi durante il caricamento di modelli grandi.
 - I codici errore control distinguono `TIMEOUT` da `MALFORMED_OR_PARTIAL` per semplificare il troubleshooting.
 - Per mostrare i log `New connection` nel terminale kernel, abilita `AGENTIC_LOG_CONNECTIONS=1` (default: off).
@@ -50,10 +56,12 @@ python3 -m gui.app
 4. Premi `LOAD selected` e verifica risposta `+OK`.
 5. In Generation premi `GET_GEN`, modifica un valore e premi `SET_GEN`; verifica eco dei valori.
 6. In `Exec` invia un prompt breve e controlla stream output + marker di fine processo.
-7. Esegui `TERM`/`KILL` su PID valido e verifica risposta.
-8. Verifica tab `Behind the scenes`:
+7. Nella sezione Memory prova `MEMW` solo come strumento diagnostico low-level; verifica che payload disallineati restituiscano errore esplicito.
+8. Premi `RESTORE` su snapshot valido e verifica nel pannello Memory il riepilogo metadata-only (clear/apply + limiti del restore).
+9. Esegui `TERM`/`KILL` su PID valido e verifica risposta.
+10. Verifica tab `Behind the scenes`:
   - eventi kernel popolati,
   - tail di `workspace/syscall_audit.log` popolato,
   - filtri testuali funzionanti.
-9. Premi `Export snapshot` e verifica presenza file in `reports/`.
-10. Premi `SHUTDOWN` oppure `Stop Kernel` e verifica chiusura pulita.
+11. Premi `Export snapshot` e verifica presenza file in `reports/`.
+12. Premi `SHUTDOWN` oppure `Stop Kernel` e verifica chiusura pulita.

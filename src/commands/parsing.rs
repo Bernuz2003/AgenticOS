@@ -2,7 +2,7 @@ use crate::prompting::GenerationConfig;
 
 pub(crate) fn parse_memw_payload(payload: &[u8]) -> Result<(u64, Vec<u8>), String> {
     if payload.is_empty() {
-        return Err("MEMW payload empty. Use '<pid>\\n<raw-bytes>' or '<pid>|<text>'".to_string());
+        return Err("MEMW payload empty. Use canonical format '<pid>\\n<raw-bytes>'".to_string());
     }
 
     if let Some(pos) = payload.iter().position(|b| *b == b'\n') {
@@ -17,19 +17,7 @@ pub(crate) fn parse_memw_payload(payload: &[u8]) -> Result<(u64, Vec<u8>), Strin
         return Ok((pid, raw));
     }
 
-    let text = String::from_utf8(payload.to_vec())
-        .map_err(|_| "MEMW payload must be valid UTF-8 when using pipe format".to_string())?;
-    let mut parts = text.splitn(2, '|');
-    let pid_str = parts.next().unwrap_or("").trim();
-    let body = parts
-        .next()
-        .ok_or_else(|| "MEMW pipe format requires '<pid>|<text>'".to_string())?;
-
-    let pid: u64 = pid_str
-        .parse()
-        .map_err(|_| format!("Invalid PID '{}'.", pid_str))?;
-
-    Ok((pid, body.as_bytes().to_vec()))
+    Err("MEMW requires canonical format '<pid>\\n<raw-bytes>'; pipe syntax is no longer accepted".to_string())
 }
 
 pub(crate) fn parse_generation_payload(
@@ -159,11 +147,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_memw_pipe_format() {
+    fn parse_memw_pipe_format_rejected() {
         let payload = b"7|some text";
-        let (pid, data) = parse_memw_payload(payload).unwrap();
-        assert_eq!(pid, 7);
-        assert_eq!(data, b"some text");
+        assert!(parse_memw_payload(payload).is_err());
     }
 
     #[test]

@@ -52,6 +52,19 @@ class _StreamState:
     start: float = 0.0
     nbytes: int = 0
     bubble_index: int = -1
+    exact_tokens: int | None = None
+    exact_elapsed: float | None = None
+
+
+@dataclass
+class _CompletedState:
+    """Finalized assistant bubble that may receive exact metrics."""
+    text: str = ""
+    bubble_index: int = -1
+    approx_tokens: int = 0
+    approx_elapsed: float = 0.0
+    exact_tokens: int | None = None
+    exact_elapsed: float | None = None
 
 
 class ChatSection(QWidget):
@@ -68,6 +81,7 @@ class ChatSection(QWidget):
         self._message_count = 0
         self._bubbles: list[str] = []
         self._streams: dict[int, _StreamState] = {}
+        self._completed: dict[int, _CompletedState] = {}
         self._pending_slots: dict[int, int] = {}
         self._next_req_id = 1
         self._render_dirty = False
@@ -249,19 +263,33 @@ class ChatSection(QWidget):
         if state is None:
             return
         elapsed = time.perf_counter() - state.start
-        escaped = html.escape(state.text).replace("\n", "<br>")
-        tok_approx = max(state.nbytes // 4, 1)
-        tps = tok_approx / elapsed if elapsed > 0 else 0
-        self._bubbles[state.bubble_index] = (
-            f'<div class="assistant-bubble">'
-            f'<div class="assistant-label">ASSISTANT [PID {pid}]</div>'
-            f'{escaped}'
-            f'<div class="metrics">'
-            f'<span>\u23f1 {elapsed:.1f}s</span>'
-            f'<span>\u26a1 {tok_approx} tok</span>'
-            f'<span>\U0001f4ca {tps:.1f} tok/s</span>'
-            f'</div></div>'
+        self._completed[pid] = _CompletedState(
+            text=state.text,
+            bubble_index=state.bubble_index,
+            approx_tokens=max(state.nbytes // 4, 1),
+            approx_elapsed=elapsed,
+            exact_tokens=state.exact_tokens,
+            exact_elapsed=state.exact_elapsed,
         )
+        self._bubbles[state.bubble_index] = self._render_final_bubble(pid)
+        self._refresh_display()
+
+    def apply_process_metrics(self, pid: int, tokens_generated: int, elapsed_secs: float):
+        state = self._streams.get(pid)
+        if state is not None:
+            state.exact_tokens = tokens_generated
+            state.exact_elapsed = elapsed_secs
+            self._bubbles[state.bubble_index] = self._render_live_bubble(pid)
+            self._render_dirty = True
+            return
+
+        completed = self._completed.get(pid)
+        if completed is None:
+            return
+
+        completed.exact_tokens = tokens_generated
+        completed.exact_elapsed = elapsed_secs
+        self._bubbles[completed.bubble_index] = self._render_final_bubble(pid)
         self._refresh_display()
 
     def show_error(self, message: str, pid: int = 0, req_id: int = 0):
@@ -311,16 +339,48 @@ class ChatSection(QWidget):
             return ""
         escaped = html.escape(state.text).replace("\n", "<br>")
         elapsed = time.perf_counter() - state.start
-        tok_approx = max(state.nbytes // 4, 1)
-        tps = tok_approx / elapsed if elapsed > 0 else 0
+        if state.exact_tokens is not None and state.exact_elapsed is not None and state.exact_elapsed > 0:
+            elapsed_text = f"{state.exact_elapsed:.1f}s"
+            token_text = f"{state.exact_tokens} tok"
+            throughput_text = f"{state.exact_tokens / state.exact_elapsed:.1f} tok/s"
+            qualifier = ""
+        else:
+            tok_approx = max(state.nbytes // 4, 1)
+            tps = tok_approx / elapsed if elapsed > 0 else 0
+            elapsed_text = f"{elapsed:.1f}s"
+            token_text = f"{tok_approx} tok approx"
+            throughput_text = f"{tps:.1f} tok/s approx"
+            qualifier = " approx"
         return (
             f'<div class="assistant-bubble">'
-            f'<div class="assistant-label">ASSISTANT [PID {pid}] \u25cf streaming...</div>'
+            f'<div class="assistant-label">ASSISTANT [PID {pid}] \u25cf streaming{qualifier}...</div>'
+            f'{escaped}'
+            f'<div class="metrics">'
+            f'<span>\u23f1 {elapsed_text}</span>'
+            f'<span>\u26a1 {token_text}</span>'
+            f'<span>\U0001f4ca {throughput_text}</span>'
+            f'</div></div>'
+        )
+
+    def _render_final_bubble(self, pid: int) -> str:
+        completed = self._completed.get(pid)
+        if completed is None:
+            return ""
+        escaped = html.escape(completed.text).replace("\n", "<br>")
+        exact = completed.exact_tokens is not None and completed.exact_elapsed is not None and completed.exact_elapsed > 0
+        elapsed = completed.exact_elapsed if exact else completed.approx_elapsed
+        tokens = completed.exact_tokens if exact else completed.approx_tokens
+        throughput = tokens / elapsed if elapsed > 0 else 0
+        token_text = f"{tokens} tok" if exact else f"{tokens} tok approx"
+        throughput_text = f"{throughput:.1f} tok/s" if exact else f"{throughput:.1f} tok/s approx"
+        return (
+            f'<div class="assistant-bubble">'
+            f'<div class="assistant-label">ASSISTANT [PID {pid}]</div>'
             f'{escaped}'
             f'<div class="metrics">'
             f'<span>\u23f1 {elapsed:.1f}s</span>'
-            f'<span>\u26a1 {tok_approx} tok</span>'
-            f'<span>\U0001f4ca {tps:.1f} tok/s</span>'
+            f'<span>\u26a1 {token_text}</span>'
+            f'<span>\U0001f4ca {throughput_text}</span>'
             f'</div></div>'
         )
 
@@ -364,6 +424,7 @@ class ChatSection(QWidget):
     def _clear_chat(self):
         self._bubbles.clear()
         self._streams.clear()
+        self._completed.clear()
         self._pending_slots.clear()
         self.chat_display.setHtml(_CHAT_CSS + "<body></body>")
         self._message_count = 0

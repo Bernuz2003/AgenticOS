@@ -6,7 +6,6 @@ use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
-use crate::prompting::PromptFamily;
 use crate::scheduler::ProcessScheduler;
 use crate::transport::Client;
 
@@ -18,7 +17,6 @@ pub(crate) struct CommandContext<'a> {
     pub memory: &'a mut NeuralMemory,
     pub engine_state: &'a mut Option<LLMEngine>,
     pub model_catalog: &'a mut ModelCatalog,
-    pub active_family: &'a mut PromptFamily,
     pub scheduler: &'a mut ProcessScheduler,
     pub orchestrator: &'a mut Orchestrator,
     pub client_id: usize,

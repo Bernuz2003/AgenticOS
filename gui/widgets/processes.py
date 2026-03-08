@@ -162,7 +162,8 @@ class ProcessesSection(QWidget):
         procs = data.get("processes", {})
         active_pids = [str(p) for p in procs.get("active_pids", [])]
         waiting_pids = [str(p) for p in procs.get("waiting_pids", [])]
-        all_pids = active_pids + waiting_pids
+        in_flight_pids = [str(p) for p in procs.get("in_flight_pids", [])]
+        all_pids = active_pids + waiting_pids + in_flight_pids
 
         # Scheduler summary
         sched = data.get("scheduler", {})
@@ -196,7 +197,12 @@ class ProcessesSection(QWidget):
             _detail[str(proc.get("pid", ""))] = proc
 
         for row, pid in enumerate(all_pids):
-            state = "active" if pid in active_pids else "waiting"
+            if pid in in_flight_pids:
+                state = "in-flight"
+            elif pid in active_pids:
+                state = "active"
+            else:
+                state = "waiting"
             detail = _detail.get(pid)
             if detail:
                 workload = str(detail.get("workload", "—"))

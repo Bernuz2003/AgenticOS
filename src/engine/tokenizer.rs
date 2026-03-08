@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
 use crate::errors::EngineError;
+use crate::model_catalog::ModelMetadata;
 use crate::prompting::PromptFamily;
 
 pub(super) fn resolve_tokenizer_path(model_path: &str, tokenizer_hint: Option<PathBuf>) -> Option<PathBuf> {
@@ -35,7 +36,23 @@ pub(super) fn resolve_tokenizer_path(model_path: &str, tokenizer_hint: Option<Pa
 pub(super) fn resolve_special_tokens(
     tokenizer: &Tokenizer,
     family: PromptFamily,
+    metadata: Option<&ModelMetadata>,
 ) -> Result<(u32, u32), EngineError> {
+    if let Some(tokens) = metadata.and_then(|meta| meta.special_tokens.as_ref()) {
+        let eos = tokens
+            .get("eos")
+            .or_else(|| tokens.get("end_of_text"))
+            .and_then(|token| tokenizer.token_to_id(token));
+        let eot = tokens
+            .get("eot")
+            .or_else(|| tokens.get("im_end"))
+            .or_else(|| tokens.get("assistant_end"))
+            .and_then(|token| tokenizer.token_to_id(token));
+        if let (Some(eos), Some(eot)) = (eos, eot) {
+            return Ok((eos, eot));
+        }
+    }
+
     match family {
         PromptFamily::Llama => {
             let eos = tokenizer

@@ -6,7 +6,6 @@ use crate::engine::LLMEngine;
 use crate::inference_worker::{InferenceCmd, InferenceResult};
 use crate::memory::NeuralMemory;
 use crate::orchestrator::Orchestrator;
-use crate::prompting::{format_interprocess_user_message, format_system_injection, should_stop_on_text, PromptFamily};
 use crate::protocol;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::tools::{handle_syscall, SyscallRateMap};
@@ -37,7 +36,6 @@ fn dispatch_process_syscall(
     scheduler: &mut ProcessScheduler,
     pid: u64,
     content: &str,
-    active_family: PromptFamily,
     rate_map: &mut SyscallRateMap,
 ) {
     // Enforce syscall quota — kill process if exceeded.
@@ -58,18 +56,18 @@ fn dispatch_process_syscall(
                     "SUCCESS: Worker Created (PID {}).\nSTOP SPAWNING NEW PROCESSES.\nNEXT ACTION: Use [[SEND: {} | <your_question>]] immediately.",
                     new_pid, new_pid
                 );
-                let feedback = format_system_injection(&msg, active_family);
+                let feedback = engine.format_system_message(&msg);
                 let _ = engine.inject_context(pid, &feedback);
             }
             Err(e) => {
                 let _ = engine.inject_context(
                     pid,
-                    &format_system_injection(&format!("ERROR: {}", e), active_family),
+                    &engine.format_system_message(&format!("ERROR: {}", e)),
                 );
             }
         }
     } else if content.starts_with("SEND:") {
-        dispatch_send_syscall(engine, pid, content, active_family);
+        dispatch_send_syscall(engine, pid, content);
     } else if content.starts_with("PYTHON:")
         || content.starts_with("WRITE_FILE:")
         || content.starts_with("READ_FILE:")
@@ -79,7 +77,7 @@ fn dispatch_process_syscall(
         let outcome = handle_syscall(content, pid, rate_map);
         let _ = engine.inject_context(
             pid,
-            &format_system_injection(&format!("Output:\n{}", outcome.output), active_family),
+            &engine.format_system_message(&format!("Output:\n{}", outcome.output)),
         );
         if outcome.should_kill_process {
             let _ = memory.release_process(pid);
@@ -93,30 +91,27 @@ fn dispatch_send_syscall(
     engine: &mut LLMEngine,
     pid: u64,
     content: &str,
-    active_family: PromptFamily,
 ) {
     let parts: Vec<&str> = content.trim_start_matches("SEND:").splitn(2, '|').collect();
     if parts.len() == 2 {
         let message = parts[1].trim();
         let target_pid_str = parts[0].trim();
         if let Ok(target_pid) = target_pid_str.parse::<u64>() {
-            let msg_target = format_interprocess_user_message(pid, message, active_family);
+            let msg_target = engine.format_interprocess_message(pid, message);
             match engine.inject_context(target_pid, &msg_target) {
                 Ok(_) => {
                     let _ = engine.inject_context(
                         pid,
-                        &format_system_injection(
+                        &engine.format_system_message(
                             "MESSAGE SENT. Waiting for reply... (Do not send again).",
-                            active_family,
                         ),
                     );
                 }
                 Err(_) => {
                     let _ = engine.inject_context(
                         pid,
-                        &format_system_injection(
+                        &engine.format_system_message(
                             "ERROR: Target PID not found (Process does not exist).",
-                            active_family,
                         ),
                     );
                 }
@@ -128,7 +123,7 @@ fn dispatch_send_syscall(
             );
             let _ = engine.inject_context(
                 pid,
-                &format_system_injection(&err_msg, active_family),
+                &engine.format_system_message(&err_msg),
             );
         }
     }
@@ -140,7 +135,6 @@ pub fn run_engine_tick(
     memory: &mut NeuralMemory,
     clients: &mut HashMap<Token, Client>,
     poll: &Poll,
-    active_family: PromptFamily,
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
     cmd_tx: &mpsc::Sender<InferenceCmd>,
@@ -186,7 +180,13 @@ pub fn run_engine_tick(
                     // Text-based stop check (eos/eot/max_tokens already handled by worker).
                     let text_output = engine.tokenizer.decode(&[token_id], true).ok();
                     if let Some(ref t) = text_output {
-                        if !finished && should_stop_on_text(engine.family, t) {
+                        if !finished
+                            && crate::prompting::should_stop_on_text_with_metadata(
+                                engine.family,
+                                t,
+                                engine.model_metadata(),
+                            )
+                        {
                             process.state = crate::process::ProcessState::Finished;
                         }
                     }
@@ -232,7 +232,7 @@ pub fn run_engine_tick(
                             command = %full_command,
                             "OS: SysCall intercepted"
                         );
-                        dispatch_process_syscall(engine, memory, scheduler, pid, &content, active_family, rate_map);
+                        dispatch_process_syscall(engine, memory, scheduler, pid, &content, rate_map);
                     }
 
                     // Deliver token to client.
@@ -286,7 +286,15 @@ pub fn run_engine_tick(
                 if owner_id > 0 {
                     let token = Token(owner_id);
                     if let Some(client) = clients.get_mut(&token) {
-                        let end_msg = format!("\n[PROCESS_FINISHED pid={}]\n", pid);
+                        let sched = scheduler.snapshot(pid);
+                        let tokens_generated = sched.as_ref().map(|s| s.tokens_generated).unwrap_or(0);
+                        let elapsed_secs = sched.as_ref().map(|s| s.elapsed_secs).unwrap_or(0.0);
+                        let end_msg = format!(
+                            "\n[PROCESS_FINISHED pid={} tokens_generated={} elapsed_secs={:.3}]\n",
+                            pid,
+                            tokens_generated,
+                            elapsed_secs,
+                        );
                         client
                             .output_buffer
                             .extend(protocol::response_data(end_msg.as_bytes()));

@@ -50,6 +50,9 @@ pub enum MemoryError {
     #[error("Tensor ID {0} not found")]
     TensorNotFound(u64),
 
+    #[error("MEMW payload length {bytes} is not aligned to 4 bytes (required for f32 payloads)")]
+    MisalignedPayload { bytes: usize },
+
     #[error("Swap error: {0}")]
     Swap(String),
 
@@ -115,4 +118,7 @@ pub enum CatalogError {
 
     #[error("Model path not found: {0}")]
     PathNotFound(String),
+
+    #[error("Model driver resolution failed: {0}")]
+    DriverResolutionFailed(String),
 }
