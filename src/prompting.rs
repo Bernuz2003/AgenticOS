@@ -1,3 +1,6 @@
+use minijinja::{context, Environment, UndefinedBehavior};
+use serde::Serialize;
+
 use crate::model_catalog::ModelMetadata;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,21 +102,24 @@ pub fn format_system_injection_with_metadata(
     metadata: Option<&ModelMetadata>,
 ) -> String {
     if let Some(template) = metadata.and_then(|meta| meta.chat_template.as_deref()) {
-        return render_chat_turn("system", content, family, metadata, template);
+        return render_single_chat_turn(family, metadata, template, "system", content)
+            .unwrap_or_else(|| fallback_system_turn(content, family));
     }
 
-    match family {
-        PromptFamily::Llama => format!(
-            "<|eot_id|><|start_header_id|>system<|end_header_id|>\n\n{}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n",
-            content
-        ),
-        PromptFamily::Qwen => format!(
-            "<|im_start|>system\n{}\n<|im_end|>\n<|im_start|>assistant\n",
-            content
-        ),
-        PromptFamily::Mistral => format!("[INST] [SYSTEM] {} [/SYSTEM] [/INST]", content),
-        PromptFamily::Unknown => format!("\n[system]\n{}\n[/system]\n", content),
+    fallback_system_turn(content, family)
+}
+
+pub fn format_user_message_with_metadata(
+    content: &str,
+    family: PromptFamily,
+    metadata: Option<&ModelMetadata>,
+) -> String {
+    if let Some(template) = metadata.and_then(|meta| meta.chat_template.as_deref()) {
+        return render_single_chat_turn(family, metadata, template, "user", content)
+            .unwrap_or_else(|| fallback_user_turn(content, family));
     }
+
+    fallback_user_turn(content, family)
 }
 
 pub fn format_interprocess_user_message_with_metadata(
@@ -122,28 +128,36 @@ pub fn format_interprocess_user_message_with_metadata(
     family: PromptFamily,
     metadata: Option<&ModelMetadata>,
 ) -> String {
+    let content = format!("[Message from PID {}]: {}", from_pid, message);
     if let Some(template) = metadata.and_then(|meta| meta.chat_template.as_deref()) {
-        let content = format!("[Message from PID {}]: {}", from_pid, message);
-        return render_chat_turn("user", &content, family, metadata, template);
+        return render_single_chat_turn(family, metadata, template, "user", &content)
+            .unwrap_or_else(|| fallback_user_turn(&content, family));
     }
 
-    match family {
-        PromptFamily::Llama => format!(
-            "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n[Message from PID {}]: {}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n",
-            from_pid, message
-        ),
-        PromptFamily::Qwen => format!(
-            "<|im_start|>user\n[Message from PID {}]: {}\n<|im_end|>\n<|im_start|>assistant\n",
-            from_pid, message
-        ),
-        PromptFamily::Mistral => {
-            format!("[INST] [Message from PID {}]: {} [/INST]", from_pid, message)
-        }
-        PromptFamily::Unknown => format!("\n[user]\n[Message from PID {}]: {}\n[/user]\n", from_pid, message),
-    }
+    fallback_user_turn(&content, family)
 }
 
-fn render_chat_turn(
+#[derive(Serialize)]
+struct ChatMessage<'a> {
+    role: &'a str,
+    content: &'a str,
+}
+
+fn render_single_chat_turn(
+    family: PromptFamily,
+    metadata: Option<&ModelMetadata>,
+    template: &str,
+    role: &str,
+    content: &str,
+) -> Option<String> {
+    if looks_like_jinja(template) {
+        return render_jinja_chat_template(template, &[ChatMessage { role, content }], metadata);
+    }
+
+    Some(render_placeholder_chat_turn(role, content, family, metadata, template))
+}
+
+fn render_placeholder_chat_turn(
     role: &str,
     content: &str,
     family: PromptFamily,
@@ -166,6 +180,68 @@ fn render_chat_turn(
     }
 }
 
+fn render_jinja_chat_template(
+    template: &str,
+    messages: &[ChatMessage<'_>],
+    metadata: Option<&ModelMetadata>,
+) -> Option<String> {
+    let mut env = Environment::new();
+    env.set_undefined_behavior(UndefinedBehavior::Lenient);
+    env.add_template("chat", template).ok()?;
+
+    let template = env.get_template("chat").ok()?;
+    let special_tokens = metadata.and_then(|meta| meta.special_tokens.as_ref());
+
+    template
+        .render(context! {
+            messages => messages,
+            add_generation_prompt => true,
+            bos_token => special_tokens.and_then(|tokens| tokens.get("bos")).cloned().unwrap_or_default(),
+            eos_token => special_tokens.and_then(|tokens| tokens.get("eos")).cloned().unwrap_or_default(),
+            eot_token => special_tokens.and_then(|tokens| tokens.get("eot")).cloned().unwrap_or_default(),
+            pad_token => special_tokens.and_then(|tokens| tokens.get("pad")).cloned().unwrap_or_default(),
+            assistant_preamble => metadata.and_then(|meta| meta.assistant_preamble.clone()).unwrap_or_default(),
+            enable_thinking => true,
+            tools => Vec::<String>::new(),
+            documents => Vec::<String>::new(),
+        })
+        .ok()
+}
+
+fn looks_like_jinja(template: &str) -> bool {
+    template.contains("{{") || template.contains("{%")
+}
+
+fn fallback_system_turn(content: &str, family: PromptFamily) -> String {
+    match family {
+        PromptFamily::Llama => format!(
+            "<|eot_id|><|start_header_id|>system<|end_header_id|>\n\n{}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n",
+            content
+        ),
+        PromptFamily::Qwen => format!(
+            "<|im_start|>system\n{}\n<|im_end|>\n<|im_start|>assistant\n",
+            content
+        ),
+        PromptFamily::Mistral => format!("[INST] [SYSTEM] {} [/SYSTEM] [/INST]", content),
+        PromptFamily::Unknown => format!("\n[system]\n{}\n[/system]\n", content),
+    }
+}
+
+fn fallback_user_turn(content: &str, family: PromptFamily) -> String {
+    match family {
+        PromptFamily::Llama => format!(
+            "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n",
+            content
+        ),
+        PromptFamily::Qwen => format!(
+            "<|im_start|>user\n{}\n<|im_end|>\n<|im_start|>assistant\n",
+            content
+        ),
+        PromptFamily::Mistral => format!("[INST] {} [/INST]", content),
+        PromptFamily::Unknown => format!("\n[user]\n{}\n[/user]\n", content),
+    }
+}
+
 fn default_assistant_preamble(family: PromptFamily) -> String {
     match family {
         PromptFamily::Llama => {
@@ -183,7 +259,9 @@ mod tests {
     use crate::model_catalog::ModelMetadata;
 
     use super::{
+        format_interprocess_user_message_with_metadata,
         format_system_injection_with_metadata,
+        format_user_message_with_metadata,
         should_stop_on_text_with_metadata,
         PromptFamily,
     };
@@ -220,6 +298,13 @@ mod tests {
             Some(&metadata),
         );
         assert_eq!(rendered, "<system>hello</system><assistant>");
+
+        let user_rendered = format_user_message_with_metadata(
+            "ciao",
+            PromptFamily::Llama,
+            Some(&metadata),
+        );
+        assert_eq!(user_rendered, "<user>ciao</user><assistant>");
     }
 
     #[test]
@@ -238,5 +323,34 @@ mod tests {
             Some(&metadata),
         ));
         assert!(should_stop_on_text_with_metadata(PromptFamily::Qwen, "...<|im_end|>...", None));
+    }
+
+    #[test]
+    fn initial_user_message_uses_family_chat_format() {
+        let qwen = format_user_message_with_metadata("ciao", PromptFamily::Qwen, None);
+        assert!(qwen.contains("<|im_start|>user"));
+        assert!(qwen.contains("<|im_start|>assistant"));
+
+        let inter = format_interprocess_user_message_with_metadata(7, "pong", PromptFamily::Qwen, None);
+        assert!(inter.contains("[Message from PID 7]: pong"));
+        assert!(inter.contains("<|im_start|>assistant"));
+    }
+
+    #[test]
+    fn jinja_chat_template_renders_messages_and_generation_prompt() {
+        let metadata = ModelMetadata {
+            chat_template: Some(
+                "{% for message in messages %}<{{ message.role }}>{{ message.content }}</{{ message.role }}>{% endfor %}{% if add_generation_prompt %}<assistant>{% endif %}".to_string(),
+            ),
+            ..Default::default()
+        };
+
+        let rendered = format_user_message_with_metadata(
+            "dimmi ciao",
+            PromptFamily::Qwen,
+            Some(&metadata),
+        );
+
+        assert_eq!(rendered, "<user>dimmi ciao</user><assistant>");
     }
 }

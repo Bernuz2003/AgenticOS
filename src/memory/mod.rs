@@ -9,4 +9,4 @@ pub use types::MemoryConfig;
 
 // Disponibili per uso futuro a livello crate
 #[allow(unused_imports)]
-pub use types::{MemorySnapshot, SwapEvent, TensorId};
+pub use types::{ContextSlotId, MemorySnapshot, SwapEvent, TensorId};

@@ -2,7 +2,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use anyhow::Result;
-use candle_core::{DType, Device, Tensor};
+use candle_core::Device;
 
 use crate::process::{AgentProcess, ProcessState};
 
@@ -25,7 +25,8 @@ pub enum InferenceResult {
     Token {
         pid: u64,
         process: AgentProcess,
-        token_id: u32,
+        text_output: String,
+        generated_tokens: usize,
         finished: bool,
     },
     /// Inference failed — the process has been dropped (model weights freed).
@@ -43,31 +44,28 @@ fn run_step(
     mut process: AgentProcess,
     eos_token_id: u32,
     eot_token_id: u32,
-) -> Result<(AgentProcess, u32, bool)> {
+) -> Result<(AgentProcess, String, usize, bool)> {
     let device = Device::Cpu;
 
     process.state = ProcessState::Running;
 
-    let mut next_token: u32 = 0;
+    let step = process.model.generate_step(
+        process.context_slot_id,
+        &process.tokens,
+        process.index_pos,
+        &mut process.logits_processor,
+        &process.tokenizer,
+        process.generation,
+        &device,
+        eos_token_id,
+        eot_token_id,
+    )?;
 
-    while process.index_pos < process.tokens.len() {
-        let input_token = process.tokens[process.index_pos];
-        let input_tensor = Tensor::new(&[input_token], &device)?.unsqueeze(0)?;
-        let logits = process.model.forward(&input_tensor, process.index_pos)?;
-        process.index_pos += 1;
+    process.index_pos = step.next_index_pos;
+    let generated_tokens = step.appended_tokens.len();
+    process.tokens.extend(step.appended_tokens);
 
-        if process.index_pos == process.tokens.len() {
-            let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-            next_token = process.logits_processor.sample(&logits)?;
-        }
-    }
-
-    process.tokens.push(next_token);
-
-    let mut finished = false;
-    if next_token == eos_token_id || next_token == eot_token_id || next_token == 2 {
-        finished = true;
-    }
+    let mut finished = step.finished;
     if process.tokens.len() >= process.max_tokens {
         finished = true;
     }
@@ -75,7 +73,7 @@ fn run_step(
         process.state = ProcessState::Finished;
     }
 
-    Ok((process, next_token, finished))
+    Ok((process, step.emitted_text, generated_tokens, finished))
 }
 
 /// Spawn the inference worker thread.
@@ -105,12 +103,13 @@ pub fn spawn_worker(
                         eos_token_id,
                         eot_token_id,
                     } => match run_step(process, eos_token_id, eot_token_id) {
-                        Ok((process, token_id, finished)) => {
+                        Ok((process, text_output, generated_tokens, finished)) => {
                             if result_tx
                                 .send(InferenceResult::Token {
                                     pid,
                                     process,
-                                    token_id,
+                                    text_output,
+                                    generated_tokens,
                                     finished,
                                 })
                                 .is_err()

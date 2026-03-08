@@ -11,6 +11,16 @@ use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::tools::{handle_syscall, SyscallRateMap};
 use crate::transport::Client;
 
+fn free_backend_slot_if_known(engine: &mut LLMEngine, memory: &NeuralMemory, pid: u64) {
+    let Some(slot_id) = memory.slot_for_pid(pid) else {
+        return;
+    };
+
+    if let Err(err) = engine.free_context_slot(slot_id) {
+        tracing::debug!(pid, slot_id, %err, "MEMORY: backend slot free not available");
+    }
+}
+
 /// Scan the syscall buffer for a complete `[[...]]` command.
 /// Returns the full command including brackets if found.
 /// Clears the buffer when a command is found or when it exceeds the safety limit.
@@ -42,6 +52,7 @@ fn dispatch_process_syscall(
     let quota_exceeded = scheduler.record_syscall(pid);
     if quota_exceeded {
         tracing::warn!(pid, "SCHEDULER: syscall quota exceeded — killing process");
+        free_backend_slot_if_known(engine, memory, pid);
         let _ = memory.release_process(pid);
         scheduler.unregister(pid);
         engine.kill_process(pid);
@@ -80,6 +91,7 @@ fn dispatch_process_syscall(
             &engine.format_system_message(&format!("Output:\n{}", outcome.output)),
         );
         if outcome.should_kill_process {
+            free_backend_slot_if_known(engine, memory, pid);
             let _ = memory.release_process(pid);
             engine.kill_process(pid);
         }
@@ -151,6 +163,7 @@ pub fn run_engine_tick(
                 let resumed = engine.set_process_ready_if_waiting(event.pid);
                 tracing::info!(
                     pid = event.pid,
+                    slot_id = event.slot_id,
                     resumed,
                     detail = %event.detail,
                     "MEMORY: swap complete"
@@ -159,6 +172,7 @@ pub fn run_engine_tick(
                 let resumed = engine.set_process_ready_if_waiting(event.pid);
                 tracing::error!(
                     pid = event.pid,
+                    slot_id = event.slot_id,
                     resumed,
                     detail = %event.detail,
                     "MEMORY: swap failed"
@@ -172,23 +186,22 @@ pub fn run_engine_tick(
                 InferenceResult::Token {
                     pid,
                     mut process,
-                    token_id,
+                    text_output,
+                    generated_tokens,
                     finished,
                 } => {
                     in_flight.remove(&pid);
 
                     // Text-based stop check (eos/eot/max_tokens already handled by worker).
-                    let text_output = engine.tokenizer.decode(&[token_id], true).ok();
-                    if let Some(ref t) = text_output {
-                        if !finished
-                            && crate::prompting::should_stop_on_text_with_metadata(
-                                engine.family,
-                                t,
-                                engine.model_metadata(),
-                            )
-                        {
-                            process.state = crate::process::ProcessState::Finished;
-                        }
+                    if !finished
+                        && !text_output.is_empty()
+                        && crate::prompting::should_stop_on_text_with_metadata(
+                            engine.family,
+                            &text_output,
+                            engine.model_metadata(),
+                        )
+                    {
+                        process.state = crate::process::ProcessState::Finished;
                     }
 
                     // Re-insert process into engine.
@@ -197,6 +210,7 @@ pub fn run_engine_tick(
                     // Check pending kills (KILL issued while process was in-flight).
                     if pending_kills.contains(&pid) {
                         pending_kills.retain(|&p| p != pid);
+                        free_backend_slot_if_known(engine, memory, pid);
                         let _ = memory.release_process(pid);
                         scheduler.unregister(pid);
                         engine.kill_process(pid);
@@ -206,20 +220,21 @@ pub fn run_engine_tick(
                     let owner_id = engine.process_owner_id(pid).unwrap_or(0);
 
                     // Record token and enforce quota.
-                    let token_quota_exceeded = scheduler.record_token(pid);
+                    let token_quota_exceeded = (0..generated_tokens)
+                        .any(|_| scheduler.record_token(pid));
 
                     // Track output for orchestrated tasks.
-                    if let Some(ref t) = text_output {
+                    if !text_output.is_empty() {
                         if orchestrator.is_orchestrated(pid) {
-                            orchestrator.append_output(pid, t);
+                            orchestrator.append_output(pid, &text_output);
                         }
                     }
 
                     // Syscall buffer scan.
                     let mut pending_syscall: Option<String> = None;
-                    if let Some(ref t) = text_output {
+                    if !text_output.is_empty() {
                         if let Some(proc) = engine.processes.get_mut(&pid) {
-                            proc.syscall_buffer.push_str(t);
+                            proc.syscall_buffer.push_str(&text_output);
                             pending_syscall = scan_syscall_buffer(&mut proc.syscall_buffer);
                         }
                     }
@@ -236,19 +251,17 @@ pub fn run_engine_tick(
                     }
 
                     // Deliver token to client.
-                    if let Some(ref t) = text_output {
-                        if owner_id > 0 {
-                            let token = Token(owner_id);
-                            if let Some(client) = clients.get_mut(&token) {
-                                client
-                                    .output_buffer
-                                    .extend(protocol::response_data(t.as_bytes()));
-                                let _ = poll.registry().reregister(
-                                    &mut client.stream,
-                                    token,
-                                    Interest::READABLE | Interest::WRITABLE,
-                                );
-                            }
+                    if !text_output.is_empty() && owner_id > 0 {
+                        let token = Token(owner_id);
+                        if let Some(client) = clients.get_mut(&token) {
+                            client
+                                .output_buffer
+                                .extend(protocol::response_data(text_output.as_bytes()));
+                            let _ = poll.registry().reregister(
+                                &mut client.stream,
+                                token,
+                                Interest::READABLE | Interest::WRITABLE,
+                            );
                         }
                     }
 
@@ -266,6 +279,7 @@ pub fn run_engine_tick(
                     if orchestrator.is_orchestrated(pid) {
                         orchestrator.mark_failed(pid, &error);
                     }
+                    free_backend_slot_if_known(engine, memory, pid);
                     let _ = memory.release_process(pid);
                     scheduler.unregister(pid);
                     // Process already dropped in the worker; just remove from engine map.
@@ -306,6 +320,7 @@ pub fn run_engine_tick(
                     }
                 }
             }
+            free_backend_slot_if_known(engine, memory, pid);
             let _ = memory.release_process(pid);
             scheduler.unregister(pid);
             engine.kill_process(pid);
@@ -355,6 +370,7 @@ pub fn run_engine_tick(
                     }
                 }
             }
+            free_backend_slot_if_known(engine, memory, pid);
             let _ = memory.release_process(pid);
             scheduler.unregister(pid);
             engine.kill_process(pid);
@@ -365,11 +381,22 @@ pub fn run_engine_tick(
             match engine.spawn_process(&req.prompt, 0, req.owner_id) {
                 Ok(pid) => {
                     if let Some(token_slots) = engine.process_max_tokens(pid) {
-                        if let Err(e) = memory.register_process(pid, token_slots) {
-                            engine.kill_process(pid);
-                            orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, &e.to_string());
-                            tracing::error!(task_id = %req.task_id, %e, "ORCHESTRATOR: memory admission failed");
-                            continue;
+                        match memory.register_process(pid, token_slots) {
+                            Ok(slot_id) => {
+                                if let Err(e) = engine.set_process_context_slot(pid, slot_id) {
+                                    let _ = memory.release_process(pid);
+                                    engine.kill_process(pid);
+                                    orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, &e.to_string());
+                                    tracing::error!(task_id = %req.task_id, %e, "ORCHESTRATOR: process slot binding failed");
+                                    continue;
+                                }
+                            }
+                            Err(e) => {
+                                engine.kill_process(pid);
+                                orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, &e.to_string());
+                                tracing::error!(task_id = %req.task_id, %e, "ORCHESTRATOR: memory admission failed");
+                                continue;
+                            }
                         }
                     }
                     scheduler.register(pid, req.workload, ProcessPriority::Normal);

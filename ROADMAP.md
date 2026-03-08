@@ -625,9 +625,93 @@ Questo NON significa, in questa fase:
 
 ---
 
+## Roadmap attiva — Fase 2.10: Microkernel Driver Boundary
+
+### Decisione architetturale
+
+AgenticOS introduce ora un boundary microkernel esplicito tra kernel Rust, driver di inferenza e meccanismo fisico della memoria di contesto.
+
+Questo significa che il focus immediato e':
+- mantenere il kernel 100% Rust e isolare i backend non-Rust in processi separati
+- sostituire l'accoppiamento diretto `NeuralMemory` <-> tensori Candle con una nozione astratta di context slot
+- spostare il meccanismo fisico di save/load/free del contesto dentro i driver, lasciando nel kernel solo policy, accounting e safety
+- preparare un driver RPC compatibile con `llama.cpp` per architetture non supportate nativamente da Candle, incluso `qwen35`
+
+Questo NON significa, in questa fase:
+- introdurre FFI C/C++ nel kernel
+- demandare al driver esterno le policy di path safety, quota o lifecycle del processo
+- vincolare il design a `llama-server` puro se servira' un adapter RPC controllato da AgenticOS
+
+### 26) Astrazione NeuralMemory (Context Slots)
+**Status:** `DONE` ✅
+
+**Obiettivi**
+- Disaccoppiare `src/memory/core.rs` dai `Tensor` di Candle e dalla nozione di storage fisico in-process.
+- Rendere `NeuralMemory` un manager logico di context slots, quote, LRU e scheduling dello swap.
+- Delegare il meccanismo materiale di save/load/free al backend attivo tramite un contratto esplicito.
+
+**DoD**
+- [x] Evolvere il contratto backend separando chiaramente inferenza e context-slot persistence, evitando di modellare il driver RPC come semplice backend Candle-like.
+- [x] Introdurre metodi backend per `save/load/free_context_slot` con semantica esplicita e supporto a errori `unsupported` quando il backend non implementa ancora persistence.
+- [x] Rinominare e riallineare i tipi memory-side da `TensorId`/page ownership a una nozione astratta di `ContextSlotId` o equivalente, separata dal PID.
+- [x] `NeuralMemory` mantiene policy, accounting, waiting state, quota, LRU e swap orchestration; non possiede piu' il meccanismo fisico dei tensori del backend.
+- [x] La path safety e l'allocazione della destinazione di swap restano kernel-side; il driver riceve solo destinazioni gia' validate o handle equivalenti.
+- [x] I backend Candle assorbono il meccanismo fisico oggi accoppiato a `swap_io.rs` senza perdere le garanzie esistenti di atomicita' e sicurezza.
+- [x] I test esistenti passano senza regressioni, con copertura aggiuntiva sul nuovo boundary policy/meccanismo.
+
+**Note di design**
+- Non aggiungere questi metodi in modo ingenuo all'attuale trait `ModelBackend` se questo preserva il coupling `Tensor -> Tensor`; il contratto va rifinito per accomodare backend RPC e backend in-process con semantiche diverse.
+- `pid` puo' restare input operativo nel primo slice, ma l'obiettivo del design e' una risorsa distinta di memoria persistibile (`ContextSlotId`) non coincidente per forza con il lifecycle del processo.
+- Il kernel continua a essere la fonte di verita' per quota, eviction, LRU e validazione dei path sotto `workspace/`.
+
+**Esito parziale 2026-03-08**
+- Introdotto `ContextSlotId` come astrazione transizionale nel sottosistema memoria e nel boundary backend.
+- `NeuralMemory` traccia ora internamente `slot_table`, `pid_to_slot`, owner dei context slot e LRU per slot, mantenendo invariati i contratti esterni correnti.
+- Aggiunti hook backend `save/load/free_context_slot` come boundary esplicito tra policy kernel-side e meccanismo driver-side; per ora i backend Candle rispondono con `unsupported` finche' il meccanismo fisico non viene migrato.
+- Lo swap async prepara ora target validati slot-aware nel kernel (`pid` + `slot`) prima dell'enqueue del worker; la path policy resta nel kernel e il worker esegue solo la persistenza atomica del target ricevuto.
+- Il lifecycle di cleanup dei PID usa ora `free_context_slot` quando conosce uno slot logico; il boundary backend non e' piu' solo dichiarativo e il rilascio slot entra nei path reali di runtime e comandi TERM/KILL.
+- La persistenza fisica raw-bytes per il path Candle e' stata spostata da `swap_io.rs` al dispatch backend-aware in `src/backend.rs`; `swap_io.rs` resta responsabile solo della preparazione sicura dei target.
+
+**Esito finale 2026-03-08**
+- `NeuralMemory` e' ora un manager logico di context slots: non possiede piu' `Tensor`, `Device` o blocchi fisici Candle e mantiene solo admission policy, quota, LRU, waiting state, block accounting e orchestration dello swap.
+- Il meccanismo fisico di persistence per il path Candle raw-compat e' stato spostato dietro dispatch backend-aware in `src/backend.rs`; `swap_io.rs` prepara solo target validati sotto `workspace/`.
+- `MEMW`, swap async e cleanup PID usano tutti il boundary a slot (`ContextSlotId`) e i path runtime/control-plane invocano `free_context_slot` quando noto.
+- Validazione finale: `cargo test` verde a `116 passed, 1 ignored`.
+
+### 27) Driver Esterno RPC (llama.cpp)
+**Status:** `DONE` ✅
+
+**Obiettivi**
+- Implementare un driver esterno RPC, compatibile con `llama.cpp`, per supportare architetture non native nel runtime Candle.
+- Mantenere isolamento di fault: crash, OOM o segfault del backend esterno non devono compromettere il kernel.
+- Instradare modelli come `qwen35` verso questo piano driver senza introdurre branch speciali nel kernel.
+
+**DoD**
+- [x] Introdurre un backend/driver RPC separato dal path in-process, con contratto compatibile con inferenza remota e gestione dei context slot.
+- [x] Implementare generation step/chunk tramite chiamate RPC locali HTTP verso un server esterno compatibile con `llama.cpp`.
+- [x] Implementare `save/load/free_context_slot` tramite RPC equivalenti verso il processo driver esterno o un adapter dedicato.
+- [x] Gestire timeout, errori di trasporto e server non disponibile in modo graceful, senza bloccare l'event loop `mio` e senza far crashare il kernel.
+- [x] Aggiornare `DRIVER_REGISTRY` affinche' architetture non supportate da Candle possano risolversi verso il driver RPC quando disponibile.
+- [x] Documentare esplicitamente il boundary: policy nel kernel, meccanismo nel driver, nessuna FFI C/C++ nel kernel Rust.
+
+**Note di design**
+- HTTP/REST locale e' accettabile come primo transport, ma va eseguito fuori dal loop `mio` tramite worker/driver plane dedicato; il beneficio non viene dal protocollo in se', ma dall'isolamento del processo e dal disaccoppiamento del control plane.
+- Il target iniziale puo' essere `llama-server`, ma il design deve ammettere un piccolo adapter RPC se le API pubbliche non coprono in modo pulito session persistence o slot management.
+- L'attivazione runtime del driver esterno e' condizionata alla presenza di `AGENTIC_LLAMACPP_ENDPOINT`; in assenza dell'endpoint il fallback resta sui driver Candle loadable e architetture come `qwen35` restano `DRIVER_UNRESOLVED`.
+
+**Esito finale 2026-03-08**
+- Il contratto di inferenza e' stato riallineato a `generate_step(...)`: il worker non assume piu' un backend locale `forward(Tensor) -> Tensor`, quindi un backend RPC puo' produrre testo/token senza branch speciali nel runtime.
+- `external-llamacpp` e' ora un backend reale: usa HTTP locale verso le route effettive di `llama-server` (`POST /completion` con `id_slot`, `return_tokens`, `cache_prompt`; `POST /slots/{id}?action=save|restore|erase`), con timeout configurabile via `AGENTIC_LLAMACPP_TIMEOUT_MS`.
+- La risoluzione driver e' runtime-aware: quando `AGENTIC_LLAMACPP_ENDPOINT` e' configurato, architetture non supportate nativamente da Candle possono risolversi verso il piano RPC esterno.
+- Operativamente il server `llama.cpp` deve esporre gli endpoint slot e avere una `--slot-save-path` coerente con la strategia di persistence usata dal kernel.
+- Aggiunto opcode diagnostico `BACKEND_DIAG` per interrogare dal kernel lo stato del backend esterno (`/health`, `/props`, `/slots`) e restituire un report JSON machine-readable utile al control plane.
+- Validazione finale: `cargo test` verde a `119 passed, 1 ignored`, inclusi test mock per generation RPC, slot RPC e backend diagnostics.
+
+---
+
 ## Roadmap futura — Fase 3: Intelligenza agentica
 
-### 26) Tool registry dinamico
+### 28) Tool registry dinamico
 **Status:** `TODO`
 
 **Obiettivi**
@@ -636,14 +720,14 @@ Questo NON significa, in questa fase:
 - Abilitare estensibilità senza modificare il codice kernel.
 
 **DoD**
-- [ ] **26.1** `ToolDescriptor` struct: nome, descrizione, schema input (JSON Schema), backend (host/wasm/remote).
-- [ ] **26.2** `ToolRegistry` con `register(descriptor)` / `unregister(name)` / `list()` / `resolve(name)`.
-- [ ] **26.3** Opcodes protocollo: `REGISTER_TOOL <json>`, `LIST_TOOLS`, `TOOL_INFO <name>`.
-- [ ] **26.4** Dispatch syscall aggiornato: lookup nel registry prima del dispatch hardcoded.
-- [ ] **26.5** Tool remoto: possibilità di registrare un tool che fa HTTP call a un endpoint esterno.
-- [ ] **26.6** Integrazione GUI: pannello tool con lista, dettagli, register/unregister.
-- [ ] **26.7** Test: register + invoke, unregister + fallback, tool remoto mock.
-- [ ] **26.8** Suite test verde, clippy pulito.
+- [ ] **28.1** `ToolDescriptor` struct: nome, descrizione, schema input (JSON Schema), backend (host/wasm/remote).
+- [ ] **28.2** `ToolRegistry` con `register(descriptor)` / `unregister(name)` / `list()` / `resolve(name)`.
+- [ ] **28.3** Opcodes protocollo: `REGISTER_TOOL <json>`, `LIST_TOOLS`, `TOOL_INFO <name>`.
+- [ ] **28.4** Dispatch syscall aggiornato: lookup nel registry prima del dispatch hardcoded.
+- [ ] **28.5** Tool remoto: possibilità di registrare un tool che fa HTTP call a un endpoint esterno.
+- [ ] **28.6** Integrazione GUI: pannello tool con lista, dettagli, register/unregister.
+- [ ] **28.7** Test: register + invoke, unregister + fallback, tool remoto mock.
+- [ ] **28.8** Suite test verde, clippy pulito.
 
 **Note di design**
 - Il registry è in-memory (non persistente nel primo rilascio). Checkpoint/restore (M14) può serializzarlo in futuro.
@@ -654,7 +738,7 @@ Questo NON significa, in questa fase:
 
 ---
 
-### 27) Context window management
+### 29) Context window management
 **Status:** `TODO`
 
 **Obiettivi**
@@ -663,14 +747,14 @@ Questo NON significa, in questa fase:
 - Abilitare strategie di compressione contesto (summarization, sliding window, retrieval).
 
 **DoD**
-- [ ] **27.1** Tracking context usage: ogni processo traccia token count corrente vs window size del modello caricato.
-- [ ] **27.2** Strategia `sliding_window`: mantiene ultimi N token, scarta i più vecchi con boundary allineato a turni conversazione.
-- [ ] **27.3** Strategia `summarize`: quando il contesto supera soglia, genera un riassunto dei turni più vecchi usando il modello stesso e lo sostituisce al contesto originale.
-- [ ] **27.4** Strategia `retrieve`: integrazione con NeuralMemory per storage/retrieval semantico di frammenti di contesto evicted (RAG-like from memory store).
-- [ ] **27.5** Strategia selezionabile per processo via hint su `EXEC` (`context_strategy=sliding|summarize|retrieve`).
-- [ ] **27.6** Metriche context in `STATUS`: `context_tokens_used`, `context_window_size`, `context_compressions`.
-- [ ] **27.7** Test unitari: overflow detection, sliding window boundary, summarize trigger.
-- [ ] **27.8** Suite test verde, clippy pulito.
+- [ ] **29.1** Tracking context usage: ogni processo traccia token count corrente vs window size del modello caricato.
+- [ ] **29.2** Strategia `sliding_window`: mantiene ultimi N token, scarta i più vecchi con boundary allineato a turni conversazione.
+- [ ] **29.3** Strategia `summarize`: quando il contesto supera soglia, genera un riassunto dei turni più vecchi usando il modello stesso e lo sostituisce al contesto originale.
+- [ ] **29.4** Strategia `retrieve`: integrazione con NeuralMemory per storage/retrieval semantico di frammenti di contesto evicted (RAG-like from memory store).
+- [ ] **29.5** Strategia selezionabile per processo via hint su `EXEC` (`context_strategy=sliding|summarize|retrieve`).
+- [ ] **29.6** Metriche context in `STATUS`: `context_tokens_used`, `context_window_size`, `context_compressions`.
+- [ ] **29.7** Test unitari: overflow detection, sliding window boundary, summarize trigger.
+- [ ] **29.8** Suite test verde, clippy pulito.
 
 **Note di design**
 - La strategia `summarize` introduce un "meta-step" nel runtime: il processo genera un riassunto prima di proseguire. Richiede attenzione al budget token (la summarization stessa consuma quota).
@@ -707,9 +791,13 @@ Fase 2.9 — Future-Model Flexibility (marzo 2026)
   ├─ M24  External driver plane          ~6-10h  (registry e model-driver resolution)
   └─ M25  Qwen3.5 integration pilot      ~4-8h   (caso guida, non eccezione)
 
+Fase 2.10 — Microkernel Driver Boundary (marzo 2026)
+  ├─ M26  Astrazione NeuralMemory        ~6-10h  (context slots + boundary policy/meccanismo)
+  └─ M27  Driver esterno RPC             ~6-10h  (llama.cpp compatibile, no FFI nel kernel)
+
 Fase 3 — Intelligenza agentica (aprile 2026)
-  ├─ M26  Tool registry dinamico         ~4-6h   (estensibilità)
-  └─ M27  Context window mgmt            ~6-10h  (qualità agentica)
+  ├─ M28  Tool registry dinamico         ~4-6h   (estensibilità)
+  └─ M29  Context window mgmt            ~6-10h  (qualità agentica)
 ```
 
 ---
@@ -750,6 +838,9 @@ Fase 3 — Intelligenza agentica (aprile 2026)
 | 2026-03-07 | M22 | IN_PROGRESS | Metadata runtime-first end-to-end: sidecar nel catalogo, `LLMEngine` carica metadata, `prompting.rs` e `engine/tokenizer.rs` consumano template/stop markers/special tokens con fallback legacy testato. |
 | 2026-03-07 | M23 | DONE | Capability routing v2 prima tranche chiusa: routing recommendations spiegabili (`source`, `rationale`, score), GUI Models aggiornata per capability/backend/metadata source, test verdi 105/105. |
 | 2026-03-07 | M24 | DONE | Driver plane prima tranche chiusa: registry driver esplicito, risoluzione modello -> driver, stub esterno `external-llamacpp`, errori chiari su driver non risolvibili. Test verdi 109/109. |
+| 2026-03-08 | M25 | DONE | Pilot Qwen3.5 chiuso lato control plane: discovery, tokenizer locale, `architecture=qwen35`, driver resolution architecture-aware, `LOAD` rifiutato con `DRIVER_UNRESOLVED` finche' non esiste un driver compatibile. `cargo test`: 114 passed, 1 ignored. |
+| 2026-03-08 | M26 | DONE | `NeuralMemory` riallineata a context slots: niente piu' storage fisico Candle nel kernel, swap target kernel-side validati, persistence raw Candle dispatchata via backend, cleanup PID collegato a `free_context_slot`. `cargo test`: 116 passed, 1 ignored. |
+| 2026-03-08 | M27 | DONE | Driver RPC esterno reale: contratto `generate_step(...)`, backend `external-llamacpp` via HTTP locale con timeout e RPC `save/load/free_context_slot`, risoluzione runtime-aware per architetture non supportate da Candle, opcode `BACKEND_DIAG` per `/health` `/props` `/slots`. `cargo test`: 119 passed, 1 ignored. |
 
 ---
 
@@ -767,7 +858,7 @@ Tokio e' stato valutato ma scartato per costo/beneficio:
 
 ### Quando rivalutare Tokio
 Il trigger è uno di questi scenari:
-1. **3+ worker thread indipendenti** — se servono tool remoti (M26), summarize meta-step (M27), e multi-model inference in parallelo, la coordinazione manuale con thread + mpsc diventa fragile. Tokio offre `select!`/`join!` nativi.
+1. **3+ worker thread indipendenti** — se servono tool remoti (M28), summarize meta-step (M29), driver RPC esterni persistenti o multi-model inference in parallelo, la coordinazione manuale con thread + mpsc diventa fragile. Tokio offre `select!`/`join!` nativi.
 2. **Kernel distribuito** — se servono nodi remoti, gRPC, o comunicazione inter-kernel, Tokio + tonic diventano lo stack naturale.
 3. **Backpressure complesso** — se il worker thread si satura e serve flow control sofisticato (bounded channels con politiche di drop/retry), Tokio offre primitivi migliori.
 

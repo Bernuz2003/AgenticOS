@@ -1,13 +1,15 @@
 use anyhow::{Error as E, Result};
-use candle_core::{DType, Device, Tensor};
+use candle_core::Device;
 use std::path::PathBuf;
 
 use crate::backend::{DriverResolution, RuntimeModel};
+use crate::memory::ContextSlotId;
 use crate::model_catalog::{ModelMetadata, ResolvedModelTarget};
 use crate::process::{AgentProcess, ProcessState};
 use crate::prompting::{
     format_interprocess_user_message_with_metadata,
     format_system_injection_with_metadata,
+    format_user_message_with_metadata,
     should_stop_on_text_with_metadata,
     GenerationConfig,
 };
@@ -139,17 +141,39 @@ impl LLMEngine {
             }
         };
 
+        let formatted_prompt = format_user_message_with_metadata(
+            prompt,
+            self.family,
+            self.metadata.as_ref(),
+        );
+
         let tokens = self
             .tokenizer
-            .encode(prompt, true)
+            .encode(formatted_prompt, true)
             .map_err(E::msg)?
             .get_ids()
             .to_vec();
 
-        let process = AgentProcess::new(pid, owner_id, model_clone, tokens, self.generation);
+        let process = AgentProcess::new(
+            pid,
+            owner_id,
+            model_clone,
+            self.tokenizer.clone(),
+            tokens,
+            self.generation,
+        );
         self.processes.insert(pid, process);
 
         Ok(pid)
+    }
+
+    pub fn set_process_context_slot(&mut self, pid: u64, slot_id: ContextSlotId) -> Result<()> {
+        let process = self
+            .processes
+            .get_mut(&pid)
+            .ok_or(E::msg("PID not found"))?;
+        process.context_slot_id = Some(slot_id);
+        Ok(())
     }
 
     pub fn step_process(&mut self, pid: u64) -> Result<Option<(String, usize)>> {
@@ -168,27 +192,27 @@ impl LLMEngine {
         process.state = ProcessState::Running;
         let owner_id = process.owner_id;
 
-        let mut next_token = 0;
+        let step = process.model.generate_step(
+            process.context_slot_id,
+            &process.tokens,
+            process.index_pos,
+            &mut process.logits_processor,
+            &process.tokenizer,
+            process.generation,
+            &self.device,
+            self.eos_token_id,
+            self.eot_token_id,
+        )?;
 
-        while process.index_pos < process.tokens.len() {
-            let input_token = process.tokens[process.index_pos];
-            let input_tensor = Tensor::new(&[input_token], &self.device)?.unsqueeze(0)?;
-            let logits = process.model.forward(&input_tensor, process.index_pos)?;
-            process.index_pos += 1;
+        process.index_pos = step.next_index_pos;
+        process.tokens.extend(step.appended_tokens);
+        let text_output = if step.emitted_text.is_empty() {
+            None
+        } else {
+            Some(step.emitted_text)
+        };
 
-            if process.index_pos == process.tokens.len() {
-                let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-                next_token = process.logits_processor.sample(&logits)?;
-            }
-        }
-
-        process.tokens.push(next_token);
-        let text_output = self.tokenizer.decode(&[next_token], true).ok();
-
-        let mut should_stop = false;
-        if next_token == self.eos_token_id || next_token == self.eot_token_id || next_token == 2 {
-            should_stop = true;
-        }
+        let mut should_stop = step.finished;
 
         if let Some(ref t) = text_output {
             if should_stop_on_text_with_metadata(self.family, t, self.metadata.as_ref()) {
@@ -356,6 +380,14 @@ impl LLMEngine {
 
     pub fn model_metadata(&self) -> Option<&ModelMetadata> {
         self.metadata.as_ref()
+    }
+
+    pub fn free_context_slot(&mut self, slot_id: ContextSlotId) -> Result<()> {
+        let model = self
+            .master_model
+            .as_mut()
+            .ok_or_else(|| E::msg("Master model not loaded"))?;
+        model.free_context_slot(slot_id)
     }
 
     pub fn format_system_message(&self, content: &str) -> String {

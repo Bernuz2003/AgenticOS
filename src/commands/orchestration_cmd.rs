@@ -31,10 +31,20 @@ pub(crate) fn handle_orchestrate(ctx: &mut CommandContext<'_>, payload: &[u8]) -
                         match engine.spawn_process(&req.prompt, 0, req.owner_id) {
                             Ok(pid) => {
                                 if let Some(token_slots) = engine.process_max_tokens(pid) {
-                                    if let Err(e) = ctx.memory.register_process(pid, token_slots) {
-                                        engine.kill_process(pid);
-                                        ctx.orchestrator.mark_spawn_failed(orch_id, &req.task_id, &e.to_string());
-                                        continue;
+                                    match ctx.memory.register_process(pid, token_slots) {
+                                        Ok(slot_id) => {
+                                            if let Err(e) = engine.set_process_context_slot(pid, slot_id) {
+                                                let _ = ctx.memory.release_process(pid);
+                                                engine.kill_process(pid);
+                                                ctx.orchestrator.mark_spawn_failed(orch_id, &req.task_id, &e.to_string());
+                                                continue;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            engine.kill_process(pid);
+                                            ctx.orchestrator.mark_spawn_failed(orch_id, &req.task_id, &e.to_string());
+                                            continue;
+                                        }
                                     }
                                 }
                                 ctx.scheduler.register(pid, req.workload, ProcessPriority::Normal);

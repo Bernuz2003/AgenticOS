@@ -1,6 +1,8 @@
 use candle_transformers::generation::LogitsProcessor;
+use tokenizers::Tokenizer;
 
 use crate::backend::RuntimeModel;
+use crate::memory::ContextSlotId;
 use crate::prompting::GenerationConfig;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -14,8 +16,11 @@ pub enum ProcessState {
 
 pub struct AgentProcess {
     pub owner_id: usize,
+    pub context_slot_id: Option<ContextSlotId>,
     pub state: ProcessState,
     pub model: RuntimeModel,
+    pub tokenizer: Tokenizer,
+    pub generation: GenerationConfig,
     pub logits_processor: LogitsProcessor,
     pub tokens: Vec<u32>,
     pub index_pos: usize,
@@ -28,13 +33,17 @@ impl AgentProcess {
         id: u64,
         owner_id: usize,
         model: RuntimeModel,
+        tokenizer: Tokenizer,
         prompt_tokens: Vec<u32>,
         generation: GenerationConfig,
     ) -> Self {
         AgentProcess {
             owner_id,
+            context_slot_id: None,
             state: ProcessState::Ready,
             model,
+            tokenizer,
+            generation,
             logits_processor: LogitsProcessor::new(
                 generation.seed + id,
                 Some(generation.temperature),

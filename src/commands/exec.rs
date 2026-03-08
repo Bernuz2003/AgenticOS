@@ -88,13 +88,26 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
         match engine.spawn_process(&prompt, 0, ctx.client_id) {
             Ok(pid) => {
                 if let Some(token_slots) = engine.process_max_tokens(pid) {
-                    if let Err(e) = ctx.memory.register_process(pid, token_slots) {
-                        engine.kill_process(pid);
-                        ctx.client.output_buffer.extend(protocol::response_err_code(
-                            "MEMORY_ADMISSION",
-                            &e.to_string(),
-                        ));
-                        return None;
+                    match ctx.memory.register_process(pid, token_slots) {
+                        Ok(slot_id) => {
+                            if let Err(e) = engine.set_process_context_slot(pid, slot_id) {
+                                let _ = ctx.memory.release_process(pid);
+                                engine.kill_process(pid);
+                                ctx.client.output_buffer.extend(protocol::response_err_code(
+                                    "MEMORY_BINDING",
+                                    &e.to_string(),
+                                ));
+                                return None;
+                            }
+                        }
+                        Err(e) => {
+                            engine.kill_process(pid);
+                            ctx.client.output_buffer.extend(protocol::response_err_code(
+                                "MEMORY_ADMISSION",
+                                &e.to_string(),
+                            ));
+                            return None;
+                        }
                     }
                 }
 

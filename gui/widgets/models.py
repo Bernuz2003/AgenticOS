@@ -134,6 +134,7 @@ class ModelsSection(QWidget):
     load_requested = Signal(str)
     select_requested = Signal(str)
     info_requested = Signal(str)
+    backend_diag_requested = Signal()
     refresh_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None):
@@ -155,6 +156,10 @@ class ModelsSection(QWidget):
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh_requested.emit)
         header.addWidget(refresh_btn)
+
+        diag_btn = QPushButton("Backend Diag")
+        diag_btn.clicked.connect(self.backend_diag_requested.emit)
+        header.addWidget(diag_btn)
         layout.addLayout(header)
 
         # ── Model cards scroll area ──────────────────────────
@@ -273,6 +278,66 @@ class ModelsSection(QWidget):
             f"Capabilities: {capabilities}\n"
             f"Driver rationale: {driver_reason}"
         )
+
+    def show_backend_diag(self, text: str):
+        try:
+            data = json.loads(text)
+        except Exception:
+            self.info_output.setText(text[:800])
+            return
+
+        summary = data.get("summary", {}) if isinstance(data, dict) else {}
+        health = data.get("health", {}) if isinstance(data, dict) else {}
+        props = data.get("props", {}) if isinstance(data, dict) else {}
+        slots = data.get("slots", {}) if isinstance(data, dict) else {}
+
+        def status_line(name: str, entry: dict) -> str:
+            if not isinstance(entry, dict):
+                return f"{name}: unavailable"
+            if entry.get("ok"):
+                return f"{name}: OK ({entry.get('status_code', '—')})"
+            if "status_code" in entry:
+                return f"{name}: HTTP {entry.get('status_code', '—')}"
+            return f"{name}: {entry.get('error', 'unavailable')}"
+
+        model_path = summary.get("model_path") or "—"
+        total_slots = summary.get("total_slots")
+        visible_slots = summary.get("visible_slots")
+        props_json = props.get("json", {}) if isinstance(props, dict) else {}
+        slots_json = slots.get("json", []) if isinstance(slots, dict) else []
+
+        lines = [
+            f"Backend: {data.get('backend', '—')}  •  Endpoint: {data.get('endpoint', '—')}  •  Timeout: {data.get('timeout_ms', '—')} ms",
+            f"{status_line('Health', health)}  •  {status_line('Props', props)}  •  {status_line('Slots', slots)}",
+            f"Model path: {model_path}",
+            f"Slots visible: {visible_slots if visible_slots is not None else '—'} / {total_slots if total_slots is not None else '—'}",
+        ]
+
+        if isinstance(props_json, dict):
+            chat_template = props_json.get("chat_template")
+            if chat_template:
+                lines.append("Chat template: available")
+
+        if isinstance(slots_json, list) and slots_json:
+            slot_ids = []
+            for slot in slots_json[:6]:
+                if isinstance(slot, dict) and "id" in slot:
+                    slot_ids.append(str(slot.get("id")))
+            if slot_ids:
+                lines.append(f"Slot IDs: {', '.join(slot_ids)}")
+
+        raw_error = next(
+            (
+                entry.get("error")
+                for entry in (health, props, slots)
+                if isinstance(entry, dict) and entry.get("error")
+            ),
+            "",
+        )
+        if raw_error:
+            lines.append(f"Error: {raw_error}")
+
+        self.info_output.setText("\n".join(lines))
 
     def set_loading(self, model_id: str):
         if model_id in self._cards:

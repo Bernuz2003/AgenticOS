@@ -1,3 +1,4 @@
+use crate::backend;
 use crate::engine::LLMEngine;
 use crate::errors::CatalogError;
 use crate::protocol;
@@ -91,5 +92,12 @@ pub(crate) fn handle_model_info(ctx: &mut CommandContext<'_>, payload: &[u8]) ->
             Ok(info) => protocol::response_ok_code("MODEL_INFO", &info),
             Err(e) => protocol::response_err_code("MODEL_INFO", &e.to_string()),
         }
+    }
+}
+
+pub(crate) fn handle_backend_diag(_ctx: &mut CommandContext<'_>) -> Vec<u8> {
+    match backend::diagnose_external_backend() {
+        Ok(report) => protocol::response_ok_code("BACKEND_DIAG", &report.to_string()),
+        Err(err) => protocol::response_err_code("BACKEND_DIAG", &err.to_string()),
     }
 }

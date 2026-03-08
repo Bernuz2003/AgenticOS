@@ -6,7 +6,7 @@ Interfaccia desktop PySide6 per controllare il kernel e osservare il runtime in 
 
 - Gestione kernel integrata: start/stop.
 - Comandi rapidi: `PING`, `STATUS`, `LIST_MODELS`, `MODEL_INFO`, `GET_GEN`, `SHUTDOWN`.
-- Pannello guidato Modelli: refresh `LIST_MODELS` JSON, selezione da menu a tendina (auto-discovery), `SELECT_MODEL`, `LOAD`, `MODEL_INFO` JSON.
+- Pannello guidato Modelli: refresh `LIST_MODELS` JSON, selezione da menu a tendina (auto-discovery), `SELECT_MODEL`, `LOAD`, `MODEL_INFO` JSON, `BACKEND_DIAG` JSON.
 - Pannello guidato Generation: `GET_GEN` + `SET_GEN` con campi `temperature/top_p/seed/max_tokens`.
 - Comandi custom protocollo (`VERB payload`).
 - `EXEC` in streaming con render live dei frame `DATA raw`.
@@ -39,6 +39,7 @@ python3 -m gui.app
 - `Stop PID (TERM)` richiede chiusura gentile del processo agentico; `Kill PID (KILL)` forza la chiusura immediata.
 - `Refresh Runtime Status` aggiorna stato runtime (`active_pids`, errori, uptime, memoria, stato modello).
 - `LIST_MODELS` e `MODEL_INFO` sono payload JSON machine-readable; la GUI non usa regex per ricostruire il catalogo.
+- `BACKEND_DIAG` interroga `/health`, `/props` e `/slots` del backend esterno `llama.cpp` e mostra un riepilogo leggibile nella sezione Models.
 - `MEMW` e' presentato come tool diagnostico low-level: payload canonico `<pid>\n<raw-bytes>`, con rifiuto esplicito dei body non allineati a 4 byte.
 - `RESTORE` e' metadata-only: reapplica scheduler state, selected model hint e generation config, ma non ripristina processi live, pesi, tensori o output buffer.
 - Le metriche Chat finali arrivano dal kernel (`tokens_generated`, `elapsed_secs`); durante lo streaming la GUI etichetta le stime come `approx`.
@@ -54,14 +55,15 @@ python3 -m gui.app
 2. Premi `PING` e verifica `+OK PING` nel log comandi.
 3. Premi `Refresh LIST_MODELS`, seleziona un modello dalla lista, poi `SELECT_MODEL`.
 4. Premi `LOAD selected` e verifica risposta `+OK`.
-5. In Generation premi `GET_GEN`, modifica un valore e premi `SET_GEN`; verifica eco dei valori.
-6. In `Exec` invia un prompt breve e controlla stream output + marker di fine processo.
-7. Nella sezione Memory prova `MEMW` solo come strumento diagnostico low-level; verifica che payload disallineati restituiscano errore esplicito.
-8. Premi `RESTORE` su snapshot valido e verifica nel pannello Memory il riepilogo metadata-only (clear/apply + limiti del restore).
-9. Esegui `TERM`/`KILL` su PID valido e verifica risposta.
-10. Verifica tab `Behind the scenes`:
+5. Premi `Backend Diag` nella sezione Models e verifica il report JSON del backend esterno quando `AGENTIC_LLAMACPP_ENDPOINT` e' configurato.
+6. In Generation premi `GET_GEN`, modifica un valore e premi `SET_GEN`; verifica eco dei valori.
+7. In `Exec` invia un prompt breve e controlla stream output + marker di fine processo.
+8. Nella sezione Memory prova `MEMW` solo come strumento diagnostico low-level; verifica che payload disallineati restituiscano errore esplicito.
+9. Premi `RESTORE` su snapshot valido e verifica nel pannello Memory il riepilogo metadata-only (clear/apply + limiti del restore).
+10. Esegui `TERM`/`KILL` su PID valido e verifica risposta.
+11. Verifica tab `Behind the scenes`:
   - eventi kernel popolati,
   - tail di `workspace/syscall_audit.log` popolato,
   - filtri testuali funzionanti.
-11. Premi `Export snapshot` e verifica presenza file in `reports/`.
-12. Premi `SHUTDOWN` oppure `Stop Kernel` e verifica chiusura pulita.
+12. Premi `Export snapshot` e verifica presenza file in `reports/`.
+13. Premi `SHUTDOWN` oppure `Stop Kernel` e verifica chiusura pulita.

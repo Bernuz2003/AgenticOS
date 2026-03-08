@@ -132,6 +132,7 @@ class MainWindow(QMainWindow):
         self.models_section.info_requested.connect(
             lambda mid: self._send_with_event("MODEL_INFO", mid, "model_info")
         )
+        self.models_section.backend_diag_requested.connect(self._request_backend_diag)
         self.models_section.refresh_requested.connect(
             lambda: self._refresh_models(silent=False, force=True)
         )
@@ -400,6 +401,24 @@ class MainWindow(QMainWindow):
 
         self._executor.submit(task)
 
+    def _request_backend_diag(self):
+        def task():
+            try:
+                self._update_client_config()
+                response = self._send_once_with_retry(
+                    verb="BACKEND_DIAG",
+                    payload="",
+                    read_timeout_s=8.0,
+                    inactivity_timeout_s=0.6,
+                )
+                kind = "backend_diag" if response.ok else "backend_diag_error"
+                self.ui_queue.put(UiEvent(kind=kind, message=response.payload))
+                self.ui_queue.put(UiEvent(kind="protocol_trace", message=f"BACKEND_DIAG\x00\x00{response.payload}"))
+            except Exception as exc:
+                self.ui_queue.put(UiEvent(kind="backend_diag_error", message=str(exc)))
+
+        self._executor.submit(task)
+
     # ── EXEC ─────────────────────────────────────────────────
 
     def _exec_stream(self, prompt: str, workload: str):
@@ -507,6 +526,12 @@ class MainWindow(QMainWindow):
 
             elif event.kind == "model_info":
                 self.models_section.show_info(event.message)
+
+            elif event.kind == "backend_diag":
+                self.models_section.show_backend_diag(event.message)
+
+            elif event.kind == "backend_diag_error":
+                self.models_section.show_backend_diag(event.message)
 
             elif event.kind == "refresh_after_load":
                 self._refresh_status(force=True)

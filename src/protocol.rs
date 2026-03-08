@@ -15,6 +15,7 @@ pub enum OpCode {
     ListModels,     // Lista modelli disponibili
     SelectModel,    // Seleziona modello di default
     ModelInfo,      // Mostra info modello
+    BackendDiag,    // Diagnostica backend esterno
     SetGen,         // Configura generation params
     GetGen,         // Legge generation params
     SetPriority,    // Imposta priorità processo
@@ -59,6 +60,7 @@ impl CommandHeader {
             "LIST_MODELS" => OpCode::ListModels,
             "SELECT_MODEL" => OpCode::SelectModel,
             "MODEL_INFO" => OpCode::ModelInfo,
+            "BACKEND_DIAG" => OpCode::BackendDiag,
             "SET_GEN" => OpCode::SetGen,
             "GET_GEN" => OpCode::GetGen,
             "SET_PRIORITY" => OpCode::SetPriority,
@@ -153,6 +155,9 @@ mod tests {
 
         let info = CommandHeader::parse("MODEL_INFO 1 0").expect("MODEL_INFO should parse");
         assert!(matches!(info.opcode, OpCode::ModelInfo));
+
+        let diag = CommandHeader::parse("BACKEND_DIAG 1 0").expect("BACKEND_DIAG should parse");
+        assert!(matches!(diag.opcode, OpCode::BackendDiag));
 
         let set_gen = CommandHeader::parse("SET_GEN 1 10").expect("SET_GEN should parse");
         assert!(matches!(set_gen.opcode, OpCode::SetGen));

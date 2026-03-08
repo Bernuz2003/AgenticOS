@@ -8,21 +8,27 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::swap_io;
+use super::swap_io::PreparedSwapTarget;
+use super::types::ContextSlotId;
 use super::types::SwapEvent;
+use crate::backend;
 use crate::errors::MemoryError;
 
 // ── Internal message types ──────────────────────────────────────────────
 
 pub(super) struct SwapJob {
     pub pid: u64,
+    pub slot_id: ContextSlotId,
+    pub backend_id: String,
+    pub target: PreparedSwapTarget,
     pub payload: Vec<u8>,
 }
 
 struct SwapResult {
     pid: u64,
+    slot_id: ContextSlotId,
     success: bool,
     detail: String,
 }
@@ -95,39 +101,40 @@ impl SwapManager {
     fn spawn_worker(&mut self) -> Result<(), MemoryError> {
         let (tx_job, rx_job) = mpsc::channel::<SwapJob>();
         let (tx_result, rx_result) = mpsc::channel::<SwapResult>();
-        let worker_dir = self.dir.clone();
-
         thread::Builder::new()
             .name("agentic_swap_worker".to_string())
             .spawn(move || {
                 while let Ok(job) = rx_job.recv() {
-                    let now_ns = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_nanos())
-                        .unwrap_or(0);
-                    let file_stem = format!("pid_{}_{}", job.pid, now_ns);
-
-                    let result =
-                        swap_io::persist_swap_payload(&worker_dir, &file_stem, &job.payload)
-                            .map(|final_path| {
+                    let result = backend::persist_context_slot_payload_for_backend(
+                        &job.backend_id,
+                        job.slot_id,
+                        &job.target.tmp_path,
+                        &job.target.final_path,
+                        &job.payload,
+                    )
+                            .map(|_| {
                                 format!(
-                                    "swap persisted pid={} bytes={} file={}",
+                                    "swap persisted pid={} slot={} backend={} bytes={} file={}",
                                     job.pid,
+                                    job.slot_id,
+                                    job.backend_id,
                                     job.payload.len(),
-                                    final_path.display()
+                                    job.target.final_path.display()
                                 )
                             });
 
                     let event = match result {
                         Ok(msg) => SwapResult {
                             pid: job.pid,
+                            slot_id: job.slot_id,
                             success: true,
                             detail: msg,
                         },
                         Err(err) => SwapResult {
                             pid: job.pid,
+                            slot_id: job.slot_id,
                             success: false,
-                            detail: format!("swap failed pid={}: {}", job.pid, err),
+                            detail: format!("swap failed pid={} slot={}: {}", job.pid, job.slot_id, err),
                         },
                     };
 
@@ -170,15 +177,29 @@ impl SwapManager {
 
     /// Send a swap job to the background worker.
     /// Marks the PID as waiting. Returns a user-facing message.
-    pub fn enqueue(&mut self, pid: u64, payload: Vec<u8>) -> Result<String, MemoryError> {
+    pub fn enqueue(
+        &mut self,
+        pid: u64,
+        slot_id: ContextSlotId,
+        backend_id: &str,
+        payload: Vec<u8>,
+    ) -> Result<String, MemoryError> {
         let Some(tx) = &self.tx else {
             return Err(MemoryError::Swap("Swap queue is not available".to_string()));
         };
 
         self.waiting.insert(pid);
 
+        let target = swap_io::prepare_swap_target(&self.dir, pid, slot_id)
+            .map_err(MemoryError::Swap)?;
         let payload_len = payload.len();
-        tx.send(SwapJob { pid, payload })
+        tx.send(SwapJob {
+            pid,
+            slot_id,
+            backend_id: backend_id.to_string(),
+            target,
+            payload,
+        })
             .map_err(|e| {
                 self.waiting.remove(&pid);
                 MemoryError::Swap(format!(
@@ -188,8 +209,8 @@ impl SwapManager {
             })?;
 
         Ok(format!(
-            "OOM: PID {} queued for async swap ({} bytes)",
-            pid, payload_len
+            "OOM: PID {} slot {} queued for async swap ({} bytes)",
+            pid, slot_id, payload_len
         ))
     }
 
@@ -216,6 +237,7 @@ impl SwapManager {
                     }
                     events.push(SwapEvent {
                         pid: result.pid,
+                        slot_id: result.slot_id,
                         success: result.success,
                         detail: result.detail,
                     });
@@ -233,6 +255,7 @@ impl SwapManager {
                         deltas.swap_failures_inc += 1;
                         events.push(SwapEvent {
                             pid,
+                            slot_id: 0,
                             success: false,
                             detail: format!("swap job lost: worker crash (pid={})", pid),
                         });
@@ -262,9 +285,19 @@ impl SwapManager {
     #[cfg(test)]
     pub fn persist_payload(
         base_dir: &std::path::Path,
-        file_stem: &str,
+        pid: u64,
+        slot_id: ContextSlotId,
+        backend_id: &str,
         payload: &[u8],
     ) -> Result<PathBuf, String> {
-        swap_io::persist_swap_payload(base_dir, file_stem, payload)
+        let target = swap_io::prepare_swap_target(base_dir, pid, slot_id)?;
+        backend::persist_context_slot_payload_for_backend(
+            backend_id,
+            slot_id,
+            &target.tmp_path,
+            &target.final_path,
+            payload,
+        )?;
+        Ok(target.final_path)
     }
 }

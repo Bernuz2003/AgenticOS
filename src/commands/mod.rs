@@ -92,6 +92,7 @@ pub fn execute_command(
         OpCode::ListModels => model::handle_list_models(&mut ctx),
         OpCode::SelectModel => model::handle_select_model(&mut ctx, &payload),
         OpCode::ModelInfo => model::handle_model_info(&mut ctx, &payload),
+        OpCode::BackendDiag => model::handle_backend_diag(&mut ctx),
         OpCode::Exec => {
             if let Some(r) = exec::handle_exec(&mut ctx, &payload) { r } else { return; }
         }

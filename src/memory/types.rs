@@ -1,5 +1,10 @@
 /// Shared types for the NeuralMemory subsystem.
-pub type TensorId = u64;
+pub type ContextSlotId = u64;
+
+/// Transitional alias while NeuralMemory is still backed by Candle-owned pages.
+/// M26 will migrate call sites toward `ContextSlotId` as the public abstraction.
+#[allow(dead_code)]
+pub type TensorId = ContextSlotId;
 
 #[derive(Debug, Clone)]
 pub struct MemorySnapshot {
@@ -22,6 +27,7 @@ pub struct MemorySnapshot {
 #[derive(Debug, Clone)]
 pub struct SwapEvent {
     pub pid: u64,
+    pub slot_id: ContextSlotId,
     pub success: bool,
     pub detail: String,
 }

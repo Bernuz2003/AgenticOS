@@ -1,6 +1,11 @@
 use std::fs;
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+
+#[derive(Debug, Clone)]
+pub(super) struct PreparedSwapTarget {
+    pub tmp_path: PathBuf,
+    pub final_path: PathBuf,
+}
 
 pub(super) fn resolve_valid_swap_dir(requested: Option<PathBuf>) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|e| format!("Cannot read current dir: {}", e))?;
@@ -45,11 +50,16 @@ pub(super) fn resolve_valid_swap_dir(requested: Option<PathBuf>) -> Result<PathB
     Ok(candidate_canon)
 }
 
-pub(super) fn persist_swap_payload(
+pub(super) fn prepare_swap_target(
     base_dir: &Path,
-    file_stem: &str,
-    payload: &[u8],
-) -> Result<PathBuf, String> {
+    pid: u64,
+    slot_id: u64,
+) -> Result<PreparedSwapTarget, String> {
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let file_stem = format!("pid_{}_slot_{}_{}", pid, slot_id, now_ns);
     let tmp_path = base_dir.join(format!("{}.tmp", file_stem));
     let final_path = base_dir.join(format!("{}.swap", file_stem));
 
@@ -57,28 +67,8 @@ pub(super) fn persist_swap_payload(
         return Err("Swap path safety violation: computed file path escaped base dir".to_string());
     }
 
-    let mut tmp_file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp_path)
-        .map_err(|e| format!("tmp open failed: {}", e))?;
-
-    if let Err(e) = tmp_file.write_all(payload) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(format!("tmp write failed: {}", e));
-    }
-
-    if let Err(e) = tmp_file.sync_all() {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(format!("tmp fsync failed: {}", e));
-    }
-
-    drop(tmp_file);
-
-    if let Err(e) = fs::rename(&tmp_path, &final_path) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(format!("atomic rename failed: {}", e));
-    }
-
-    Ok(final_path)
+    Ok(PreparedSwapTarget {
+        tmp_path,
+        final_path,
+    })
 }

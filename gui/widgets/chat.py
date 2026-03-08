@@ -35,6 +35,12 @@ body { font-family: 'Segoe UI', 'Ubuntu', sans-serif; font-size: 13px; color: #c
     padding: 10px 14px; margin: 4px 8px 8px 40px;
 }
 .assistant-label { color: #bb9af7; font-weight: 700; font-size: 12px; margin-bottom: 4px; }
+.thinking-block {
+    background: #181c2c; border: 1px dashed #565f89; border-radius: 10px;
+    padding: 8px 10px; margin: 6px 0 10px 0;
+}
+.thinking-label { color: #7dcfff; font-weight: 700; font-size: 11px; margin-bottom: 4px; }
+.answer-block { margin-top: 4px; }
 .metrics { color: #565f89; font-size: 11px; margin-top: 6px; }
 .metrics span { margin-right: 12px; }
 pre { background: #16161e; border-radius: 6px; padding: 8px; overflow-x: auto; color: #c0caf5; }
@@ -266,7 +272,7 @@ class ChatSection(QWidget):
         self._completed[pid] = _CompletedState(
             text=state.text,
             bubble_index=state.bubble_index,
-            approx_tokens=max(state.nbytes // 4, 1),
+            approx_tokens=max(state.nbytes // 4, 1) if state.nbytes > 0 else 0,
             approx_elapsed=elapsed,
             exact_tokens=state.exact_tokens,
             exact_elapsed=state.exact_elapsed,
@@ -337,7 +343,7 @@ class ChatSection(QWidget):
         state = self._streams.get(pid)
         if state is None:
             return ""
-        escaped = html.escape(state.text).replace("\n", "<br>")
+        escaped = self._render_assistant_sections(state.text)
         elapsed = time.perf_counter() - state.start
         if state.exact_tokens is not None and state.exact_elapsed is not None and state.exact_elapsed > 0:
             elapsed_text = f"{state.exact_elapsed:.1f}s"
@@ -345,7 +351,7 @@ class ChatSection(QWidget):
             throughput_text = f"{state.exact_tokens / state.exact_elapsed:.1f} tok/s"
             qualifier = ""
         else:
-            tok_approx = max(state.nbytes // 4, 1)
+            tok_approx = max(state.nbytes // 4, 1) if state.nbytes > 0 else 0
             tps = tok_approx / elapsed if elapsed > 0 else 0
             elapsed_text = f"{elapsed:.1f}s"
             token_text = f"{tok_approx} tok approx"
@@ -366,7 +372,7 @@ class ChatSection(QWidget):
         completed = self._completed.get(pid)
         if completed is None:
             return ""
-        escaped = html.escape(completed.text).replace("\n", "<br>")
+        escaped = self._render_assistant_sections(completed.text)
         exact = completed.exact_tokens is not None and completed.exact_elapsed is not None and completed.exact_elapsed > 0
         elapsed = completed.exact_elapsed if exact else completed.approx_elapsed
         tokens = completed.exact_tokens if exact else completed.approx_tokens
@@ -405,6 +411,51 @@ class ChatSection(QWidget):
     def _append_html(self, html_fragment: str):
         self._bubbles.append(html_fragment)
         self._refresh_display()
+
+    @staticmethod
+    def _split_reasoning_sections(text: str) -> tuple[str, str, bool]:
+        thinking_parts: list[str] = []
+        answer_parts: list[str] = []
+        index = 0
+        in_thinking = False
+
+        while index < len(text):
+            if text.startswith("<think>", index):
+                in_thinking = True
+                index += len("<think>")
+                continue
+            if text.startswith("</think>", index):
+                in_thinking = False
+                index += len("</think>")
+                continue
+
+            if in_thinking:
+                thinking_parts.append(text[index])
+            else:
+                answer_parts.append(text[index])
+            index += 1
+
+        return "".join(thinking_parts), "".join(answer_parts), in_thinking
+
+    def _render_assistant_sections(self, text: str) -> str:
+        thinking_text, answer_text, thinking_open = self._split_reasoning_sections(text)
+
+        parts: list[str] = []
+        if thinking_text.strip() or thinking_open:
+            thinking_label = "THINKING..." if thinking_open else "THINKING"
+            parts.append(
+                '<div class="thinking-block">'
+                f'<div class="thinking-label">{thinking_label}</div>'
+                f'{html.escape(thinking_text).replace("\n", "<br>")}'
+                '</div>'
+            )
+
+        if answer_text or not parts:
+            parts.append(
+                f'<div class="answer-block">{html.escape(answer_text).replace("\n", "<br>")}</div>'
+            )
+
+        return "".join(parts)
 
     def _refresh_display(self):
         """Immediate full render — used for structural changes (new bubbles, finish)."""

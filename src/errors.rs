@@ -55,9 +55,6 @@ pub enum MemoryError {
 
     #[error("Swap error: {0}")]
     Swap(String),
-
-    #[error("Memory allocation error: {0}")]
-    Alloc(String),
 }
 
 // ── Engine / process errors ─────────────────────────────────────────────

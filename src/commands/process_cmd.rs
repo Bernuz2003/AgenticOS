@@ -3,6 +3,18 @@ use crate::protocol;
 use super::context::CommandContext;
 use super::metrics::log_event;
 
+fn free_backend_slot_if_known(ctx: &mut CommandContext<'_>, pid: u64) {
+    let Some(slot_id) = ctx.memory.slot_for_pid(pid) else {
+        return;
+    };
+
+    if let Some(engine) = ctx.engine_state.as_mut() {
+        if let Err(err) = engine.free_context_slot(slot_id) {
+            tracing::debug!(pid, slot_id, %err, "MEMORY: backend slot free not available");
+        }
+    }
+}
+
 pub(crate) fn handle_term(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     if payload_text.is_empty() {
@@ -17,6 +29,7 @@ pub(crate) fn handle_term(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u
         }
         if let Some(engine) = ctx.engine_state.as_mut() {
             if engine.terminate_process(pid) {
+                free_backend_slot_if_known(ctx, pid);
                 let _ = ctx.memory.release_process(pid);
                 ctx.scheduler.unregister(pid);
                 ctx.metrics.inc_signal_count();
@@ -47,6 +60,7 @@ pub(crate) fn handle_kill(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u
         }
         if let Some(engine) = ctx.engine_state.as_mut() {
             engine.kill_process(pid);
+            free_backend_slot_if_known(ctx, pid);
             let _ = ctx.memory.release_process(pid);
             ctx.scheduler.unregister(pid);
             ctx.metrics.inc_signal_count();
