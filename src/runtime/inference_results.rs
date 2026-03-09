@@ -32,11 +32,12 @@ pub(super) fn drain_worker_results(
         match result {
             InferenceResult::Token {
                 pid,
-                mut process,
+                process,
                 text_output,
                 generated_tokens,
                 finished,
             } => {
+                let mut process = *process;
                 in_flight.remove(&pid);
 
                 if !finished

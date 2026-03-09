@@ -66,7 +66,7 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
                                 &ctx.request_id,
                                 "SCHEDULER_LOAD_FAILED",
                                 protocol::schema::ERROR,
-                                &format!("{}", e),
+                                &e.to_string(),
                             ));
                             return None;
                         }

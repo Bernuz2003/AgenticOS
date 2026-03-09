@@ -62,6 +62,18 @@ pub struct DriverResolution {
     pub load_supported: bool,
 }
 
+pub struct InferenceStepRequest<'a> {
+    pub context_slot_id: Option<ContextSlotId>,
+    pub tokens: &'a [u32],
+    pub index_pos: usize,
+    pub logits_processor: &'a mut LogitsProcessor,
+    pub tokenizer: &'a Tokenizer,
+    pub generation: GenerationConfig,
+    pub device: &'a Device,
+    pub eos_token_id: u32,
+    pub eot_token_id: u32,
+}
+
 const FAMILIES_LLAMA: [PromptFamily; 1] = [PromptFamily::Llama];
 const FAMILIES_QWEN: [PromptFamily; 1] = [PromptFamily::Qwen];
 const FAMILIES_COMMON: [PromptFamily; 3] = [PromptFamily::Llama, PromptFamily::Qwen, PromptFamily::Mistral];
@@ -106,7 +118,7 @@ pub fn driver_registry() -> &'static [DriverDescriptor] {
 fn external_llamacpp_endpoint() -> Option<String> {
     #[cfg(test)]
     {
-        return test_external_endpoint_override_get();
+        test_external_endpoint_override_get()
     }
 
     #[cfg(not(test))]
@@ -330,18 +342,7 @@ pub fn resolve_driver_for_model(
 pub trait InferenceBackend: Send {
     fn backend_id(&self) -> &'static str;
     fn family(&self) -> PromptFamily;
-    fn generate_step(
-        &mut self,
-        context_slot_id: Option<ContextSlotId>,
-        tokens: &[u32],
-        index_pos: usize,
-        logits_processor: &mut LogitsProcessor,
-        tokenizer: &Tokenizer,
-        generation: GenerationConfig,
-        device: &Device,
-        eos_token_id: u32,
-        eot_token_id: u32,
-    ) -> Result<InferenceStepResult>;
+    fn generate_step(&mut self, request: InferenceStepRequest<'_>) -> Result<InferenceStepResult>;
     fn duplicate_boxed(&self) -> Option<Box<dyn ModelBackend>>;
 }
 
@@ -444,29 +445,8 @@ impl RuntimeModel {
         self.inner.family()
     }
 
-    pub fn generate_step(
-        &mut self,
-        context_slot_id: Option<ContextSlotId>,
-        tokens: &[u32],
-        index_pos: usize,
-        logits_processor: &mut LogitsProcessor,
-        tokenizer: &Tokenizer,
-        generation: GenerationConfig,
-        device: &Device,
-        eos_token_id: u32,
-        eot_token_id: u32,
-    ) -> Result<InferenceStepResult> {
-        self.inner.generate_step(
-            context_slot_id,
-            tokens,
-            index_pos,
-            logits_processor,
-            tokenizer,
-            generation,
-            device,
-            eos_token_id,
-            eot_token_id,
-        )
+    pub fn generate_step(&mut self, request: InferenceStepRequest<'_>) -> Result<InferenceStepResult> {
+        self.inner.generate_step(request)
     }
 
     #[allow(dead_code)]
@@ -502,7 +482,7 @@ mod tests {
         resolve_driver_for_family, resolve_driver_for_model, test_external_endpoint_override_get,
         test_external_endpoint_override_set, CompletionResponse, ContextSlotPersistence,
         ExternalLlamaCppBackend,
-        InferenceBackend, InferenceStepResult, PromptFamily, RuntimeModel,
+        InferenceBackend, InferenceStepRequest, InferenceStepResult, PromptFamily, RuntimeModel,
     };
     use crate::memory::ContextSlotId;
     use crate::prompting::GenerationConfig;
@@ -516,6 +496,9 @@ mod tests {
     use std::thread;
     use tokenizers::models::wordlevel::WordLevel;
     use tokenizers::Tokenizer;
+
+    type SharedStringLog = Arc<Mutex<Vec<String>>>;
+    type MockServerHandle = thread::JoinHandle<()>;
 
     struct EndpointOverrideGuard {
         previous: Option<String>,
@@ -552,7 +535,9 @@ mod tests {
         Tokenizer::new(model)
     }
 
-    fn spawn_mock_llamacpp_server(expected_requests: usize) -> (String, Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+    fn spawn_mock_llamacpp_server(
+        expected_requests: usize,
+    ) -> (String, SharedStringLog, SharedStringLog, MockServerHandle) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
         let address = listener.local_addr().expect("mock server addr");
         let paths = Arc::new(Mutex::new(Vec::new()));
@@ -599,7 +584,7 @@ mod tests {
         (format!("http://{}", address), paths, bodies, handle)
     }
 
-    fn spawn_mock_diag_server() -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+    fn spawn_mock_diag_server() -> (String, SharedStringLog, MockServerHandle) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock diag server");
         let address = listener.local_addr().expect("mock diag server addr");
         let paths = Arc::new(Mutex::new(Vec::new()));
@@ -697,18 +682,7 @@ mod tests {
             PromptFamily::Unknown
         }
 
-        fn generate_step(
-            &mut self,
-            _context_slot_id: Option<ContextSlotId>,
-            _tokens: &[u32],
-            _index_pos: usize,
-            _logits_processor: &mut LogitsProcessor,
-            _tokenizer: &Tokenizer,
-            _generation: GenerationConfig,
-            _device: &Device,
-            _eos_token_id: u32,
-            _eot_token_id: u32,
-        ) -> Result<InferenceStepResult> {
+        fn generate_step(&mut self, _request: InferenceStepRequest<'_>) -> Result<InferenceStepResult> {
             panic!("generate_step should not be called in this test");
         }
 
@@ -752,18 +726,7 @@ mod tests {
             PromptFamily::Llama
         }
 
-        fn generate_step(
-            &mut self,
-            _context_slot_id: Option<ContextSlotId>,
-            _tokens: &[u32],
-            _index_pos: usize,
-            _logits_processor: &mut LogitsProcessor,
-            _tokenizer: &Tokenizer,
-            _generation: GenerationConfig,
-            _device: &Device,
-            _eos_token_id: u32,
-            _eot_token_id: u32,
-        ) -> Result<InferenceStepResult> {
+        fn generate_step(&mut self, _request: InferenceStepRequest<'_>) -> Result<InferenceStepResult> {
             panic!("generate_step should not be called in this test");
         }
 
@@ -819,17 +782,17 @@ mod tests {
         let mut logits_processor = LogitsProcessor::new(1, Some(0.7), Some(0.9));
 
         let step = model
-            .generate_step(
-                Some(7),
-                &[1],
-                0,
-                &mut logits_processor,
-                &tokenizer,
+            .generate_step(InferenceStepRequest {
+                context_slot_id: Some(7),
+                tokens: &[1],
+                index_pos: 0,
+                logits_processor: &mut logits_processor,
+                tokenizer: &tokenizer,
                 generation,
-                &Device::Cpu,
-                2,
-                3,
-            )
+                device: &Device::Cpu,
+                eos_token_id: 2,
+                eot_token_id: 3,
+            })
             .expect("generate step through external backend");
 
         assert_eq!(step.emitted_text, "hello");
@@ -903,17 +866,17 @@ mod tests {
         let mut logits_processor = LogitsProcessor::new(1, Some(0.7), Some(0.9));
 
         backend
-            .generate_step(
-                Some(3),
-                &[1, 2, 3, 4, 5],
-                0,
-                &mut logits_processor,
-                &tokenizer,
+            .generate_step(InferenceStepRequest {
+                context_slot_id: Some(3),
+                tokens: &[1, 2, 3, 4, 5],
+                index_pos: 0,
+                logits_processor: &mut logits_processor,
+                tokenizer: &tokenizer,
                 generation,
-                &Device::Cpu,
-                6,
-                7,
-            )
+                device: &Device::Cpu,
+                eos_token_id: 6,
+                eot_token_id: 7,
+            })
             .expect("generate step should succeed");
 
         server_handle.join().expect("join mock server");
@@ -945,17 +908,17 @@ mod tests {
         let mut logits_processor = LogitsProcessor::new(1, Some(0.7), Some(0.9));
 
         backend
-            .generate_step(
-                Some(3),
-                &[1],
-                0,
-                &mut logits_processor,
-                &tokenizer,
+            .generate_step(InferenceStepRequest {
+                context_slot_id: Some(3),
+                tokens: &[1],
+                index_pos: 0,
+                logits_processor: &mut logits_processor,
+                tokenizer: &tokenizer,
                 generation,
-                &Device::Cpu,
-                6,
-                7,
-            )
+                device: &Device::Cpu,
+                eos_token_id: 6,
+                eot_token_id: 7,
+            })
             .expect("generate step should succeed");
 
         server_handle.join().expect("join mock server");

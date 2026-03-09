@@ -141,8 +141,10 @@ pub(super) fn parse_tokenizer_metadata_json(raw: &str) -> Option<ModelMetadata> 
         }
     }
 
-    let mut parsed = ModelMetadata::default();
-    parsed.special_tokens = Some(special_tokens);
+    let mut parsed = ModelMetadata {
+        special_tokens: Some(special_tokens),
+        ..ModelMetadata::default()
+    };
     if !stop_markers.is_empty() {
         parsed.stop_markers = Some(stop_markers);
     }
@@ -221,9 +223,7 @@ pub(super) fn describe_metadata_source(
     sidecar_path: Option<&Path>,
     metadata: Option<&ModelMetadata>,
 ) -> Option<String> {
-    if metadata.is_none() {
-        return None;
-    }
+    metadata?;
 
     let mut native_parts = Vec::new();
     if native_from_gguf {

@@ -4,6 +4,7 @@ use std::thread;
 use anyhow::Result;
 use candle_core::Device;
 
+use crate::backend::InferenceStepRequest;
 use crate::process::{AgentProcess, ProcessState};
 
 /// Command sent from the main thread to the inference worker.
@@ -11,7 +12,7 @@ pub enum InferenceCmd {
     /// Perform one inference step for the given process.
     Step {
         pid: u64,
-        process: AgentProcess,
+        process: Box<AgentProcess>,
         eos_token_id: u32,
         eot_token_id: u32,
     },
@@ -24,7 +25,7 @@ pub enum InferenceResult {
     /// Successful inference step.
     Token {
         pid: u64,
-        process: AgentProcess,
+        process: Box<AgentProcess>,
         text_output: String,
         generated_tokens: usize,
         finished: bool,
@@ -49,17 +50,17 @@ fn run_step(
 
     process.state = ProcessState::Running;
 
-    let step = process.model.generate_step(
-        process.context_slot_id,
-        &process.tokens,
-        process.index_pos,
-        &mut process.logits_processor,
-        &process.tokenizer,
-        process.generation,
-        &device,
+    let step = process.model.generate_step(InferenceStepRequest {
+        context_slot_id: process.context_slot_id,
+        tokens: &process.tokens,
+        index_pos: process.index_pos,
+        logits_processor: &mut process.logits_processor,
+        tokenizer: &process.tokenizer,
+        generation: process.generation,
+        device: &device,
         eos_token_id,
         eot_token_id,
-    )?;
+    })?;
 
     process.index_pos = step.next_index_pos;
     let generated_tokens = step.appended_tokens.len();
@@ -102,12 +103,12 @@ pub fn spawn_worker(
                         process,
                         eos_token_id,
                         eot_token_id,
-                    } => match run_step(process, eos_token_id, eot_token_id) {
+                    } => match run_step(*process, eos_token_id, eot_token_id) {
                         Ok((process, text_output, generated_tokens, finished)) => {
                             if result_tx
                                 .send(InferenceResult::Token {
                                     pid,
-                                    process,
+                                    process: Box::new(process),
                                     text_output,
                                     generated_tokens,
                                     finished,

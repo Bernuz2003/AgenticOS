@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 static KERNEL_CONFIG: OnceLock<KernelConfig> = OnceLock::new();
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct KernelConfig {
     pub network: NetworkConfig,
@@ -20,25 +20,6 @@ pub struct KernelConfig {
     pub tools: ToolsRuntimeConfig,
     pub generation: GenerationProfilesConfig,
     pub scheduler: SchedulerConfig,
-}
-
-impl Default for KernelConfig {
-    fn default() -> Self {
-        Self {
-            network: NetworkConfig::default(),
-            protocol: ProtocolRuntimeConfig::default(),
-            paths: PathsConfig::default(),
-            memory: MemoryRuntimeConfig::default(),
-            checkpoint: CheckpointConfig::default(),
-            auth: AuthConfig::default(),
-            external_llamacpp: ExternalLlamaCppConfig::default(),
-            exec: ExecConfig::default(),
-            orchestrator: OrchestratorConfig::default(),
-            tools: ToolsRuntimeConfig::default(),
-            generation: GenerationProfilesConfig::default(),
-            scheduler: SchedulerConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -136,28 +117,16 @@ impl Default for MemoryRuntimeConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct CheckpointConfig {
     pub interval_secs: u64,
 }
 
-impl Default for CheckpointConfig {
-    fn default() -> Self {
-        Self { interval_secs: 0 }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct AuthConfig {
     pub disabled: bool,
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self { disabled: false }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -178,16 +147,10 @@ impl Default for ExternalLlamaCppConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct ExecConfig {
     pub auto_switch: bool,
-}
-
-impl Default for ExecConfig {
-    fn default() -> Self {
-        Self { auto_switch: false }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

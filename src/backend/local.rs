@@ -1,15 +1,13 @@
 use anyhow::{Error as E, Result};
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, Tensor};
-use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::quantized_llama;
 use candle_transformers::models::quantized_qwen2;
-use tokenizers::Tokenizer;
 
 use crate::memory::ContextSlotId;
-use crate::prompting::{GenerationConfig, PromptFamily};
+use crate::prompting::PromptFamily;
 
-use super::{ContextSlotPersistence, InferenceBackend, InferenceStepResult, ModelBackend};
+use super::{ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult, ModelBackend};
 
 pub(crate) struct QuantizedLlamaBackend {
     weights: quantized_llama::ModelWeights,
@@ -26,20 +24,23 @@ impl QuantizedLlamaBackend {
 }
 
 fn generate_local_step<F>(
-    _context_slot_id: Option<ContextSlotId>,
-    tokens: &[u32],
-    index_pos: usize,
-    logits_processor: &mut LogitsProcessor,
-    tokenizer: &Tokenizer,
-    generation: GenerationConfig,
-    device: &Device,
-    eos_token_id: u32,
-    eot_token_id: u32,
+    request: InferenceStepRequest<'_>,
     mut forward: F,
 ) -> Result<InferenceStepResult>
 where
     F: FnMut(&Tensor, usize) -> Result<Tensor>,
 {
+    let InferenceStepRequest {
+        context_slot_id: _,
+        tokens,
+        index_pos,
+        logits_processor,
+        tokenizer,
+        generation,
+        device,
+        eos_token_id,
+        eot_token_id,
+    } = request;
     let mut next_token: Option<u32> = None;
     let mut cursor = index_pos;
 
@@ -88,30 +89,10 @@ impl InferenceBackend for QuantizedLlamaBackend {
         PromptFamily::Llama
     }
 
-    fn generate_step(
-        &mut self,
-        context_slot_id: Option<ContextSlotId>,
-        tokens: &[u32],
-        index_pos: usize,
-        logits_processor: &mut LogitsProcessor,
-        tokenizer: &Tokenizer,
-        generation: GenerationConfig,
-        device: &Device,
-        eos_token_id: u32,
-        eot_token_id: u32,
-    ) -> Result<InferenceStepResult> {
-        generate_local_step(
-            context_slot_id,
-            tokens,
-            index_pos,
-            logits_processor,
-            tokenizer,
-            generation,
-            device,
-            eos_token_id,
-            eot_token_id,
-            |input_tensor, position| Ok(self.weights.forward(input_tensor, position)?),
-        )
+    fn generate_step(&mut self, request: InferenceStepRequest<'_>) -> Result<InferenceStepResult> {
+        generate_local_step(request, |input_tensor, position| {
+            Ok(self.weights.forward(input_tensor, position)?)
+        })
     }
 
     fn duplicate_boxed(&self) -> Option<Box<dyn ModelBackend>> {
@@ -140,7 +121,7 @@ impl QuantizedQwen2Backend {
         match quantized_qwen2::ModelWeights::from_gguf(content, &mut file, device) {
             Ok(weights) => Ok(Self { weights }),
             Err(e) => {
-                let msg = format!("{}", e);
+                let msg = e.to_string();
                 if msg.contains("cannot find tensor info for output_norm.weight") {
                     Err(E::msg(
                         "Qwen load failed: missing 'output_norm.weight'. The GGUF is likely an incomplete split shard (or otherwise incomplete export). Use a full single-file GGUF, or merge all split parts before LOAD.",
@@ -162,30 +143,10 @@ impl InferenceBackend for QuantizedQwen2Backend {
         PromptFamily::Qwen
     }
 
-    fn generate_step(
-        &mut self,
-        context_slot_id: Option<ContextSlotId>,
-        tokens: &[u32],
-        index_pos: usize,
-        logits_processor: &mut LogitsProcessor,
-        tokenizer: &Tokenizer,
-        generation: GenerationConfig,
-        device: &Device,
-        eos_token_id: u32,
-        eot_token_id: u32,
-    ) -> Result<InferenceStepResult> {
-        generate_local_step(
-            context_slot_id,
-            tokens,
-            index_pos,
-            logits_processor,
-            tokenizer,
-            generation,
-            device,
-            eos_token_id,
-            eot_token_id,
-            |input_tensor, position| Ok(self.weights.forward(input_tensor, position)?),
-        )
+    fn generate_step(&mut self, request: InferenceStepRequest<'_>) -> Result<InferenceStepResult> {
+        generate_local_step(request, |input_tensor, position| {
+            Ok(self.weights.forward(input_tensor, position)?)
+        })
     }
 
     fn duplicate_boxed(&self) -> Option<Box<dyn ModelBackend>> {

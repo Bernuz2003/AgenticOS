@@ -247,6 +247,7 @@ impl ProcessScheduler {
     }
 
     /// Summary line for the global STATUS response.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn summary(&self) -> String {
         let total = self.accounting.len();
         let by_priority = |p: ProcessPriority| -> usize {

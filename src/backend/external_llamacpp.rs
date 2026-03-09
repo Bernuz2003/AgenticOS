@@ -1,16 +1,13 @@
 use anyhow::{Error as E, Result};
-use candle_core::Device;
-use candle_transformers::generation::LogitsProcessor;
 use serde_json::json;
 use std::path::Path;
-use tokenizers::Tokenizer;
 
 use crate::memory::ContextSlotId;
-use crate::prompting::{GenerationConfig, PromptFamily};
+use crate::prompting::PromptFamily;
 
 use super::http::{HttpEndpoint, HttpJsonResponse};
 use super::remote_adapter::{build_completion_request, decode_completion_response};
-use super::{ContextSlotPersistence, InferenceBackend, InferenceStepResult, ModelBackend};
+use super::{ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult, ModelBackend};
 
 #[derive(Clone)]
 pub(crate) struct ExternalLlamaCppBackend {
@@ -118,18 +115,18 @@ impl InferenceBackend for ExternalLlamaCppBackend {
         self.family
     }
 
-    fn generate_step(
-        &mut self,
-        context_slot_id: Option<ContextSlotId>,
-        tokens: &[u32],
-        index_pos: usize,
-        _logits_processor: &mut LogitsProcessor,
-        tokenizer: &Tokenizer,
-        generation: GenerationConfig,
-        _device: &Device,
-        _eos_token_id: u32,
-        _eot_token_id: u32,
-    ) -> Result<InferenceStepResult> {
+    fn generate_step(&mut self, request: InferenceStepRequest<'_>) -> Result<InferenceStepResult> {
+        let InferenceStepRequest {
+            context_slot_id,
+            tokens,
+            index_pos,
+            logits_processor: _,
+            tokenizer,
+            generation,
+            device: _,
+            eos_token_id: _,
+            eot_token_id: _,
+        } = request;
         if tokens.len() >= generation.max_tokens {
             return Ok(InferenceStepResult {
                 appended_tokens: Vec::new(),

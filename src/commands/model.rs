@@ -55,7 +55,7 @@ pub(crate) fn handle_load(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u
                     &ctx.request_id,
                     "LOAD_FAILED",
                     protocol::schema::ERROR,
-                    &format!("{}", e),
+                    &e.to_string(),
                 ),
             }
         }

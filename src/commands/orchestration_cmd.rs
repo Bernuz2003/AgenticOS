@@ -5,8 +5,6 @@ use crate::services::process_runtime::spawn_managed_process;
 use super::context::CommandContext;
 use super::metrics::log_event;
 
-use serde_json;
-
 /// Handle the ORCHESTRATE opcode.
 ///
 /// Returns `None` if an early-return response was written directly to the

@@ -143,7 +143,7 @@ pub(super) fn checkout_active_processes(
             in_flight.insert(pid);
             let _ = cmd_tx.send(InferenceCmd::Step {
                 pid,
-                process,
+                process: Box::new(process),
                 eos_token_id: eos,
                 eot_token_id: eot,
             });
