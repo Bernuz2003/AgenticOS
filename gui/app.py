@@ -300,7 +300,7 @@ class MainWindow(QMainWindow):
         self.request_handler.exec_stream(
             prompt=prompt,
             workload=workload,
-            last_status_payload=self.session.last_status_payload,
+            has_loaded_model=bool(self.session.loaded_model_id),
             begin_user_message=self.chat_section.begin_user_message,
             show_error=self.chat_section.show_error,
         )

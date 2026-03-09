@@ -14,6 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from agenticos_shared.runtime_config import load_runtime_defaults
+from gui.response_parser import parse_process_finished_marker
 
 FrameCallback = Callable[[str, str, bytes], None]
 
@@ -279,7 +280,7 @@ class ProtocolClient:
                         on_frame(kind, code, body)
                         if kind == "DATA" and code.lower() == "raw":
                             text = body.decode("utf-8", errors="replace")
-                            if "[PROCESS_FINISHED" in text:
+                            if parse_process_finished_marker(text) is not None:
                                 saw_process_finished = True
                         if kind in {"+OK", "-ERR"}:
                             control = ControlResponse(

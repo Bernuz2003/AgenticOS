@@ -28,6 +28,9 @@ pub enum KernelError {
     Catalog(#[from] CatalogError),
 
     #[error("{0}")]
+    Orchestrator(#[from] OrchestratorError),
+
+    #[error("{0}")]
     Config(String),
 }
 
@@ -99,6 +102,26 @@ pub enum ProtocolError {
 
     #[error("Content length {requested} exceeds protocol limit {max}")]
     ContentLengthTooLarge { requested: usize, max: usize },
+}
+
+// ── Orchestrator errors ────────────────────────────────────────────────
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum OrchestratorError {
+    #[error("task graph is empty")]
+    EmptyGraph,
+
+    #[error("duplicate task id '{0}'")]
+    DuplicateTaskId(String),
+
+    #[error("task '{0}' depends on itself")]
+    SelfDependency(String),
+
+    #[error("task '{task}' depends on unknown task '{dependency}'")]
+    UnknownDependency { task: String, dependency: String },
+
+    #[error("task graph contains a cycle")]
+    CycleDetected,
 }
 
 // ── Model catalog errors ────────────────────────────────────────────────

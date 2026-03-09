@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import queue
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
 from gui.protocol_client import ControlResponse, ProtocolClient
+from gui.response_parser import parse_exec_start_payload, split_stream_payload
 from gui.services.session_state import GuiSessionState
 from gui.services.ui_events import UiEvent
 
@@ -192,13 +192,13 @@ class RequestHandler:
         *,
         prompt: str,
         workload: str,
-        last_status_payload: str,
+        has_loaded_model: bool,
         begin_user_message: Callable[[str], int],
         show_error: Callable[[str], None],
     ):
         if not prompt:
             return
-        if "no_model_loaded=true" in last_status_payload.lower():
+        if not has_loaded_model:
             show_error("Nessun modello caricato — usa Models → Load prima di Chat.")
             return
 
@@ -217,29 +217,29 @@ class RequestHandler:
                     nonlocal pid
                     text = body.decode("utf-8", errors="replace")
                     if kind == "+OK":
-                        match = re.search(r"PID:\s*(\d+)", text)
-                        if match:
-                            pid = int(match.group(1))
+                        started = parse_exec_start_payload(text)
+                        if started is not None:
+                            pid = started.pid
                             self._ui_queue.put(
                                 UiEvent(kind="exec_started", message=f"{pid}\x00{req_id}")
                             )
                     elif kind == "DATA" and code.lower() == "raw":
-                        finish_match = re.search(
-                            r"\[PROCESS_FINISHED\s+pid=(\d+)\s+tokens_generated=(\d+)\s+elapsed_secs=([0-9.]+)\]",
-                            text,
-                        )
-                        if finish_match:
+                        cleaned_text, marker = split_stream_payload(text)
+                        if marker is not None:
                             self._ui_queue.put(
                                 UiEvent(
                                     kind="exec_metrics",
                                     message=(
-                                        f"{finish_match.group(1)}\x00"
-                                        f"{finish_match.group(2)}\x00"
-                                        f"{finish_match.group(3)}"
+                                        f"{marker.pid}\x00"
+                                        f"{marker.tokens_generated}\x00"
+                                        f"{marker.elapsed_secs}"
                                     ),
                                 )
                             )
-                        self._ui_queue.put(UiEvent(kind="exec_stream", message=f"{pid}\x00{text}"))
+                        if cleaned_text:
+                            self._ui_queue.put(
+                                UiEvent(kind="exec_stream", message=f"{pid}\x00{cleaned_text}")
+                            )
 
                 result = self.exec_stream_with_retry(prompt=outbound_prompt, on_frame=on_frame)
                 if pid > 0:

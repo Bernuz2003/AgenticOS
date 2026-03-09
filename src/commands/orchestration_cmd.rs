@@ -26,7 +26,12 @@ pub(crate) fn handle_orchestrate(ctx: &mut CommandContext<'_>, payload: &[u8]) -
             match ctx.orchestrator.register(graph, ctx.client_id) {
                 Ok((orch_id, spawn_requests)) => {
                     let mut spawned = 0usize;
-                    let engine = ctx.engine_state.as_mut().expect("engine verified present above");
+                    let Some(engine) = ctx.engine_state.as_mut() else {
+                        return Some(protocol::response_err_code(
+                            "NO_MODEL",
+                            "No Model Loaded — ORCHESTRATE requires a loaded engine",
+                        ));
+                    };
 
                     for req in spawn_requests {
                         match spawn_managed_process(
@@ -44,7 +49,7 @@ pub(crate) fn handle_orchestrate(ctx: &mut CommandContext<'_>, payload: &[u8]) -
                                 spawned += 1;
                             }
                             Err(e) => {
-                                ctx.orchestrator.mark_spawn_failed(orch_id, &req.task_id, &e.to_string());
+                                ctx.orchestrator.mark_spawn_failed(orch_id, &req.task_id, &e);
                             }
                         }
                     }
@@ -58,7 +63,7 @@ pub(crate) fn handle_orchestrate(ctx: &mut CommandContext<'_>, payload: &[u8]) -
                     });
                     Some(protocol::response_ok_code("ORCHESTRATE", &json.to_string()))
                 }
-                Err(e) => Some(protocol::response_err_code("ORCHESTRATE_INVALID", &e)),
+                Err(e) => Some(protocol::response_err_code("ORCHESTRATE_INVALID", &e.to_string())),
             }
         }
         Err(e) => Some(protocol::response_err_code("ORCHESTRATE_JSON", &format!("Invalid task graph JSON: {}", e))),

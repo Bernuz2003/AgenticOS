@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import re as _re
 import time
 from dataclasses import dataclass
 
@@ -48,9 +47,6 @@ code { color: #9ece6a; }
 </style>
 """
 
-_PROCESS_FINISHED_RE = _re.compile(r'\[PROCESS_FINISHED[^\]]*\]')
-
-
 @dataclass
 class _StreamState:
     """Per-PID streaming state."""
@@ -89,6 +85,7 @@ class ChatSection(QWidget):
         self._streams: dict[int, _StreamState] = {}
         self._completed: dict[int, _CompletedState] = {}
         self._pending_slots: dict[int, int] = {}
+        self._dirty_pids: set[int] = set()
         self._next_req_id = 1
         self._render_dirty = False
 
@@ -253,7 +250,6 @@ class ChatSection(QWidget):
         self._refresh_display()
 
     def append_assistant_chunk(self, pid: int, text: str):
-        text = _PROCESS_FINISHED_RE.sub('', text)
         if not text:
             return
         state = self._streams.get(pid)
@@ -261,7 +257,7 @@ class ChatSection(QWidget):
             return
         state.text += text
         state.nbytes += len(text.encode("utf-8"))
-        self._bubbles[state.bubble_index] = self._render_live_bubble(pid)
+        self._dirty_pids.add(pid)
         self._render_dirty = True
 
     def finish_assistant_message(self, pid: int):
@@ -285,7 +281,7 @@ class ChatSection(QWidget):
         if state is not None:
             state.exact_tokens = tokens_generated
             state.exact_elapsed = elapsed_secs
-            self._bubbles[state.bubble_index] = self._render_live_bubble(pid)
+            self._dirty_pids.add(pid)
             self._render_dirty = True
             return
 
@@ -470,6 +466,11 @@ class ChatSection(QWidget):
     def _flush_render(self):
         """Timer callback: render only if dirty (throttled to ≤5/sec)."""
         if self._render_dirty:
+            for pid in list(self._dirty_pids):
+                state = self._streams.get(pid)
+                if state is not None:
+                    self._bubbles[state.bubble_index] = self._render_live_bubble(pid)
+            self._dirty_pids.clear()
             self._refresh_display()
 
     def _clear_chat(self):
@@ -477,6 +478,7 @@ class ChatSection(QWidget):
         self._streams.clear()
         self._completed.clear()
         self._pending_slots.clear()
+        self._dirty_pids.clear()
         self.chat_display.setHtml(_CHAT_CSS + "<body></body>")
         self._message_count = 0
 

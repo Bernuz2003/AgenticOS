@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from typing import Any
 
 
+_EXEC_PID_RE = re.compile(r"PID:\s*(\d+)")
+_PROCESS_FINISHED_RE = re.compile(
+    r"\[PROCESS_FINISHED\s+pid=(\d+)\s+tokens_generated=(\d+)\s+elapsed_secs=([0-9.]+)\]"
+)
+
+
 def parse_json_dict(payload: str) -> dict[str, Any]:
     try:
         data = json.loads(payload)
@@ -59,6 +65,20 @@ class RestoreResult:
     restored_scheduler_entries: int
     selected_model: str
     limitations: list[str]
+
+
+@dataclass
+class ExecStartResult:
+    pid: int
+    workload: str = ""
+    priority: str = ""
+
+
+@dataclass
+class ProcessFinishedMarker:
+    pid: int
+    tokens_generated: int
+    elapsed_secs: float
 
 
 def parse_models_payload(payload: str) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -218,3 +238,42 @@ def parse_restore_payload(payload: str) -> RestoreResult | None:
         selected_model=str(data.get("selected_model", "<none>") or "<none>"),
         limitations=[str(item) for item in limitations] if isinstance(limitations, list) else [],
     )
+
+
+def parse_exec_start_payload(payload: str) -> ExecStartResult | None:
+    data = parse_json_dict(payload)
+    if data:
+        try:
+            pid = int(data.get("pid", 0) or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid > 0:
+            return ExecStartResult(
+                pid=pid,
+                workload=str(data.get("workload", "") or ""),
+                priority=str(data.get("priority", "") or ""),
+            )
+
+    match = _EXEC_PID_RE.search(payload)
+    if match is None:
+        return None
+    return ExecStartResult(pid=int(match.group(1)))
+
+
+def parse_process_finished_marker(payload: str) -> ProcessFinishedMarker | None:
+    match = _PROCESS_FINISHED_RE.search(payload)
+    if match is None:
+        return None
+    return ProcessFinishedMarker(
+        pid=int(match.group(1)),
+        tokens_generated=int(match.group(2)),
+        elapsed_secs=float(match.group(3)),
+    )
+
+
+def split_stream_payload(payload: str) -> tuple[str, ProcessFinishedMarker | None]:
+    marker = parse_process_finished_marker(payload)
+    if marker is None:
+        return payload, None
+    cleaned = _PROCESS_FINISHED_RE.sub("", payload).strip()
+    return cleaned, marker

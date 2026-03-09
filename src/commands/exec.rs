@@ -3,6 +3,7 @@ use crate::protocol;
 use crate::scheduler::ProcessPriority;
 use crate::services::model_runtime::activate_model_target;
 use crate::services::process_runtime::spawn_managed_process;
+use serde_json::json;
 
 use super::context::CommandContext;
 use super::metrics::log_event;
@@ -97,10 +98,15 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
                     Some(pid),
                     &format!("exec_started workload={:?} priority=normal", workload),
                 );
-                Some(protocol::response_ok(&format!(
-                    "Process Started PID: {} workload={:?} priority=normal",
-                    pid, workload
-                )))
+                Some(protocol::response_ok_code(
+                    "EXEC",
+                    &json!({
+                        "pid": pid,
+                        "workload": format!("{:?}", workload).to_lowercase(),
+                        "priority": "normal",
+                    })
+                    .to_string(),
+                ))
             }
             Err(e) => Some(protocol::response_err_code("SPAWN_FAILED", &e)),
         }
