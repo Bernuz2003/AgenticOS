@@ -69,7 +69,7 @@ impl NeuralMemory {
             slot_table: HashMap::new(),
             pid_to_slot: HashMap::new(),
             pid_token_slots: HashMap::new(),
-            token_slot_quota_per_pid: 4096,
+            token_slot_quota_per_pid: crate::config::kernel_config().memory.token_slot_quota_per_pid,
             counters: MemoryCounters::default(),
             active: true,
             swap: SwapManager::new(),
@@ -95,7 +95,6 @@ impl NeuralMemory {
         self.active
     }
 
-    #[cfg(test)]
     pub fn set_token_slot_quota_per_pid(&mut self, quota: usize) {
         self.token_slot_quota_per_pid = quota.max(1);
     }

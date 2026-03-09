@@ -1,19 +1,8 @@
 use crate::protocol;
+use crate::services::process_runtime::release_process_resources;
 
 use super::context::CommandContext;
 use super::metrics::log_event;
-
-fn free_backend_slot_if_known(ctx: &mut CommandContext<'_>, pid: u64) {
-    let Some(slot_id) = ctx.memory.slot_for_pid(pid) else {
-        return;
-    };
-
-    if let Some(engine) = ctx.engine_state.as_mut() {
-        if let Err(err) = engine.free_context_slot(slot_id) {
-            tracing::debug!(pid, slot_id, %err, "MEMORY: backend slot free not available");
-        }
-    }
-}
 
 pub(crate) fn handle_term(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
@@ -29,9 +18,7 @@ pub(crate) fn handle_term(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u
         }
         if let Some(engine) = ctx.engine_state.as_mut() {
             if engine.terminate_process(pid) {
-                free_backend_slot_if_known(ctx, pid);
-                let _ = ctx.memory.release_process(pid);
-                ctx.scheduler.unregister(pid);
+                release_process_resources(engine, ctx.memory, ctx.scheduler, pid);
                 ctx.metrics.inc_signal_count();
                 log_event("process_term", ctx.client_id, Some(pid), "graceful_termination_requested");
                 protocol::response_ok_code("TERM", &format!("Termination requested for PID {}", pid))
@@ -60,9 +47,7 @@ pub(crate) fn handle_kill(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u
         }
         if let Some(engine) = ctx.engine_state.as_mut() {
             engine.kill_process(pid);
-            free_backend_slot_if_known(ctx, pid);
-            let _ = ctx.memory.release_process(pid);
-            ctx.scheduler.unregister(pid);
+            release_process_resources(engine, ctx.memory, ctx.scheduler, pid);
             ctx.metrics.inc_signal_count();
             log_event("process_kill", ctx.client_id, Some(pid), "killed_immediately");
             protocol::response_ok_code("KILL", &format!("Killed PID {}", pid))

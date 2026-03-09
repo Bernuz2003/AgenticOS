@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -15,6 +14,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from gui.response_parser import parse_json_dict, parse_models_payload
 
 
 class ModelCard(QFrame):
@@ -220,7 +221,7 @@ class ModelsSection(QWidget):
         self._clear_cards_layout()
         self._cards.clear()
 
-        models, routing = self._parse_models_payload(payload)
+        models, routing = parse_models_payload(payload)
         for m in models:
             card = ModelCard(m["id"])
             card.set_pretty_name(self._pretty_name(m["id"], m.get("family", "")))
@@ -254,9 +255,8 @@ class ModelsSection(QWidget):
         self._refresh_card_states()
 
     def show_info(self, text: str):
-        try:
-            data = json.loads(text)
-        except Exception:
+        data = parse_json_dict(text)
+        if not data:
             self.info_output.setText(text[:500])
             return
 
@@ -280,9 +280,8 @@ class ModelsSection(QWidget):
         )
 
     def show_backend_diag(self, text: str):
-        try:
-            data = json.loads(text)
-        except Exception:
+        data = parse_json_dict(text)
+        if not data:
             self.info_output.setText(text[:800])
             return
 
@@ -395,64 +394,6 @@ class ModelsSection(QWidget):
             if rationale:
                 details.append(rationale)
             source_label.setText("  |  ".join(details))
-
-    @staticmethod
-    def _parse_models_payload(payload: str) -> tuple[list[dict], dict[str, dict]]:
-        try:
-            data = json.loads(payload)
-        except Exception:
-            return ModelsSection._parse_legacy_model_lines(payload), {}
-
-        models = data.get("models", []) if isinstance(data, dict) else []
-        routing_entries = data.get("routing_recommendations", []) if isinstance(data, dict) else []
-        routing = {
-            str(entry.get("workload", "")): {
-                "model_id": str(entry.get("model_id", "") or ""),
-                "source": str(entry.get("source", "") or ""),
-                "rationale": str(entry.get("rationale", "") or ""),
-                "capability_key": str(entry.get("capability_key", "") or ""),
-                "capability_score": entry.get("capability_score"),
-            }
-            for entry in routing_entries
-            if entry.get("workload")
-        }
-        normalized = []
-        for entry in models:
-            if not isinstance(entry, dict) or "id" not in entry:
-                continue
-            normalized.append(
-                {
-                    "id": str(entry.get("id", "")),
-                    "family": str(entry.get("family", "Unknown")),
-                    "architecture": str(entry.get("architecture", "") or ""),
-                    "path": str(entry.get("path", "")),
-                    "backend_preference": str(entry.get("backend_preference", "") or ""),
-                    "resolved_backend": str(entry.get("resolved_backend", "") or ""),
-                    "driver_resolution_source": str(entry.get("driver_resolution_source", "") or ""),
-                    "driver_resolution_rationale": str(entry.get("driver_resolution_rationale", "") or ""),
-                    "driver_available": entry.get("driver_available"),
-                    "driver_load_supported": entry.get("driver_load_supported"),
-                    "metadata_source": str(entry.get("metadata_source", "") or ""),
-                    "capabilities": entry.get("capabilities") if isinstance(entry.get("capabilities"), dict) else None,
-                }
-            )
-        return normalized, routing
-
-    @staticmethod
-    def _parse_legacy_model_lines(payload: str) -> list[dict]:
-        models = []
-        for line in payload.splitlines():
-            line = line.strip()
-            if "id=" not in line:
-                continue
-            entry: dict[str, str] = {}
-            for key in ("id", "family", "path"):
-                match = re.search(rf"{key}=([^\s]+)", line)
-                if match:
-                    entry[key] = match.group(1)
-            if "id" in entry:
-                models.append(entry)
-        return models
 
     @staticmethod
     def _pretty_name(model_id: str, family: str) -> str:

@@ -1,15 +1,8 @@
 from __future__ import annotations
 
-import json
 import queue
-import re
 import sys
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
@@ -22,20 +15,23 @@ from PySide6.QtWidgets import (
 )
 
 from gui.kernel_manager import KernelProcessManager
-from gui.protocol_client import ControlResponse, ProtocolClient
-from gui.widgets.chat import ChatSection
-from gui.widgets.logs import LogsSection
-from gui.widgets.memory import MemorySection
-from gui.widgets.models import ModelsSection
-from gui.widgets.orchestration import OrchestrationSection
-from gui.widgets.processes import ProcessesSection
-from gui.widgets.sidebar import SidebarWidget
-
-
-@dataclass
-class UiEvent:
-    kind: str
-    message: str
+from gui.protocol_client import ProtocolClient
+from gui.response_parser import (
+    parse_json_dict,
+    parse_pid_status_payload,
+    parse_restore_payload,
+    parse_status_payload,
+)
+from gui.sections import (
+    ChatSection,
+    LogsSection,
+    MemorySection,
+    ModelsSection,
+    OrchestrationSection,
+    ProcessesSection,
+    SidebarWidget,
+)
+from gui.services import GuiSessionState, RequestHandler, UiEvent
 
 
 class MainWindow(QMainWindow):
@@ -46,25 +42,15 @@ class MainWindow(QMainWindow):
         self.workspace_root = workspace_root
         self.client = ProtocolClient()
         self.kernel = KernelProcessManager(workspace_root=workspace_root)
+        self.session = GuiSessionState()
         self.ui_queue: queue.Queue[UiEvent] = queue.Queue()
-        self._executor = ThreadPoolExecutor(max_workers=4)
-
-        # Connection / retry config
-        self._request_retries = 2
-        self._retry_delay_s = 0.35
-        self._is_connected = False
-        self._last_background_error = ""
-        self._status_in_flight = False
-        self._models_in_flight = False
-        self._load_in_flight = False
-        self._active_pids: list[str] = []
-        self._loaded_model_id = ""
-        self._last_status_payload = ""
-
-        self._default_read_timeout_s = 5.0
-        self._default_inactivity_timeout_s = 0.5
-        self._load_read_timeout_s = 180.0
-        self._load_inactivity_timeout_s = 2.0
+        self.request_handler = RequestHandler(
+            client=self.client,
+            ui_queue=self.ui_queue,
+            session=self.session,
+            update_client_config=self._update_client_config,
+            kernel_is_running=self.kernel.is_running,
+        )
 
         self.setWindowTitle("AgenticOS Control Center")
         self.resize(1280, 820)
@@ -188,9 +174,9 @@ class MainWindow(QMainWindow):
         # Logs section
         self.logs_section.export_requested.connect(
             lambda: self.sidebar.update_status(
-                online=self._is_connected,
-                model_name=self._loaded_model_id or "—",
-                proc_count=len(self._active_pids),
+                online=self.session.is_connected,
+                model_name=self.session.loaded_model_id or "—",
+                proc_count=len(self.session.active_pids),
             )
         )
 
@@ -244,10 +230,10 @@ class MainWindow(QMainWindow):
         if not ok:
             QMessageBox.critical(self, "AgenticOS", msg)
         self.client.reset_session()
-        self._is_connected = False
-        self._last_status_payload = ""
-        self._loaded_model_id = ""
-        self._active_pids = []
+        self.session.is_connected = False
+        self.session.last_status_payload = ""
+        self.session.loaded_model_id = ""
+        self.session.active_pids = []
         self.models_section.update_loaded_model("")
         self.sidebar.update_status(online=False)
 
@@ -277,215 +263,47 @@ class MainWindow(QMainWindow):
         read_timeout_s: float | None = None,
         inactivity_timeout_s: float | None = None,
         include_control_log: bool = True,
-        on_done: Callable[[], None] | None = None,
+        on_done=None,
     ):
-        def task():
-            try:
-                self._update_client_config()
-                response = self._send_once_with_retry(
-                    verb=verb, payload=payload,
-                    read_timeout_s=read_timeout_s,
-                    inactivity_timeout_s=inactivity_timeout_s,
-                )
-                if not response.ok:
-                    message = f"{verb} failed [{response.code}]: {response.payload}"
-                    kind = "error" if show_error_popup else "background_error"
-                    self.ui_queue.put(UiEvent(kind=kind, message=message))
-                elif success_event_kind:
-                    self.ui_queue.put(UiEvent(kind=success_event_kind, message=response.payload))
-                if include_control_log:
-                    self.ui_queue.put(UiEvent(kind="control", message=self._format_control(verb, response)))
-                # Protocol trace — routed through queue for thread safety
-                self.ui_queue.put(UiEvent(kind="protocol_trace", message=f"{verb}\x00{payload}\x00{response.payload}"))
-            except Exception as exc:
-                kind = "error" if show_error_popup else "background_error"
-                self.ui_queue.put(UiEvent(kind=kind, message=f"{verb} failed: {exc}"))
-            finally:
-                if on_done is not None:
-                    try:
-                        on_done()
-                    except Exception:
-                        pass
-
-        self._executor.submit(task)
+        self.request_handler.dispatch_control_request(
+            verb=verb,
+            payload=payload,
+            show_error_popup=show_error_popup,
+            success_event_kind=success_event_kind,
+            read_timeout_s=read_timeout_s,
+            inactivity_timeout_s=inactivity_timeout_s,
+            include_control_log=include_control_log,
+            on_done=on_done,
+        )
 
     # ── STATUS ───────────────────────────────────────────────
 
     def _refresh_status(self, force: bool = False):
-        if self._status_in_flight:
-            return
-        if self._load_in_flight and not force:
-            return
-        should_poll = force or self._is_connected or self.kernel.is_running()
-        if not should_poll:
-            return
-
-        self._status_in_flight = True
-
-        def task():
-            try:
-                self._update_client_config()
-                response = self._send_once_with_retry(
-                    verb="STATUS", payload="",
-                    read_timeout_s=6.0, inactivity_timeout_s=0.35,
-                )
-                if response.ok:
-                    self.ui_queue.put(UiEvent(kind="status", message=response.payload))
-                else:
-                    self.ui_queue.put(
-                        UiEvent(
-                            kind="background_error",
-                            message=f"STATUS failed [{response.code}]: {response.payload}",
-                        )
-                    )
-            except Exception as exc:
-                self.ui_queue.put(UiEvent(kind="background_error", message=f"STATUS failed: {exc}"))
-            finally:
-                self._status_in_flight = False
-
-        self._executor.submit(task)
+        self.request_handler.refresh_status(force=force)
 
     # ── LIST_MODELS ──────────────────────────────────────────
 
     def _refresh_models(self, silent: bool = False, force: bool = False):
-        if self._models_in_flight:
-            return
-        should_refresh = force or self._is_connected or self.kernel.is_running() or not silent
-        if not should_refresh:
-            return
-
-        self._models_in_flight = True
-        self._dispatch_control_request(
-            verb="LIST_MODELS", payload="",
-            show_error_popup=not silent,
-            success_event_kind="models_list",
-            read_timeout_s=8.0, inactivity_timeout_s=0.6,
-            include_control_log=not silent,
-            on_done=lambda: setattr(self, "_models_in_flight", False),
-        )
+        self.request_handler.refresh_models(silent=silent, force=force)
 
     # ── LOAD (SELECT + LOAD) ────────────────────────────────
 
     def _load_model(self, model_id: str):
-        if self._load_in_flight:
-            return
-        if not model_id:
-            return
-
-        self._load_in_flight = True
-        self.models_section.set_loading(model_id)
-
-        def task():
-            try:
-                self._update_client_config()
-                select_response = self._send_once_with_retry(
-                    "SELECT_MODEL", model_id,
-                    read_timeout_s=8.0, inactivity_timeout_s=0.6,
-                )
-                if not select_response.ok:
-                    raise RuntimeError(
-                        f"SELECT_MODEL failed [{select_response.code}]: {select_response.payload}"
-                    )
-                load_response = self._send_once_with_retry(
-                    "LOAD", "",
-                    read_timeout_s=self._load_read_timeout_s,
-                    inactivity_timeout_s=self._load_inactivity_timeout_s,
-                )
-                if not load_response.ok:
-                    raise RuntimeError(f"LOAD failed [{load_response.code}]: {load_response.payload}")
-                self.ui_queue.put(UiEvent(kind="refresh_after_load", message=model_id))
-            except Exception as exc:
-                self.ui_queue.put(UiEvent(kind="error", message=f"LOAD failed: {exc}"))
-            finally:
-                self._load_in_flight = False
-
-        self._executor.submit(task)
+        self.request_handler.load_model(model_id, self.models_section.set_loading)
 
     def _request_backend_diag(self):
-        def task():
-            try:
-                self._update_client_config()
-                response = self._send_once_with_retry(
-                    verb="BACKEND_DIAG",
-                    payload="",
-                    read_timeout_s=8.0,
-                    inactivity_timeout_s=0.6,
-                )
-                kind = "backend_diag" if response.ok else "backend_diag_error"
-                self.ui_queue.put(UiEvent(kind=kind, message=response.payload))
-                self.ui_queue.put(UiEvent(kind="protocol_trace", message=f"BACKEND_DIAG\x00\x00{response.payload}"))
-            except Exception as exc:
-                self.ui_queue.put(UiEvent(kind="backend_diag_error", message=str(exc)))
-
-        self._executor.submit(task)
+        self.request_handler.request_backend_diag()
 
     # ── EXEC ─────────────────────────────────────────────────
 
     def _exec_stream(self, prompt: str, workload: str):
-        if not prompt:
-            return
-        if "no_model_loaded=true" in self._last_status_payload.lower():
-            self.chat_section.show_error("Nessun modello caricato — usa Models → Load prima di Chat.")
-            return
-
-        outbound_prompt = prompt
-        if workload and workload != "auto":
-            outbound_prompt = f"capability={workload}; {prompt}"
-
-        req_id = self.chat_section.begin_user_message(prompt)
-
-        def task():
-            pid = 0
-            try:
-                self._update_client_config()
-
-                def on_frame(kind: str, code: str, body: bytes):
-                    nonlocal pid
-                    text = body.decode("utf-8", errors="replace")
-                    if kind == "+OK":
-                        m = re.search(r"PID:\s*(\d+)", text)
-                        if m:
-                            pid = int(m.group(1))
-                            self.ui_queue.put(UiEvent(
-                                kind="exec_started",
-                                message=f"{pid}\x00{req_id}",
-                            ))
-                    elif kind == "DATA" and code.lower() == "raw":
-                        finish_match = re.search(
-                            r"\[PROCESS_FINISHED\s+pid=(\d+)\s+tokens_generated=(\d+)\s+elapsed_secs=([0-9.]+)\]",
-                            text,
-                        )
-                        if finish_match:
-                            self.ui_queue.put(UiEvent(
-                                kind="exec_metrics",
-                                message=(
-                                    f"{finish_match.group(1)}\x00"
-                                    f"{finish_match.group(2)}\x00"
-                                    f"{finish_match.group(3)}"
-                                ),
-                            ))
-                        self.ui_queue.put(UiEvent(
-                            kind="exec_stream",
-                            message=f"{pid}\x00{text}",
-                        ))
-
-                result = self._exec_stream_with_retry(prompt=outbound_prompt, on_frame=on_frame)
-                if pid > 0:
-                    self.ui_queue.put(UiEvent(
-                        kind="exec_done", message=f"{pid}\x00{req_id}",
-                    ))
-                elif not result.ok:
-                    self.ui_queue.put(UiEvent(
-                        kind="exec_error",
-                        message=f"0\x00{req_id}\x00{result.payload}",
-                    ))
-            except Exception as exc:
-                self.ui_queue.put(UiEvent(
-                    kind="exec_error",
-                    message=f"{pid}\x00{req_id}\x00EXEC failed: {exc}",
-                ))
-
-        threading.Thread(target=task, daemon=True).start()
+        self.request_handler.exec_stream(
+            prompt=prompt,
+            workload=workload,
+            last_status_payload=self.session.last_status_payload,
+            begin_user_message=self.chat_section.begin_user_message,
+            show_error=self.chat_section.show_error,
+        )
 
     # ── PID signals ──────────────────────────────────────────
 
@@ -506,19 +324,19 @@ class MainWindow(QMainWindow):
                 break
 
             if event.kind == "error":
-                self._is_connected = False
+                self.session.is_connected = False
                 QMessageBox.critical(self, "AgenticOS", event.message)
 
             elif event.kind == "background_error":
-                self._is_connected = False
-                if event.message != self._last_background_error:
-                    self._last_background_error = event.message
+                self.session.is_connected = False
+                if event.message != self.session.last_background_error:
+                    self.session.last_background_error = event.message
                 self.sidebar.update_status(online=False)
 
             elif event.kind == "status":
-                self._is_connected = True
-                self._last_background_error = ""
-                self._last_status_payload = event.message
+                self.session.is_connected = True
+                self.session.last_background_error = ""
+                self.session.last_status_payload = event.message
                 self._apply_status(event.message)
 
             elif event.kind == "models_list":
@@ -568,43 +386,31 @@ class MainWindow(QMainWindow):
                 self.chat_section.show_error(msg, pid=pid, req_id=req_id)
 
             elif event.kind == "quota_response":
-                try:
-                    quota_data = json.loads(event.message)
-                except (json.JSONDecodeError, TypeError):
-                    quota_data = {}
-                self.processes_section.show_quota(quota_data)
+                self.processes_section.show_quota(parse_pid_status_payload(event.message))
 
             elif event.kind == "pid_status":
-                try:
-                    pid_data = json.loads(event.message)
-                    pid = str(pid_data.get("pid", ""))
-                except (json.JSONDecodeError, TypeError):
-                    pid = ""
-                    pid_data = {}
-                self.processes_section.update_pid_detail(pid, pid_data)
+                detail = parse_pid_status_payload(event.message)
+                if detail is not None:
+                    self.processes_section.update_pid_detail(detail)
 
             elif event.kind == "checkpoint_done":
                 self.memory_section.show_checkpoint_result(event.message)
 
             elif event.kind == "restore_done":
-                self.memory_section.show_restore_result(event.message)
+                restore = parse_restore_payload(event.message)
+                if restore is None:
+                    self.memory_section.show_restore_result(event.message)
+                else:
+                    self.memory_section.show_restore_details(restore)
 
             elif event.kind == "memw_done":
                 self.memory_section.show_memw_result(event.message)
 
             elif event.kind == "orch_submit":
-                try:
-                    orch_data = json.loads(event.message)
-                except (json.JSONDecodeError, TypeError):
-                    orch_data = {}
-                self.orchestration_section.show_submit_result(orch_data)
+                self.orchestration_section.show_submit_result(parse_json_dict(event.message))
 
             elif event.kind == "orch_status":
-                try:
-                    orch_data = json.loads(event.message)
-                except (json.JSONDecodeError, TypeError):
-                    orch_data = {}
-                self.orchestration_section.update_orch_status(orch_data)
+                self.orchestration_section.update_orch_status(parse_json_dict(event.message))
 
             elif event.kind == "protocol_trace":
                 parts = event.message.split("\x00", 2)
@@ -616,29 +422,22 @@ class MainWindow(QMainWindow):
 
     def _apply_status(self, payload: str):
         """Parse JSON STATUS payload and update sidebar + models section."""
-        try:
-            data = json.loads(payload)
-        except (json.JSONDecodeError, TypeError):
+        status = parse_status_payload(payload)
+        if status is None:
             return
 
-        model = data.get("model", {})
-        loaded = model.get("loaded_model_id", "")
-        procs = data.get("processes", {})
-        active_pids = procs.get("active_pids", [])
-        in_flight_pids = procs.get("in_flight_pids", [])
-
-        self._active_pids = [str(p) for p in active_pids] + [str(p) for p in in_flight_pids]
+        self.session.active_pids = status.active_pids
 
         # Loaded model
-        if loaded:
-            self._loaded_model_id = loaded
+        if status.loaded_model_id:
+            self.session.loaded_model_id = status.loaded_model_id
         else:
-            self._loaded_model_id = ""
+            self.session.loaded_model_id = ""
 
-        self.models_section.update_loaded_model(self._loaded_model_id)
+        self.models_section.update_loaded_model(self.session.loaded_model_id)
 
         # Pretty uptime
-        secs = data.get("uptime_secs", 0)
+        secs = status.uptime_secs
         if secs >= 3600:
             uptime_str = f"{secs / 3600:.1f}h"
         elif secs >= 60:
@@ -647,24 +446,28 @@ class MainWindow(QMainWindow):
             uptime_str = f"{secs:.0f}s"
 
         # Pretty model name
-        model_display = self._loaded_model_id.split("/")[-1] if self._loaded_model_id else "—"
+        model_display = (
+            self.session.loaded_model_id.split("/")[-1]
+            if self.session.loaded_model_id
+            else "—"
+        )
 
         self.sidebar.update_status(
             online=True,
             model_name=model_display,
-            proc_count=len(self._active_pids),
+            proc_count=len(self.session.active_pids),
             uptime=uptime_str,
         )
 
         # Update chat PID input autocomplete hint
-        if self._active_pids:
+        if self.session.active_pids:
             self.chat_section.pid_input.setPlaceholderText(
-                f"PIDs: {', '.join(self._active_pids[:3])}"
+                f"PIDs: {', '.join(self.session.active_pids[:3])}"
             )
 
         # Feed processes and memory sections (pass parsed dict)
-        self.processes_section.update_from_status(data)
-        self.memory_section.update_from_status(data)
+        self.processes_section.update_from_status(status)
+        self.memory_section.update_from_status(status)
 
     # ═══════════════════════════════════════════════════════════
     #  CLOSE EVENT
@@ -675,15 +478,10 @@ class MainWindow(QMainWindow):
         for timer in (self._queue_timer, self._status_timer, self._events_timer,
                       self._audit_timer, self._models_timer):
             timer.stop()
-        # Shutdown thread pool (don't wait — daemon semantics)
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        self.request_handler.shutdown()
         # Close persistent TCP connection
         self.client.close()
         super().closeEvent(event)
-
-    # ═══════════════════════════════════════════════════════════
-    #  KERNEL EVENTS → Logs section
-    # ═══════════════════════════════════════════════════════════
 
     def _drain_kernel_events(self):
         while True:
@@ -692,62 +490,6 @@ class MainWindow(QMainWindow):
             except queue.Empty:
                 break
             self.logs_section.append_kernel_event(event.source, event.line)
-
-    # ═══════════════════════════════════════════════════════════
-    #  RETRY HELPERS
-    # ═══════════════════════════════════════════════════════════
-
-    def _send_once_with_retry(
-        self,
-        verb: str,
-        payload: str,
-        read_timeout_s: float | None = None,
-        inactivity_timeout_s: float | None = None,
-    ) -> ControlResponse:
-        last_exc: Exception | None = None
-        timeout = read_timeout_s if read_timeout_s is not None else self._default_read_timeout_s
-        inactivity = (
-            inactivity_timeout_s
-            if inactivity_timeout_s is not None
-            else self._default_inactivity_timeout_s
-        )
-        for attempt in range(1, self._request_retries + 1):
-            try:
-                return self.client.send_once(
-                    verb=verb, payload=payload, agent_id="1",
-                    read_timeout_s=timeout, inactivity_timeout_s=inactivity,
-                )
-            except Exception as exc:
-                last_exc = exc
-                if attempt < self._request_retries:
-                    time.sleep(self._retry_delay_s)
-
-        raise RuntimeError(f"{verb} failed after {self._request_retries} attempts: {last_exc}")
-
-    def _exec_stream_with_retry(self, prompt: str, on_frame) -> ControlResponse:
-        last_exc: Exception | None = None
-        for attempt in range(1, self._request_retries + 1):
-            try:
-                return self.client.exec_stream(
-                    prompt=prompt, agent_id="1", on_frame=on_frame,
-                    inactivity_timeout_s=60.0,
-                    max_total_s=300.0,
-                )
-            except Exception as exc:
-                last_exc = exc
-                if attempt < self._request_retries:
-                    time.sleep(self._retry_delay_s)
-
-        raise RuntimeError(f"EXEC stream failed after {self._request_retries} attempts: {last_exc}")
-
-    # ═══════════════════════════════════════════════════════════
-    #  HELPERS
-    # ═══════════════════════════════════════════════════════════
-
-    @staticmethod
-    def _format_control(verb: str, response: ControlResponse) -> str:
-        status = "OK" if response.ok else "ERR"
-        return f"[{verb}] status={status} code={response.code} duration={response.duration_s:.3f}s\n{response.payload}\n"
 
 
 def main():

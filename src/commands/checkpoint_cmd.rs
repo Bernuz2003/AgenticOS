@@ -7,18 +7,6 @@ use serde_json::json;
 use super::context::CommandContext;
 use super::metrics::log_event;
 
-fn current_family_snapshot(ctx: &CommandContext<'_>) -> String {
-    ctx.engine_state
-        .as_ref()
-        .map(|engine| format!("{:?}", engine.loaded_family()))
-        .or_else(|| {
-            ctx.model_catalog
-                .selected_entry()
-                .map(|entry| format!("{:?}", entry.family))
-        })
-        .unwrap_or_else(|| "Unknown".to_string())
-}
-
 pub(crate) fn handle_checkpoint(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     let path = if payload_text.is_empty() {
@@ -27,54 +15,13 @@ pub(crate) fn handle_checkpoint(ctx: &mut CommandContext<'_>, payload: &[u8]) ->
         std::path::PathBuf::from(&payload_text)
     };
 
-    let (uptime_s, total_cmd, total_err, total_exec, total_signals) = ctx.metrics.snapshot();
-
-    let (processes, generation, sel_model) = {
-        if let Some(engine) = ctx.engine_state.as_ref() {
-            let procs: Vec<checkpoint::ProcessSnapshot> = engine
-                .processes
-                .iter()
-                .map(|(pid, p)| checkpoint::ProcessSnapshot {
-                    pid: *pid,
-                    owner_id: p.owner_id,
-                    state: format!("{:?}", p.state),
-                    token_count: p.tokens.len(),
-                    max_tokens: p.max_tokens,
-                })
-                .collect();
-            let cfg = engine.generation_config();
-            let gen = Some(checkpoint::GenerationSnapshot {
-                temperature: cfg.temperature,
-                top_p: cfg.top_p,
-                seed: cfg.seed,
-                max_tokens: cfg.max_tokens,
-            });
-            (procs, gen, ctx.model_catalog.selected_id.clone())
-        } else {
-            (vec![], None, ctx.model_catalog.selected_id.clone())
-        }
-    };
-
-    let sched_snap = checkpoint::snapshot_scheduler(ctx.scheduler);
-    let mem_snap = checkpoint::snapshot_memory(ctx.memory);
-
-    let snapshot = checkpoint::KernelSnapshot {
-        timestamp: checkpoint::now_timestamp(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        active_family: current_family_snapshot(ctx),
-        selected_model: sel_model,
-        generation,
-        processes,
-        scheduler: sched_snap,
-        metrics: checkpoint::MetricsSnapshot {
-            uptime_secs: uptime_s,
-            total_commands: total_cmd,
-            total_errors: total_err,
-            total_exec_started: total_exec,
-            total_signals,
-        },
-        memory: mem_snap,
-    };
+    let snapshot = checkpoint::build_kernel_snapshot(
+        ctx.engine_state.as_ref(),
+        ctx.model_catalog,
+        ctx.scheduler,
+        ctx.metrics,
+        ctx.memory,
+    );
 
     match checkpoint::save_checkpoint(&snapshot, &path) {
         Ok(msg) => {
@@ -154,15 +101,6 @@ pub(crate) fn handle_restore(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Ve
     }
 }
 
-fn workload_from_snapshot(raw: &str) -> crate::model_catalog::WorkloadClass {
-    match raw.to_lowercase().as_str() {
-        "fast" => crate::model_catalog::WorkloadClass::Fast,
-        "code" => crate::model_catalog::WorkloadClass::Code,
-        "reasoning" => crate::model_catalog::WorkloadClass::Reasoning,
-        _ => crate::model_catalog::WorkloadClass::General,
-    }
-}
-
 fn apply_restore_snapshot(
     snap: &checkpoint::KernelSnapshot,
     scheduler: &mut crate::scheduler::ProcessScheduler,
@@ -174,12 +112,12 @@ fn apply_restore_snapshot(
         scheduler.unregister(pid);
     }
 
-    model_catalog.selected_id = None;
+    model_catalog.clear_selected();
 
     for entry in &snap.scheduler.entries {
         let priority = ProcessPriority::from_str_loose(&entry.priority)
             .unwrap_or(ProcessPriority::Normal);
-        let workload = workload_from_snapshot(&entry.workload);
+        let workload = crate::policy::workload_from_label_or_default(Some(&entry.workload));
         scheduler.register(entry.pid, workload, priority);
         let quota = ProcessQuota {
             max_tokens: entry.max_tokens,

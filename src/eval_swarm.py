@@ -28,15 +28,34 @@ import os
 import socket
 import statistics
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
 
-import os
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-HOST = "127.0.0.1"
-PORT = int(os.environ.get("AGENTIC_PORT", "6380"))
+from agenticos_shared.runtime_config import load_runtime_defaults
+
+def _load_runtime_defaults() -> dict:
+    return load_runtime_defaults(
+        {
+        "host": "127.0.0.1",
+        "port": int(os.environ.get("AGENTIC_PORT", "6380")),
+        "report_path": "reports/swarm_benchmark.json",
+        "repeat": 1,
+        },
+        "evaluation",
+        "swarm",
+    )
+
+
+RUNTIME_DEFAULTS = _load_runtime_defaults()
+HOST = RUNTIME_DEFAULTS["host"]
+PORT = RUNTIME_DEFAULTS["port"]
 FINISHED_MARKER = "[PROCESS_FINISHED pid="
 
 
@@ -385,9 +404,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--single-model", default=None,
                         help="Model ID for single-model scenario (default: auto-detect first model)")
-    parser.add_argument("--repeat", type=int, default=1,
+    parser.add_argument("--repeat", type=int, default=RUNTIME_DEFAULTS["repeat"],
                         help="Repeat task suite N times per scenario")
-    parser.add_argument("--report-path", default="reports/swarm_benchmark.json")
+    parser.add_argument("--report-path", default=RUNTIME_DEFAULTS["report_path"])
     args = parser.parse_args()
 
     print("=" * 60)

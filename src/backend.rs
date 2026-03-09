@@ -1,28 +1,28 @@
 use anyhow::{Error as E, Result};
-use candle_core::quantized::gguf_file;
-use candle_core::{DType, Device, Tensor};
+use candle_core::Device;
 use candle_transformers::generation::LogitsProcessor;
-use candle_transformers::models::quantized_llama;
-use candle_transformers::models::quantized_qwen2;
-use serde::Deserialize;
-use serde_json::json;
 use std::fs;
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
 use tokenizers::Tokenizer;
 
 use crate::memory::ContextSlotId;
 use crate::prompting::{GenerationConfig, PromptFamily};
 
-#[derive(Debug, Clone)]
-struct HttpJsonResponse {
-    status_code: u16,
-    status_line: String,
-    body: String,
-    json: Option<serde_json::Value>,
-}
+mod external_llamacpp;
+mod http;
+mod local;
+mod diagnostics;
+mod remote_adapter;
+
+pub(crate) use diagnostics::diagnose_external_backend;
+use external_llamacpp::ExternalLlamaCppBackend;
+use local::{QuantizedLlamaBackend, QuantizedQwen2Backend};
+
+#[cfg(test)]
+use remote_adapter::{
+    combine_completion_text, completion_is_finished, CompletionResponse,
+};
 
 pub struct DriverDescriptor {
     pub id: &'static str,
@@ -111,10 +111,12 @@ fn external_llamacpp_endpoint() -> Option<String> {
 
     #[cfg(not(test))]
     {
-        std::env::var("AGENTIC_LLAMACPP_ENDPOINT")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
+        let endpoint = crate::config::kernel_config()
+            .external_llamacpp
+            .endpoint
+            .trim()
+            .to_string();
+        (!endpoint.is_empty()).then_some(endpoint)
     }
 }
 
@@ -210,6 +212,7 @@ fn persist_candle_slot_payload(
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn resolve_driver_for_family(
     family: PromptFamily,
     backend_preference: Option<&str>,
@@ -492,550 +495,14 @@ impl RuntimeModel {
     }
 }
 
-struct QuantizedLlamaBackend {
-    weights: quantized_llama::ModelWeights,
-}
-
-impl QuantizedLlamaBackend {
-    fn load(path: &str, device: &Device) -> Result<Self> {
-        let mut file = std::fs::File::open(path)
-            .map_err(|e| E::msg(format!("Failed to open model file: {}", e)))?;
-        let content = gguf_file::Content::read(&mut file)?;
-        let weights = quantized_llama::ModelWeights::from_gguf(content, &mut file, device)?;
-        Ok(Self { weights })
-    }
-}
-
-fn generate_local_step<F>(
-    _context_slot_id: Option<ContextSlotId>,
-    tokens: &[u32],
-    index_pos: usize,
-    logits_processor: &mut LogitsProcessor,
-    tokenizer: &Tokenizer,
-    generation: GenerationConfig,
-    device: &Device,
-    eos_token_id: u32,
-    eot_token_id: u32,
-    mut forward: F,
-) -> Result<InferenceStepResult>
-where
-    F: FnMut(&Tensor, usize) -> Result<Tensor>,
-{
-    let mut next_token: Option<u32> = None;
-    let mut cursor = index_pos;
-
-    while cursor < tokens.len() {
-        let input_token = tokens[cursor];
-        let input_tensor = Tensor::new(&[input_token], device)?.unsqueeze(0)?;
-        let logits = forward(&input_tensor, cursor)?;
-        cursor += 1;
-
-        if cursor == tokens.len() {
-            let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
-            next_token = Some(logits_processor.sample(&logits)?);
-        }
-    }
-
-    let Some(next_token) = next_token else {
-        return Ok(InferenceStepResult {
-            appended_tokens: Vec::new(),
-            emitted_text: String::new(),
-            finished: true,
-            next_index_pos: cursor,
-        });
-    };
-
-    let emitted_text = tokenizer.decode(&[next_token], true).unwrap_or_default();
-    let total_tokens = tokens.len() + 1;
-    let finished = next_token == eos_token_id
-        || next_token == eot_token_id
-        || next_token == 2
-        || total_tokens >= generation.max_tokens;
-
-    Ok(InferenceStepResult {
-        appended_tokens: vec![next_token],
-        emitted_text,
-        finished,
-        next_index_pos: cursor,
-    })
-}
-
-impl InferenceBackend for QuantizedLlamaBackend {
-    fn backend_id(&self) -> &'static str {
-        "candle.quantized_llama"
-    }
-
-    fn family(&self) -> PromptFamily {
-        PromptFamily::Llama
-    }
-
-    fn generate_step(
-        &mut self,
-        context_slot_id: Option<ContextSlotId>,
-        tokens: &[u32],
-        index_pos: usize,
-        logits_processor: &mut LogitsProcessor,
-        tokenizer: &Tokenizer,
-        generation: GenerationConfig,
-        device: &Device,
-        eos_token_id: u32,
-        eot_token_id: u32,
-    ) -> Result<InferenceStepResult> {
-        generate_local_step(
-            context_slot_id,
-            tokens,
-            index_pos,
-            logits_processor,
-            tokenizer,
-            generation,
-            device,
-            eos_token_id,
-            eot_token_id,
-            |input_tensor, position| Ok(self.weights.forward(input_tensor, position)?),
-        )
-    }
-
-    fn duplicate_boxed(&self) -> Option<Box<dyn ModelBackend>> {
-        Some(Box::new(Self {
-            weights: self.weights.clone(),
-        }))
-    }
-}
-
-impl ContextSlotPersistence for QuantizedLlamaBackend {
-    fn free_context_slot(&mut self, _slot_id: ContextSlotId) -> Result<()> {
-        Ok(())
-    }
-}
-
-struct QuantizedQwen2Backend {
-    weights: quantized_qwen2::ModelWeights,
-}
-
-impl QuantizedQwen2Backend {
-    fn load(path: &str, device: &Device) -> Result<Self> {
-        let mut file = std::fs::File::open(path)
-            .map_err(|e| E::msg(format!("Failed to open model file: {}", e)))?;
-        let content = gguf_file::Content::read(&mut file)?;
-
-        match quantized_qwen2::ModelWeights::from_gguf(content, &mut file, device) {
-            Ok(weights) => Ok(Self { weights }),
-            Err(e) => {
-                let msg = format!("{}", e);
-                if msg.contains("cannot find tensor info for output_norm.weight") {
-                    Err(E::msg(
-                        "Qwen load failed: missing 'output_norm.weight'. The GGUF is likely an incomplete split shard (or otherwise incomplete export). Use a full single-file GGUF, or merge all split parts before LOAD.",
-                    ))
-                } else {
-                    Err(E::msg(msg))
-                }
-            }
-        }
-    }
-}
-
-impl InferenceBackend for QuantizedQwen2Backend {
-    fn backend_id(&self) -> &'static str {
-        "candle.quantized_qwen2"
-    }
-
-    fn family(&self) -> PromptFamily {
-        PromptFamily::Qwen
-    }
-
-    fn generate_step(
-        &mut self,
-        context_slot_id: Option<ContextSlotId>,
-        tokens: &[u32],
-        index_pos: usize,
-        logits_processor: &mut LogitsProcessor,
-        tokenizer: &Tokenizer,
-        generation: GenerationConfig,
-        device: &Device,
-        eos_token_id: u32,
-        eot_token_id: u32,
-    ) -> Result<InferenceStepResult> {
-        generate_local_step(
-            context_slot_id,
-            tokens,
-            index_pos,
-            logits_processor,
-            tokenizer,
-            generation,
-            device,
-            eos_token_id,
-            eot_token_id,
-            |input_tensor, position| Ok(self.weights.forward(input_tensor, position)?),
-        )
-    }
-
-    fn duplicate_boxed(&self) -> Option<Box<dyn ModelBackend>> {
-        None
-    }
-}
-
-impl ContextSlotPersistence for QuantizedQwen2Backend {
-    fn free_context_slot(&mut self, _slot_id: ContextSlotId) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Clone)]
-struct HttpEndpoint {
-    host: String,
-    port: u16,
-    base_path: String,
-}
-
-impl HttpEndpoint {
-    fn parse(url: &str) -> Result<Self> {
-        let stripped = url
-            .strip_prefix("http://")
-            .ok_or_else(|| E::msg("Only http:// endpoints are currently supported for external llama.cpp RPC."))?;
-
-        let (host_port, path) = match stripped.split_once('/') {
-            Some((host_port, rest)) => (host_port, format!("/{}", rest.trim_start_matches('/'))),
-            None => (stripped, String::new()),
-        };
-
-        let (host, port) = match host_port.split_once(':') {
-            Some((host, port_str)) => {
-                let port = port_str
-                    .parse::<u16>()
-                    .map_err(|_| E::msg(format!("Invalid port in external endpoint '{}'.", url)))?;
-                (host.to_string(), port)
-            }
-            None => (host_port.to_string(), 80),
-        };
-
-        if host.is_empty() {
-            return Err(E::msg(format!("Invalid external endpoint '{}': host is empty.", url)));
-        }
-
-        Ok(Self {
-            host,
-            port,
-            base_path: path.trim_end_matches('/').to_string(),
-        })
-    }
-
-    fn joined_path(&self, suffix: &str) -> String {
-        format!("{}{suffix}", self.base_path)
-    }
-}
-
-#[derive(Deserialize)]
-struct CompletionChoice {
-    text: Option<String>,
-    finish_reason: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct CompletionResponse {
-    content: Option<String>,
-    tokens: Option<Vec<u32>>,
-    stop: Option<bool>,
-    stopped_eos: Option<bool>,
-    stopped_word: Option<bool>,
-    truncated: Option<bool>,
-    choices: Option<Vec<CompletionChoice>>,
-}
-
-#[derive(Clone)]
-struct ExternalLlamaCppBackend {
-    endpoint: HttpEndpoint,
-    family: PromptFamily,
-    timeout_ms: u64,
-}
-
-impl ExternalLlamaCppBackend {
-    fn from_env(family: PromptFamily) -> Result<Self> {
-        let endpoint = external_llamacpp_endpoint().ok_or_else(|| {
-            E::msg(
-                "External llama.cpp RPC backend requested, but AGENTIC_LLAMACPP_ENDPOINT is not configured.",
-            )
-        })?;
-
-        Ok(Self {
-            endpoint: HttpEndpoint::parse(&endpoint)?,
-            family,
-            timeout_ms: std::env::var("AGENTIC_LLAMACPP_TIMEOUT_MS")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(5_000),
-        })
-    }
-
-    fn request_json(
-        &self,
-        method: &str,
-        path: &str,
-        payload: Option<&serde_json::Value>,
-    ) -> Result<HttpJsonResponse> {
-        let addr = format!("{}:{}", self.endpoint.host, self.endpoint.port);
-        let mut addrs = addr
-            .to_socket_addrs()
-            .map_err(|e| E::msg(format!("Failed to resolve external RPC endpoint '{}': {}", addr, e)))?;
-        let socket_addr = addrs
-            .next()
-            .ok_or_else(|| E::msg(format!("No address resolved for external RPC endpoint '{}'.", addr)))?;
-        let timeout = Duration::from_millis(self.timeout_ms);
-        let mut stream = TcpStream::connect_timeout(&socket_addr, timeout)
-            .map_err(|e| E::msg(format!("Failed to connect to external RPC endpoint '{}': {}", addr, e)))?;
-        stream
-            .set_read_timeout(Some(timeout))
-            .map_err(|e| E::msg(format!("Failed to configure read timeout: {}", e)))?;
-        stream
-            .set_write_timeout(Some(timeout))
-            .map_err(|e| E::msg(format!("Failed to configure write timeout: {}", e)))?;
-
-        let request_body = payload.map(|value| value.to_string()).unwrap_or_default();
-        let content_header = if payload.is_some() {
-            format!(
-                "Content-Type: application/json\r\nContent-Length: {}\r\n",
-                request_body.len()
-            )
-        } else {
-            String::new()
-        };
-        let request = format!(
-            "{} {} HTTP/1.1\r\nHost: {}\r\n{}Connection: close\r\n\r\n{}",
-            method,
-            path,
-            self.endpoint.host,
-            content_header,
-            request_body
-        );
-        stream
-            .write_all(request.as_bytes())
-            .map_err(|e| E::msg(format!("Failed to write external RPC request: {}", e)))?;
-
-        let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .map_err(|e| E::msg(format!("Failed to read external RPC response: {}", e)))?;
-
-        let response = String::from_utf8(response)
-            .map_err(|e| E::msg(format!("External RPC returned non-UTF8 response: {}", e)))?;
-        let (headers, body) = response
-            .split_once("\r\n\r\n")
-            .ok_or_else(|| E::msg("Malformed HTTP response from external RPC endpoint."))?;
-        let status_line = headers.lines().next().unwrap_or_default();
-        let status_code = status_line
-            .split_whitespace()
-            .nth(1)
-            .and_then(|value| value.parse::<u16>().ok())
-            .ok_or_else(|| E::msg(format!("Malformed HTTP status line '{}'.", status_line)))?;
-
-        Ok(HttpJsonResponse {
-            status_code,
-            status_line: status_line.to_string(),
-            body: body.to_string(),
-            json: serde_json::from_str(body).ok(),
-        })
-    }
-
-    fn post_json(&self, path: &str, payload: serde_json::Value) -> Result<serde_json::Value> {
-        let response = self.request_json("POST", path, Some(&payload))?;
-        if response.status_code != 200 {
-            return Err(E::msg(format!(
-                "External RPC request failed with status '{}': {}",
-                response.status_line,
-                response.body.trim()
-            )));
-        }
-
-        response
-            .json
-            .ok_or_else(|| E::msg("External RPC returned invalid JSON."))
-    }
-
-    fn slot_filename(path: &Path) -> Result<String> {
-        let filename = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| E::msg(format!("Invalid context-slot path '{}': missing valid filename.", path.display())))?;
-
-        if filename.contains('/') || filename.contains("..") {
-            return Err(E::msg(format!(
-                "Invalid context-slot filename '{}': must stay within the configured llama.cpp slot-save-path.",
-                filename
-            )));
-        }
-
-        Ok(filename.to_string())
-    }
-
-    fn slot_action(&self, slot_id: ContextSlotId, action: &str, payload: serde_json::Value) -> Result<()> {
-        self.post_json(
-            &self
-                .endpoint
-                .joined_path(&format!("/slots/{}?action={}", slot_id, action)),
-            payload,
-        )?;
-        Ok(())
-    }
-}
-
-pub(crate) fn diagnose_external_backend() -> Result<serde_json::Value> {
-    let endpoint_raw = external_llamacpp_endpoint().ok_or_else(|| {
-        E::msg("AGENTIC_LLAMACPP_ENDPOINT is not configured; external backend diagnostics are unavailable.")
-    })?;
-    let timeout_ms = std::env::var("AGENTIC_LLAMACPP_TIMEOUT_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(5_000);
-    let backend = ExternalLlamaCppBackend {
-        endpoint: HttpEndpoint::parse(&endpoint_raw)?,
-        family: PromptFamily::Unknown,
-        timeout_ms,
-    };
-
-    let health = backend.request_json("GET", &backend.endpoint.joined_path("/health"), None);
-    let props = backend.request_json("GET", &backend.endpoint.joined_path("/props"), None);
-    let slots = backend.request_json("GET", &backend.endpoint.joined_path("/slots"), None);
-
-    fn diag_entry(result: Result<HttpJsonResponse>) -> serde_json::Value {
-        match result {
-            Ok(response) => json!({
-                "ok": response.status_code == 200,
-                "status_code": response.status_code,
-                "status_line": response.status_line,
-                "json": response.json,
-                "raw_body": response.body,
-            }),
-            Err(err) => json!({
-                "ok": false,
-                "error": err.to_string(),
-            }),
-        }
-    }
-
-    let health_entry = diag_entry(health);
-    let props_entry = diag_entry(props);
-    let slots_entry = diag_entry(slots);
-
-    let props_json = props_entry.get("json");
-    let slots_json = slots_entry.get("json").and_then(|value| value.as_array());
-
-    Ok(json!({
-        "backend": "external-llamacpp",
-        "endpoint": endpoint_raw,
-        "timeout_ms": timeout_ms,
-        "health": health_entry,
-        "props": props_entry,
-        "slots": slots_entry,
-        "summary": {
-            "model_path": props_json.and_then(|value| value.get("model_path")).cloned(),
-            "total_slots": props_json.and_then(|value| value.get("total_slots")).cloned(),
-            "visible_slots": slots_json.map(|slots| slots.len()),
-        }
-    }))
-}
-
-impl InferenceBackend for ExternalLlamaCppBackend {
-    fn backend_id(&self) -> &'static str {
-        "external-llamacpp"
-    }
-
-    fn family(&self) -> PromptFamily {
-        self.family
-    }
-
-    fn generate_step(
-        &mut self,
-        context_slot_id: Option<ContextSlotId>,
-        tokens: &[u32],
-        index_pos: usize,
-        _logits_processor: &mut LogitsProcessor,
-        tokenizer: &Tokenizer,
-        generation: GenerationConfig,
-        _device: &Device,
-        _eos_token_id: u32,
-        _eot_token_id: u32,
-    ) -> Result<InferenceStepResult> {
-        let prompt = tokenizer
-            .decode(tokens, false)
-            .map_err(|e| E::msg(format!("Failed to decode prompt tokens for RPC backend: {}", e)))?;
-        let raw = self.post_json(
-            &self.endpoint.joined_path("/completion"),
-            json!({
-                "prompt": prompt,
-                "n_predict": 1,
-                "id_slot": context_slot_id.map(slot_id_to_i32).unwrap_or(-1),
-                "temperature": generation.temperature,
-                "top_p": generation.top_p,
-                "seed": generation.seed,
-                "cache_prompt": true,
-                "return_tokens": true,
-                "stream": false,
-            }),
-        )?;
-        let response: CompletionResponse = serde_json::from_value(raw)
-            .map_err(|e| E::msg(format!("Malformed completion payload from external RPC backend: {}", e)))?;
-
-        let choice = response.choices.as_ref().and_then(|choices| choices.first());
-        let emitted_text = response
-            .content
-            .or_else(|| choice.and_then(|item| item.text.clone()))
-            .unwrap_or_default();
-        let finish_reason = choice.and_then(|item| item.finish_reason.as_deref());
-        let finished = response.stop.unwrap_or(false)
-            || response.stopped_eos.unwrap_or(false)
-            || response.stopped_word.unwrap_or(false)
-            || response.truncated.unwrap_or(false)
-            || matches!(finish_reason, Some("stop") | Some("length"));
-        let appended_tokens = if let Some(tokens) = response.tokens {
-            tokens
-        } else if emitted_text.is_empty() {
-            Vec::new()
-        } else {
-            tokenizer
-                .encode(emitted_text.as_str(), false)
-                .map_err(|e| E::msg(format!("Failed to tokenize RPC completion chunk: {}", e)))?
-                .get_ids()
-                .to_vec()
-        };
-
-        Ok(InferenceStepResult {
-            next_index_pos: index_pos.max(tokens.len()),
-            emitted_text,
-            finished: finished || tokens.len() + appended_tokens.len() >= generation.max_tokens,
-            appended_tokens,
-        })
-    }
-
-    fn duplicate_boxed(&self) -> Option<Box<dyn ModelBackend>> {
-        Some(Box::new(self.clone()))
-    }
-}
-
-impl ContextSlotPersistence for ExternalLlamaCppBackend {
-    fn save_context_slot(&self, slot_id: ContextSlotId, path: &Path) -> Result<()> {
-        let filename = Self::slot_filename(path)?;
-        self.slot_action(slot_id, "save", json!({ "filename": filename }))
-    }
-
-    fn load_context_slot(&mut self, slot_id: ContextSlotId, path: &Path) -> Result<()> {
-        let filename = Self::slot_filename(path)?;
-        self.slot_action(slot_id, "restore", json!({ "filename": filename }))
-    }
-
-    fn free_context_slot(&mut self, slot_id: ContextSlotId) -> Result<()> {
-        self.slot_action(slot_id, "erase", json!({}))
-    }
-}
-
-fn slot_id_to_i32(slot_id: ContextSlotId) -> i32 {
-    i32::try_from(slot_id).unwrap_or(i32::MAX)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        diagnose_external_backend, resolve_driver_for_family, resolve_driver_for_model, test_external_endpoint_override_get,
-        test_external_endpoint_override_set, ExternalLlamaCppBackend,
-        ContextSlotPersistence, InferenceBackend, InferenceStepResult, PromptFamily, RuntimeModel,
+        combine_completion_text, completion_is_finished, diagnose_external_backend,
+        resolve_driver_for_family, resolve_driver_for_model, test_external_endpoint_override_get,
+        test_external_endpoint_override_set, CompletionResponse, ContextSlotPersistence,
+        ExternalLlamaCppBackend,
+        InferenceBackend, InferenceStepResult, PromptFamily, RuntimeModel,
     };
     use crate::memory::ContextSlotId;
     use crate::prompting::GenerationConfig;
@@ -1459,6 +926,77 @@ mod tests {
             .unwrap_or_default();
         assert!(body.contains("<|im_start|>"), "special chat tokens must survive prompt decode");
         assert!(body.contains("<|im_end|>"), "end markers must survive prompt decode");
+    }
+
+    #[test]
+    fn external_backend_uses_chunked_completion_requests() {
+        let (endpoint, _paths, bodies, server_handle) = spawn_mock_llamacpp_server(1);
+        let _endpoint = EndpointOverrideGuard::set(&endpoint);
+
+        let mut backend = ExternalLlamaCppBackend::from_env(PromptFamily::Qwen)
+            .expect("build external backend from endpoint override");
+        let tokenizer = test_tokenizer();
+        let generation = GenerationConfig {
+            temperature: 0.7,
+            top_p: 0.9,
+            seed: 1,
+            max_tokens: 64,
+        };
+        let mut logits_processor = LogitsProcessor::new(1, Some(0.7), Some(0.9));
+
+        backend
+            .generate_step(
+                Some(3),
+                &[1],
+                0,
+                &mut logits_processor,
+                &tokenizer,
+                generation,
+                &Device::Cpu,
+                6,
+                7,
+            )
+            .expect("generate step should succeed");
+
+        server_handle.join().expect("join mock server");
+
+        let body = bodies
+            .lock()
+            .expect("lock bodies")
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        assert!(body.contains("\"n_predict\":32"), "external backend should request a larger completion chunk");
+    }
+
+    #[test]
+    fn external_backend_does_not_finish_on_stop_type_limit() {
+        let response: CompletionResponse = serde_json::from_str(
+            r#"{"content":"<think>\nThinking\n</think>","tokens":[1],"stop":true,"stop_type":"limit","truncated":false}"#,
+        )
+        .expect("deserialize completion response");
+
+        assert!(!completion_is_finished(&response, None));
+    }
+
+    #[test]
+    fn external_backend_combines_separate_reasoning_content() {
+        let response: CompletionResponse = serde_json::from_str(
+            r#"{"content":"4","reasoning_content":"Step 1: add 2 and 2.","tokens":[1],"stop":false,"stop_type":"none"}"#,
+        )
+        .expect("deserialize completion response");
+
+        let emitted_text = combine_completion_text(
+            response.reasoning_content.as_deref(),
+            response.content.as_deref(),
+            None,
+            None,
+        );
+
+        assert_eq!(
+            emitted_text,
+            "<think>\nStep 1: add 2 and 2.\n</think>\n4"
+        );
     }
 
     #[test]

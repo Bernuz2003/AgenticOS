@@ -10,6 +10,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn current_family_snapshot(
+    engine_state: Option<&crate::engine::LLMEngine>,
+    model_catalog: &crate::model_catalog::ModelCatalog,
+) -> String {
+    engine_state
+        .map(|engine| format!("{:?}", engine.loaded_family()))
+        .or_else(|| {
+            model_catalog
+                .selected_entry()
+                .map(|entry| format!("{:?}", entry.family))
+        })
+        .unwrap_or_else(|| "Unknown".to_string())
+}
+
 // ── Snapshot types ──────────────────────────────────────────────────────
 
 /// Top-level checkpoint payload.
@@ -102,7 +116,7 @@ pub struct MemoryCountersSnapshot {
 
 /// Default checkpoint path inside `workspace/`.
 pub fn default_checkpoint_path() -> PathBuf {
-    PathBuf::from("workspace/checkpoint.json")
+    crate::config::kernel_config().paths.checkpoint_path.clone()
 }
 
 /// Atomically write a checkpoint to disk (temp + rename).
@@ -189,6 +203,58 @@ pub fn snapshot_memory(memory: &crate::memory::NeuralMemory) -> MemoryCountersSn
         swap_count: s.swap_count,
         swap_faults: s.swap_faults,
         oom_events: s.oom_events,
+    }
+}
+
+pub fn build_kernel_snapshot(
+    engine_state: Option<&crate::engine::LLMEngine>,
+    model_catalog: &crate::model_catalog::ModelCatalog,
+    scheduler: &crate::scheduler::ProcessScheduler,
+    metrics: &crate::commands::MetricsState,
+    memory: &crate::memory::NeuralMemory,
+) -> KernelSnapshot {
+    let (uptime_s, total_cmd, total_err, total_exec, total_signals) = metrics.snapshot();
+
+    let (processes, generation) = if let Some(engine) = engine_state {
+        let processes = engine
+            .processes
+            .iter()
+            .map(|(pid, process)| ProcessSnapshot {
+                pid: *pid,
+                owner_id: process.owner_id,
+                state: format!("{:?}", process.state),
+                token_count: process.tokens.len(),
+                max_tokens: process.max_tokens,
+            })
+            .collect();
+        let cfg = engine.generation_config();
+        let generation = Some(GenerationSnapshot {
+            temperature: cfg.temperature,
+            top_p: cfg.top_p,
+            seed: cfg.seed,
+            max_tokens: cfg.max_tokens,
+        });
+        (processes, generation)
+    } else {
+        (vec![], None)
+    };
+
+    KernelSnapshot {
+        timestamp: now_timestamp(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        active_family: current_family_snapshot(engine_state, model_catalog),
+        selected_model: model_catalog.selected_id.clone(),
+        generation,
+        processes,
+        scheduler: snapshot_scheduler(scheduler),
+        metrics: MetricsSnapshot {
+            uptime_secs: uptime_s,
+            total_commands: total_cmd,
+            total_errors: total_err,
+            total_exec_started: total_exec,
+            total_signals,
+        },
+        memory: snapshot_memory(memory),
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::backend;
-use crate::engine::LLMEngine;
 use crate::errors::CatalogError;
 use crate::protocol;
+use crate::services::model_runtime::activate_model_target;
 
 use super::context::CommandContext;
 
@@ -21,27 +21,15 @@ pub(crate) fn handle_load(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u
     let selector = String::from_utf8_lossy(payload).trim().to_string();
     match ctx.model_catalog.resolve_load_target(&selector) {
         Ok(target) => {
-            // Drop-before-load: free old engine weights BEFORE allocating new.
-            *ctx.engine_state = None;
-            match LLMEngine::load_target(&target) {
-                Ok(new_engine) => {
-                    let loaded_family = new_engine.loaded_family();
-                    let loaded_backend = new_engine.loaded_backend_id().to_string();
-                    let driver_source = new_engine.driver_resolution_source().to_string();
-                    let driver_rationale = new_engine.driver_resolution_rationale().to_string();
-                    *ctx.engine_state = Some(new_engine);
-
-                    if let Some(model_id) = target.model_id.as_ref() {
-                        ctx.model_catalog.selected_id = Some(model_id.clone());
-                    }
-
+            match activate_model_target(ctx.engine_state, ctx.model_catalog, &target) {
+                Ok(loaded) => {
                     protocol::response_ok(&format!(
                         "Master Model Loaded. family={:?} backend={} driver_source={} rationale={} path={}",
-                        loaded_family,
-                        loaded_backend,
-                        driver_source,
-                        driver_rationale,
-                        target.path.display()
+                        loaded.family,
+                        loaded.backend_id,
+                        loaded.driver_source,
+                        loaded.driver_rationale,
+                        loaded.path.display()
                     ))
                 }
                 Err(e) => protocol::response_err_code("LOAD_FAILED", &format!("{}", e)),

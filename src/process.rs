@@ -9,7 +9,6 @@ use crate::prompting::GenerationConfig;
 pub enum ProcessState {
     Ready,
     Running,
-    Paused,
     WaitingForMemory,
     Finished,
 }

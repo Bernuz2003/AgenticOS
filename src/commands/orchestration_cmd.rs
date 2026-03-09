@@ -1,5 +1,6 @@
 use crate::protocol;
 use crate::scheduler::ProcessPriority;
+use crate::services::process_runtime::spawn_managed_process;
 
 use super::context::CommandContext;
 use super::metrics::log_event;
@@ -28,27 +29,17 @@ pub(crate) fn handle_orchestrate(ctx: &mut CommandContext<'_>, payload: &[u8]) -
                     let engine = ctx.engine_state.as_mut().expect("engine verified present above");
 
                     for req in spawn_requests {
-                        match engine.spawn_process(&req.prompt, 0, req.owner_id) {
-                            Ok(pid) => {
-                                if let Some(token_slots) = engine.process_max_tokens(pid) {
-                                    match ctx.memory.register_process(pid, token_slots) {
-                                        Ok(slot_id) => {
-                                            if let Err(e) = engine.set_process_context_slot(pid, slot_id) {
-                                                let _ = ctx.memory.release_process(pid);
-                                                engine.kill_process(pid);
-                                                ctx.orchestrator.mark_spawn_failed(orch_id, &req.task_id, &e.to_string());
-                                                continue;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            engine.kill_process(pid);
-                                            ctx.orchestrator.mark_spawn_failed(orch_id, &req.task_id, &e.to_string());
-                                            continue;
-                                        }
-                                    }
-                                }
-                                ctx.scheduler.register(pid, req.workload, ProcessPriority::Normal);
-                                ctx.orchestrator.register_pid(pid, orch_id, &req.task_id);
+                        match spawn_managed_process(
+                            engine,
+                            ctx.memory,
+                            ctx.scheduler,
+                            &req.prompt,
+                            req.owner_id,
+                            req.workload,
+                            ProcessPriority::Normal,
+                        ) {
+                            Ok(spawned_process) => {
+                                ctx.orchestrator.register_pid(spawned_process.pid, orch_id, &req.task_id);
                                 ctx.metrics.inc_exec_started();
                                 spawned += 1;
                             }

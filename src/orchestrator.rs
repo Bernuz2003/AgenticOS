@@ -13,10 +13,9 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
-use crate::config::env_usize;
 use crate::model_catalog::WorkloadClass;
+use crate::policy::workload_from_label_or_default;
 
-const DEFAULT_ORCH_MAX_OUTPUT_CHARS: usize = 4096;
 const TRUNCATION_MARKER: &str = "\n[TRUNCATED]\n";
 
 // ── JSON schema ─────────────────────────────────────────────────────────
@@ -171,10 +170,7 @@ impl Orchestrator {
             orchestrations: HashMap::new(),
             next_id: 1,
             pid_to_task: HashMap::new(),
-            max_output_chars: env_usize(
-                "AGENTIC_ORCH_MAX_OUTPUT_CHARS",
-                DEFAULT_ORCH_MAX_OUTPUT_CHARS,
-            ),
+            max_output_chars: crate::config::kernel_config().orchestrator.max_output_chars,
         }
     }
 
@@ -255,7 +251,7 @@ impl Orchestrator {
                     orch_id,
                     task_id: task_id.clone(),
                     prompt: task.prompt.clone(),
-                    workload: parse_workload_str(task.workload.as_deref()),
+                    workload: workload_from_label_or_default(task.workload.as_deref()),
                     owner_id,
                 });
             }
@@ -401,7 +397,7 @@ impl Orchestrator {
                 }
 
                 let prompt = build_task_prompt(task, &orch.output);
-                let workload = parse_workload_str(task.workload.as_deref());
+                let workload = workload_from_label_or_default(task.workload.as_deref());
 
                 all_requests.push(SpawnRequest {
                     orch_id,
@@ -456,15 +452,6 @@ impl Orchestrator {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
-
-fn parse_workload_str(s: Option<&str>) -> WorkloadClass {
-    match s.map(|v| v.to_lowercase()).as_deref() {
-        Some("fast") => WorkloadClass::Fast,
-        Some("code") => WorkloadClass::Code,
-        Some("reasoning") => WorkloadClass::Reasoning,
-        _ => WorkloadClass::General,
-    }
-}
 
 /// Build the prompt for a dependent task, injecting output from its
 /// completed dependencies as context.
@@ -976,11 +963,11 @@ mod tests {
 
     #[test]
     fn workload_parsing() {
-        assert!(matches!(parse_workload_str(Some("fast")), WorkloadClass::Fast));
-        assert!(matches!(parse_workload_str(Some("CODE")), WorkloadClass::Code));
-        assert!(matches!(parse_workload_str(Some("reasoning")), WorkloadClass::Reasoning));
-        assert!(matches!(parse_workload_str(None), WorkloadClass::General));
-        assert!(matches!(parse_workload_str(Some("unknown")), WorkloadClass::General));
+        assert!(matches!(workload_from_label_or_default(Some("fast")), WorkloadClass::Fast));
+        assert!(matches!(workload_from_label_or_default(Some("CODE")), WorkloadClass::Code));
+        assert!(matches!(workload_from_label_or_default(Some("reasoning")), WorkloadClass::Reasoning));
+        assert!(matches!(workload_from_label_or_default(None), WorkloadClass::General));
+        assert!(matches!(workload_from_label_or_default(Some("unknown")), WorkloadClass::General));
     }
 
     // ── Context building ────────────────────────────────────────────────

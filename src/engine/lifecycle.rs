@@ -10,7 +10,6 @@ use crate::prompting::{
     format_interprocess_user_message_with_metadata,
     format_system_injection_with_metadata,
     format_user_message_with_metadata,
-    should_stop_on_text_with_metadata,
     GenerationConfig,
 };
 
@@ -86,7 +85,7 @@ impl LLMEngine {
             next_pid: 1,
             family: resolved_family,
             metadata,
-            generation: GenerationConfig::defaults_for(resolved_family),
+            generation: crate::policy::generation_defaults(resolved_family),
             eos_token_id,
             eot_token_id,
         })
@@ -174,65 +173,6 @@ impl LLMEngine {
             .ok_or(E::msg("PID not found"))?;
         process.context_slot_id = Some(slot_id);
         Ok(())
-    }
-
-    pub fn step_process(&mut self, pid: u64) -> Result<Option<(String, usize)>> {
-        let process = self
-            .processes
-            .get_mut(&pid)
-            .ok_or(E::msg("PID not found"))?;
-
-        if process.state == ProcessState::Finished
-            || process.state == ProcessState::WaitingForMemory
-            || process.state == ProcessState::Paused
-        {
-            return Ok(None);
-        }
-
-        process.state = ProcessState::Running;
-        let owner_id = process.owner_id;
-
-        let step = process.model.generate_step(
-            process.context_slot_id,
-            &process.tokens,
-            process.index_pos,
-            &mut process.logits_processor,
-            &process.tokenizer,
-            process.generation,
-            &self.device,
-            self.eos_token_id,
-            self.eot_token_id,
-        )?;
-
-        process.index_pos = step.next_index_pos;
-        process.tokens.extend(step.appended_tokens);
-        let text_output = if step.emitted_text.is_empty() {
-            None
-        } else {
-            Some(step.emitted_text)
-        };
-
-        let mut should_stop = step.finished;
-
-        if let Some(ref t) = text_output {
-            if should_stop_on_text_with_metadata(self.family, t, self.metadata.as_ref()) {
-                should_stop = true;
-            }
-        }
-
-        if process.tokens.len() >= process.max_tokens {
-            should_stop = true;
-        }
-
-        if should_stop {
-            process.state = ProcessState::Finished;
-        }
-
-        if let Some(t) = text_output {
-            Ok(Some((t, owner_id)))
-        } else {
-            Ok(None)
-        }
     }
 
     pub fn inject_context(&mut self, pid: u64, text: &str) -> Result<()> {
@@ -330,20 +270,6 @@ impl LLMEngine {
             }
         }
         false
-    }
-
-    pub fn process_status_line(&self, pid: u64) -> Option<String> {
-        self.processes.get(&pid).map(|p| {
-            format!(
-                "pid={} owner_id={} state={:?} tokens={} index_pos={} max_tokens={}",
-                pid,
-                p.owner_id,
-                p.state,
-                p.tokens.len(),
-                p.index_pos,
-                p.max_tokens
-            )
-        })
     }
 
     pub fn process_max_tokens(&self, pid: u64) -> Option<usize> {

@@ -1,16 +1,48 @@
 import argparse
 import json
+import os
 import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
-import os
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-HOST = "127.0.0.1"
-PORT = int(os.environ.get("AGENTIC_PORT", "6380"))
+from agenticos_shared.runtime_config import load_runtime_defaults
+
+def _load_runtime_defaults() -> dict:
+    return load_runtime_defaults(
+        {
+        "host": "127.0.0.1",
+        "port": int(os.environ.get("AGENTIC_PORT", "6380")),
+        "model_path": "models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        "inactivity_timeout": 6.0,
+        "first_byte_timeout": 60.0,
+        "max_total": 180.0,
+        "ping_timeout": 3.0,
+        "ping_inactivity": 1.0,
+        "load_timeout": 90.0,
+        "load_inactivity": 3.0,
+        "threshold_first_chunk": 55.0,
+        "threshold_min_bytes": 25,
+        "threshold_total": 180.0,
+        "threshold_failed_runs": 2,
+        "report_path": "reports/llama3_eval_report.json",
+        "run_count": 1,
+        },
+        "evaluation",
+        "llama3",
+    )
+
+
+RUNTIME_DEFAULTS = _load_runtime_defaults()
+HOST = RUNTIME_DEFAULTS["host"]
+PORT = RUNTIME_DEFAULTS["port"]
 FINISHED_MARKER = "[PROCESS_FINISHED pid="
 
 
@@ -400,22 +432,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate AgenticOS kernel behavior with Llama 3 8B")
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--port", type=int, default=PORT)
-    parser.add_argument("--model-path", default="models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf")
-    parser.add_argument("--inactivity-timeout", type=float, default=6.0)
-    parser.add_argument("--first-byte-timeout", type=float, default=60.0)
-    parser.add_argument("--max-total", type=float, default=180.0)
-    parser.add_argument("--ping-timeout", type=float, default=3.0)
-    parser.add_argument("--ping-inactivity", type=float, default=1.0)
-    parser.add_argument("--load-timeout", type=float, default=90.0)
-    parser.add_argument("--load-inactivity", type=float, default=3.0)
+    parser.add_argument("--model-path", default=RUNTIME_DEFAULTS["model_path"])
+    parser.add_argument("--inactivity-timeout", type=float, default=RUNTIME_DEFAULTS["inactivity_timeout"])
+    parser.add_argument("--first-byte-timeout", type=float, default=RUNTIME_DEFAULTS["first_byte_timeout"])
+    parser.add_argument("--max-total", type=float, default=RUNTIME_DEFAULTS["max_total"])
+    parser.add_argument("--ping-timeout", type=float, default=RUNTIME_DEFAULTS["ping_timeout"])
+    parser.add_argument("--ping-inactivity", type=float, default=RUNTIME_DEFAULTS["ping_inactivity"])
+    parser.add_argument("--load-timeout", type=float, default=RUNTIME_DEFAULTS["load_timeout"])
+    parser.add_argument("--load-inactivity", type=float, default=RUNTIME_DEFAULTS["load_inactivity"])
 
-    parser.add_argument("--threshold-first-chunk", type=float, default=55.0)
-    parser.add_argument("--threshold-min-bytes", type=int, default=25)
-    parser.add_argument("--threshold-total", type=float, default=180.0)
-    parser.add_argument("--threshold-failed-runs", type=int, default=2)
+    parser.add_argument("--threshold-first-chunk", type=float, default=RUNTIME_DEFAULTS["threshold_first_chunk"])
+    parser.add_argument("--threshold-min-bytes", type=int, default=RUNTIME_DEFAULTS["threshold_min_bytes"])
+    parser.add_argument("--threshold-total", type=float, default=RUNTIME_DEFAULTS["threshold_total"])
+    parser.add_argument("--threshold-failed-runs", type=int, default=RUNTIME_DEFAULTS["threshold_failed_runs"])
 
-    parser.add_argument("--report-path", default="reports/llama3_eval_report.json")
-    parser.add_argument("--run-count", type=int, default=1)
+    parser.add_argument("--report-path", default=RUNTIME_DEFAULTS["report_path"])
+    parser.add_argument("--run-count", type=int, default=RUNTIME_DEFAULTS["run_count"])
     args = parser.parse_args()
 
     summary = evaluate(args)

@@ -1,123 +1,30 @@
-use std::collections::{BTreeMap, HashMap};
+use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use candle_core::quantized::gguf_file;
-use serde::{Deserialize, Serialize};
-
-use crate::backend::{resolve_driver_for_model, DriverResolution};
 use crate::errors::CatalogError;
 use crate::prompting::PromptFamily;
+mod formatting;
+mod metadata;
+mod routing;
+mod workload;
 
-#[derive(Serialize)]
-struct ModelListResponse {
-    selected_model_id: Option<String>,
-    total_models: usize,
-    models: Vec<ModelListEntry>,
-    routing_recommendations: Vec<RoutingRecommendation>,
-}
+pub use metadata::ModelMetadata;
+pub use workload::{infer_workload_class, parse_workload_hint, parse_workload_label, WorkloadClass};
 
-#[derive(Serialize)]
-struct ModelListEntry {
-    id: String,
-    family: String,
-    architecture: Option<String>,
-    path: String,
-    tokenizer_path: Option<String>,
-    tokenizer_present: bool,
-    metadata_source: Option<String>,
-    backend_preference: Option<String>,
-    resolved_backend: Option<String>,
-    driver_resolution_source: String,
-    driver_resolution_rationale: String,
-    driver_available: Option<bool>,
-    driver_load_supported: Option<bool>,
-    capabilities: Option<std::collections::BTreeMap<String, f64>>,
-    selected: bool,
-}
+use formatting::{format_info_json, format_list_json};
+use metadata::{
+    describe_metadata_source, infer_family_from_filename, infer_metadata_path,
+    infer_tokenizer_path, load_model_metadata, load_native_model_metadata,
+    merge_model_metadata,
+};
+use routing::{resolve_driver_for_entry, select_for_workload};
 
-#[derive(Serialize)]
-struct RoutingRecommendation {
-    workload: String,
-    model_id: Option<String>,
-    family: Option<String>,
-    backend_preference: Option<String>,
-    resolved_backend: Option<String>,
-    driver_resolution_source: String,
-    driver_resolution_rationale: String,
-    driver_available: Option<bool>,
-    driver_load_supported: Option<bool>,
-    metadata_source: Option<String>,
-    source: String,
-    rationale: String,
-    capability_key: Option<String>,
-    capability_score: Option<f64>,
-}
-
-struct RoutingDecision<'a> {
-    entry: Option<&'a ModelEntry>,
-    source: &'static str,
-    rationale: String,
-    capability_key: Option<&'static str>,
-    capability_score: Option<f64>,
-}
-
-#[derive(Serialize)]
-struct ModelInfoResponse {
-    id: String,
-    family: String,
-    architecture: Option<String>,
-    path: String,
-    tokenizer_path: Option<String>,
-    tokenizer_present: bool,
-    metadata_source: Option<String>,
-    backend_preference: Option<String>,
-    resolved_backend: Option<String>,
-    driver_resolution_source: String,
-    driver_resolution_rationale: String,
-    driver_available: Option<bool>,
-    driver_load_supported: Option<bool>,
-    chat_template: Option<String>,
-    assistant_preamble: Option<String>,
-    special_tokens: Option<std::collections::BTreeMap<String, String>>,
-    stop_markers: Option<Vec<String>>,
-    capabilities: Option<std::collections::BTreeMap<String, f64>>,
-    selected: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct ModelMetadata {
-    #[serde(default)]
-    pub family: Option<String>,
-    #[serde(default)]
-    pub architecture: Option<String>,
-    #[serde(default)]
-    pub backend_preference: Option<String>,
-    #[serde(default)]
-    pub chat_template: Option<String>,
-    #[serde(default)]
-    pub assistant_preamble: Option<String>,
-    #[serde(default)]
-    pub special_tokens: Option<std::collections::BTreeMap<String, String>>,
-    #[serde(default)]
-    pub stop_markers: Option<Vec<String>>,
-    #[serde(default)]
-    pub capabilities: Option<std::collections::BTreeMap<String, f64>>,
-}
-
-impl ModelMetadata {
-    pub fn declared_family(&self) -> Option<PromptFamily> {
-        self.family.as_deref().map(parse_family_label)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkloadClass {
-    Fast,
-    Code,
-    Reasoning,
-    General,
-}
+#[cfg(test)]
+use metadata::{parse_gguf_metadata_map, parse_tokenizer_metadata_json};
 
 #[derive(Debug, Clone)]
 pub struct ModelEntry {
@@ -136,7 +43,7 @@ pub struct ResolvedModelTarget {
     pub family: PromptFamily,
     pub tokenizer_path: Option<PathBuf>,
     pub metadata: Option<ModelMetadata>,
-    pub driver_resolution: DriverResolution,
+    pub driver_resolution: crate::backend::DriverResolution,
 }
 
 #[derive(Debug)]
@@ -144,19 +51,27 @@ pub struct ModelCatalog {
     pub models_dir: PathBuf,
     pub entries: Vec<ModelEntry>,
     pub selected_id: Option<String>,
+    catalog_fingerprint: u64,
+    render_cache: RefCell<RenderCache>,
 }
 
-struct DriverCatalogView {
-    resolved_backend: Option<String>,
-    driver_resolution_source: String,
-    driver_resolution_rationale: String,
-    driver_available: Option<bool>,
-    driver_load_supported: Option<bool>,
+#[derive(Debug, Default)]
+struct RenderCache {
+    list_json: Option<String>,
+    info_json: HashMap<String, String>,
 }
 
 impl ModelCatalog {
     pub fn discover(models_dir: impl Into<PathBuf>) -> Result<Self, CatalogError> {
         let models_dir = models_dir.into();
+        let catalog_fingerprint = compute_catalog_fingerprint(&models_dir)?;
+        Self::discover_with_fingerprint(models_dir, catalog_fingerprint)
+    }
+
+    fn discover_with_fingerprint(
+        models_dir: PathBuf,
+        catalog_fingerprint: u64,
+    ) -> Result<Self, CatalogError> {
         let mut entries = Vec::new();
 
         let mut gguf_files = Vec::new();
@@ -205,12 +120,22 @@ impl ModelCatalog {
             models_dir,
             entries,
             selected_id: None,
+            catalog_fingerprint,
+            render_cache: RefCell::new(RenderCache::default()),
         })
     }
 
     pub fn refresh(&mut self) -> Result<(), CatalogError> {
+        let latest_fingerprint = compute_catalog_fingerprint(&self.models_dir)?;
+        if latest_fingerprint == self.catalog_fingerprint {
+            return Ok(());
+        }
+
         let selected = self.selected_id.clone();
-        let mut newer = ModelCatalog::discover(self.models_dir.clone())?;
+        let mut newer = ModelCatalog::discover_with_fingerprint(
+            self.models_dir.clone(),
+            latest_fingerprint,
+        )?;
         if let Some(sel) = selected {
             if newer.entries.iter().any(|e| e.id == sel) {
                 newer.selected_id = Some(sel);
@@ -223,10 +148,16 @@ impl ModelCatalog {
     pub fn set_selected(&mut self, model_id: &str) -> Result<(), CatalogError> {
         if self.entries.iter().any(|m| m.id == model_id) {
             self.selected_id = Some(model_id.to_string());
+            self.invalidate_render_cache();
             Ok(())
         } else {
             Err(CatalogError::ModelNotFound(model_id.to_string()))
         }
+    }
+
+    pub fn clear_selected(&mut self) {
+        self.selected_id = None;
+        self.invalidate_render_cache();
     }
 
     pub fn selected_entry(&self) -> Option<&ModelEntry> {
@@ -330,398 +261,102 @@ impl ModelCatalog {
     }
 
     pub fn format_list_json(&self) -> String {
-        let selected = self.selected_id.as_deref();
-        let payload = ModelListResponse {
-            selected_model_id: self.selected_id.clone(),
-            total_models: self.entries.len(),
-            models: self
-                .entries
-                .iter()
-                .map(|entry| {
-                    let driver = driver_view_for_entry(entry);
-                    ModelListEntry {
-                        id: entry.id.clone(),
-                        family: format!("{:?}", entry.family),
-                        architecture: entry
-                            .metadata
-                            .as_ref()
-                            .and_then(|meta| meta.architecture.clone()),
-                        path: entry.path.display().to_string(),
-                        tokenizer_path: entry
-                            .tokenizer_path
-                            .as_ref()
-                            .map(|p| p.display().to_string()),
-                        tokenizer_present: entry.tokenizer_path.is_some(),
-                        metadata_source: entry.metadata_source.clone(),
-                        backend_preference: entry
-                            .metadata
-                            .as_ref()
-                            .and_then(|meta| meta.backend_preference.clone()),
-                        resolved_backend: driver.resolved_backend,
-                        driver_resolution_source: driver.driver_resolution_source,
-                        driver_resolution_rationale: driver.driver_resolution_rationale,
-                        driver_available: driver.driver_available,
-                        driver_load_supported: driver.driver_load_supported,
-                        capabilities: entry
-                            .metadata
-                            .as_ref()
-                            .and_then(|meta| meta.capabilities.clone()),
-                        selected: selected == Some(entry.id.as_str()),
-                    }
-                })
-                .collect(),
-            routing_recommendations: [
-                ("fast", WorkloadClass::Fast),
-                ("general", WorkloadClass::General),
-                ("code", WorkloadClass::Code),
-                ("reasoning", WorkloadClass::Reasoning),
-            ]
-            .into_iter()
-            .map(|(workload, class)| {
-                let decision = self.recommend_for_workload(class);
-                let picked = decision.entry;
-                RoutingRecommendation {
-                    workload: workload.to_string(),
-                    model_id: picked.map(|m| m.id.clone()),
-                    family: picked.map(|m| format!("{:?}", m.family)),
-                    backend_preference: picked
-                        .and_then(|m| m.metadata.as_ref())
-                        .and_then(|meta| meta.backend_preference.clone()),
-                    resolved_backend: picked
-                        .map(driver_view_for_entry)
-                        .and_then(|driver| driver.resolved_backend),
-                    driver_resolution_source: picked
-                        .map(driver_view_for_entry)
-                        .map(|driver| driver.driver_resolution_source)
-                        .unwrap_or_else(|| "unresolved".to_string()),
-                    driver_resolution_rationale: picked
-                        .map(driver_view_for_entry)
-                        .map(|driver| driver.driver_resolution_rationale)
-                        .unwrap_or_else(|| "no model selected for this workload".to_string()),
-                    driver_available: picked
-                        .map(driver_view_for_entry)
-                        .and_then(|driver| driver.driver_available),
-                    driver_load_supported: picked
-                        .map(driver_view_for_entry)
-                        .and_then(|driver| driver.driver_load_supported),
-                    metadata_source: picked.and_then(|m| m.metadata_source.clone()),
-                    source: decision.source.to_string(),
-                    rationale: decision.rationale,
-                    capability_key: decision.capability_key.map(str::to_string),
-                    capability_score: decision.capability_score,
-                }
-            })
-            .collect(),
-        };
+        if let Some(cached) = self.render_cache.borrow().list_json.clone() {
+            return cached;
+        }
 
-        serde_json::to_string(&payload).expect("ModelListResponse is serializable")
+        let rendered = format_list_json(self);
+        self.render_cache.borrow_mut().list_json = Some(rendered.clone());
+        rendered
     }
 
     pub fn format_info_json(&self, model_id: &str) -> Result<String, CatalogError> {
-        let entry = self
-            .find_by_id(model_id)
-            .ok_or_else(|| CatalogError::ModelNotFound(model_id.to_string()))?;
-        let driver = driver_view_for_entry(entry);
+        if let Some(cached) = self.render_cache.borrow().info_json.get(model_id).cloned() {
+            return Ok(cached);
+        }
 
-        let payload = ModelInfoResponse {
-            id: entry.id.clone(),
-            family: format!("{:?}", entry.family),
-            architecture: entry
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.architecture.clone()),
-            path: entry.path.display().to_string(),
-            tokenizer_path: entry
-                .tokenizer_path
-                .as_ref()
-                .map(|p| p.display().to_string()),
-            tokenizer_present: entry.tokenizer_path.is_some(),
-            metadata_source: entry.metadata_source.clone(),
-            backend_preference: entry
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.backend_preference.clone()),
-            resolved_backend: driver.resolved_backend,
-            driver_resolution_source: driver.driver_resolution_source,
-            driver_resolution_rationale: driver.driver_resolution_rationale,
-            driver_available: driver.driver_available,
-            driver_load_supported: driver.driver_load_supported,
-            chat_template: entry
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.chat_template.clone()),
-            assistant_preamble: entry
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.assistant_preamble.clone()),
-            special_tokens: entry
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.special_tokens.clone()),
-            stop_markers: entry
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.stop_markers.clone()),
-            capabilities: entry
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.capabilities.clone()),
-            selected: self.selected_id.as_deref() == Some(entry.id.as_str()),
-        };
-
-        Ok(serde_json::to_string(&payload).expect("ModelInfoResponse is serializable"))
+        let rendered = format_info_json(self, model_id)?;
+        self.render_cache
+            .borrow_mut()
+            .info_json
+            .insert(model_id.to_string(), rendered.clone());
+        Ok(rendered)
     }
 
     pub fn select_for_workload(&self, class: WorkloadClass) -> Option<&ModelEntry> {
-        self.recommend_for_workload(class).entry
+        select_for_workload(&self.entries, class)
     }
 
-    fn recommend_for_workload(&self, class: WorkloadClass) -> RoutingDecision<'_> {
-        if self.entries.is_empty() {
-            return RoutingDecision {
-                entry: None,
-                source: "none",
-                rationale: "no models available in catalog".to_string(),
-                capability_key: None,
-                capability_score: None,
-            };
-        }
+    fn invalidate_render_cache(&self) {
+        *self.render_cache.borrow_mut() = RenderCache::default();
+    }
+}
 
-        let capability_key = workload_key(class);
-        let mut scored: Vec<(&ModelEntry, f64, usize)> = self
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let score = entry
-                    .metadata
-                    .as_ref()
-                    .and_then(|meta| meta.capabilities.as_ref())
-                    .and_then(|caps| caps.get(capability_key))
-                    .copied()?;
-                Some((entry, score, model_size_hint(&entry.id)))
-            })
-            .collect();
-        if !scored.is_empty() {
-            scored.sort_by(|left, right| {
-                right
-                    .1
-                    .partial_cmp(&left.1)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| left.2.cmp(&right.2))
-            });
-            if let Some((entry, score, _)) = scored.first().copied() {
-                return RoutingDecision {
-                    entry: Some(entry),
-                    source: "metadata-capability",
-                    rationale: format!(
-                        "selected by metadata capability '{}' with score {:.2}",
-                        capability_key, score
-                    ),
-                    capability_key: Some(capability_key),
-                    capability_score: Some(score),
-                };
+fn compute_catalog_fingerprint(models_dir: &Path) -> Result<u64, CatalogError> {
+    let mut files = Vec::new();
+    collect_catalog_signature_files(models_dir, &mut files)?;
+    files.sort();
+
+    let mut hasher = DefaultHasher::new();
+    for path in files {
+        let metadata = fs::metadata(&path).map_err(|e| CatalogError::DirectoryReadFailed {
+            path: path.display().to_string(),
+            detail: e.to_string(),
+        })?;
+        let relative = path.strip_prefix(models_dir).unwrap_or(path.as_path());
+        relative.to_string_lossy().hash(&mut hasher);
+        metadata.len().hash(&mut hasher);
+        match metadata.modified() {
+            Ok(modified) => {
+                if let Ok(since_epoch) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    since_epoch.as_secs().hash(&mut hasher);
+                    since_epoch.subsec_nanos().hash(&mut hasher);
+                }
             }
-        }
-
-        let family_order: &[PromptFamily] = match class {
-            WorkloadClass::Fast => &[PromptFamily::Llama, PromptFamily::Qwen, PromptFamily::Mistral],
-            WorkloadClass::Code => &[PromptFamily::Qwen, PromptFamily::Llama, PromptFamily::Mistral],
-            WorkloadClass::Reasoning => {
-                &[PromptFamily::Qwen, PromptFamily::Llama, PromptFamily::Mistral]
-            }
-            WorkloadClass::General => &[PromptFamily::Llama, PromptFamily::Qwen, PromptFamily::Mistral],
-        };
-
-        for family in family_order {
-            let mut candidates: Vec<&ModelEntry> = self
-                .entries
-                .iter()
-                .filter(|entry| entry.family == *family)
-                .collect();
-
-            if candidates.is_empty() {
-                continue;
-            }
-
-            candidates.sort_by_key(|entry| model_size_hint(&entry.id));
-
-            let selected = match class {
-                WorkloadClass::Fast => candidates.first().copied(),
-                WorkloadClass::Code | WorkloadClass::Reasoning => candidates.last().copied(),
-                WorkloadClass::General => candidates.first().copied(),
-            };
-
-            if let Some(entry) = selected {
-                return RoutingDecision {
-                    entry: Some(entry),
-                    source: "family-fallback",
-                    rationale: format!(
-                        "selected by family fallback '{:?}' for '{}' workload",
-                        family, capability_key
-                    ),
-                    capability_key: None,
-                    capability_score: None,
-                };
-            }
-        }
-
-        RoutingDecision {
-            entry: self.entries.first(),
-            source: "first-available",
-            rationale: "selected first available model because no capability or family match applied"
-                .to_string(),
-            capability_key: None,
-            capability_score: None,
-        }
-    }
-}
-
-pub fn infer_workload_class(prompt: &str) -> WorkloadClass {
-    let lowered = prompt.to_lowercase();
-    if lowered.contains("python")
-        || lowered.contains("rust")
-        || lowered.contains("codice")
-        || lowered.contains("debug")
-        || lowered.contains("refactor")
-    {
-        WorkloadClass::Code
-    } else if lowered.contains("ragiona")
-        || lowered.contains("reason")
-        || lowered.contains("analizza")
-        || lowered.contains("dimostra")
-    {
-        WorkloadClass::Reasoning
-    } else if lowered.contains("breve")
-        || lowered.contains("short")
-        || lowered.contains("riassumi")
-        || lowered.contains("ping")
-    {
-        WorkloadClass::Fast
-    } else {
-        WorkloadClass::General
-    }
-}
-
-pub fn parse_workload_hint(prompt: &str) -> (Option<WorkloadClass>, String) {
-    let trimmed = prompt.trim_start();
-    let lower = trimmed.to_lowercase();
-    let prefix = "capability=";
-
-    if !lower.starts_with(prefix) {
-        return (None, prompt.to_string());
-    }
-
-    let Some(sep_idx) = trimmed.find(';') else {
-        return (None, prompt.to_string());
-    };
-
-    let hint = trimmed[prefix.len()..sep_idx].trim().to_lowercase();
-    let workload = match hint.as_str() {
-        "fast" => Some(WorkloadClass::Fast),
-        "code" => Some(WorkloadClass::Code),
-        "reasoning" => Some(WorkloadClass::Reasoning),
-        "general" => Some(WorkloadClass::General),
-        _ => None,
-    };
-
-    let stripped = trimmed[sep_idx + 1..].trim_start().to_string();
-    (workload, stripped)
-}
-
-fn model_size_hint(model_id: &str) -> usize {
-    let lower = model_id.to_lowercase();
-    let mut digits = String::new();
-    for ch in lower.chars() {
-        if ch.is_ascii_digit() {
-            digits.push(ch);
-        } else if !digits.is_empty() {
-            break;
+            Err(_) => 0_u8.hash(&mut hasher),
         }
     }
 
-    if digits.is_empty() {
-        0
-    } else {
-        digits.parse::<usize>().unwrap_or(0)
-    }
+    Ok(hasher.finish())
 }
 
-fn infer_family_from_filename(name: &str) -> PromptFamily {
-    let lowered = name.to_lowercase();
-    if lowered.contains("llama") {
-        PromptFamily::Llama
-    } else if lowered.contains("qwen") {
-        PromptFamily::Qwen
-    } else if lowered.contains("mistral") || lowered.contains("mixtral") {
-        PromptFamily::Mistral
-    } else {
-        PromptFamily::Unknown
+fn collect_catalog_signature_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CatalogError> {
+    let entries = fs::read_dir(dir).map_err(|e| CatalogError::DirectoryReadFailed {
+        path: dir.display().to_string(),
+        detail: e.to_string(),
+    })?;
+
+    for entry in entries {
+        let path = entry
+            .map_err(|e| CatalogError::DirectoryReadFailed {
+                path: dir.display().to_string(),
+                detail: e.to_string(),
+            })?
+            .path();
+
+        if path.is_dir() {
+            collect_catalog_signature_files(&path, out)?;
+            continue;
+        }
+
+        if !path.is_file() || !is_catalog_relevant_file(&path) {
+            continue;
+        }
+
+        out.push(path);
     }
+
+    Ok(())
 }
 
-fn parse_family_label(raw: &str) -> PromptFamily {
-    let lowered = raw.trim().to_ascii_lowercase();
-    if lowered.contains("llama") {
-        PromptFamily::Llama
-    } else if lowered.contains("qwen") {
-        PromptFamily::Qwen
-    } else if lowered.contains("mistral") || lowered.contains("mixtral") {
-        PromptFamily::Mistral
-    } else {
-        PromptFamily::Unknown
-    }
-}
+fn is_catalog_relevant_file(path: &Path) -> bool {
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
 
-fn family_label(family: PromptFamily) -> Option<String> {
-    match family {
-        PromptFamily::Llama => Some("Llama".to_string()),
-        PromptFamily::Qwen => Some("Qwen".to_string()),
-        PromptFamily::Mistral => Some("Mistral".to_string()),
-        PromptFamily::Unknown => None,
-    }
-}
-
-fn workload_key(class: WorkloadClass) -> &'static str {
-    match class {
-        WorkloadClass::Fast => "fast",
-        WorkloadClass::Code => "code",
-        WorkloadClass::Reasoning => "reasoning",
-        WorkloadClass::General => "general",
-    }
-}
-
-fn driver_view_for_entry(entry: &ModelEntry) -> DriverCatalogView {
-    match resolve_driver_for_entry(entry) {
-        Ok(resolution) => DriverCatalogView {
-            resolved_backend: Some(resolution.resolved_backend_id),
-            driver_resolution_source: resolution.resolution_source.to_string(),
-            driver_resolution_rationale: resolution.resolution_rationale,
-            driver_available: Some(resolution.available),
-            driver_load_supported: Some(resolution.load_supported),
-        },
-        Err(err) => DriverCatalogView {
-            resolved_backend: None,
-            driver_resolution_source: "unresolved".to_string(),
-            driver_resolution_rationale: err.to_string(),
-            driver_available: None,
-            driver_load_supported: None,
-        },
-    }
-}
-
-fn resolve_driver_for_entry(entry: &ModelEntry) -> Result<DriverResolution, CatalogError> {
-    resolve_driver_for_model(
-        entry.family,
-        entry
-            .metadata
-            .as_ref()
-            .and_then(|meta| meta.architecture.as_deref()),
-        entry
-            .metadata
-            .as_ref()
-            .and_then(|meta| meta.backend_preference.as_deref()),
-    )
-    .map_err(CatalogError::DriverResolutionFailed)
+    extension.eq_ignore_ascii_case("gguf")
+        || file_name.eq_ignore_ascii_case("tokenizer.json")
+        || file_name.eq_ignore_ascii_case("metadata.json")
+        || file_name.ends_with(".metadata.json")
 }
 
 fn collect_gguf_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CatalogError> {
@@ -767,241 +402,12 @@ fn build_model_id(models_dir: &Path, model_path: &Path) -> String {
     without_ext.to_string_lossy().replace('\\', "/")
 }
 
-fn infer_metadata_path(model_path: &Path) -> Option<PathBuf> {
-    let parent = model_path.parent()?;
-    let sidecar = parent.join("metadata.json");
-    if sidecar.exists() {
-        return Some(sidecar);
-    }
-
-    let stem = model_path.file_stem()?.to_str()?;
-    let sibling = parent.join(format!("{}.metadata.json", stem));
-    if sibling.exists() {
-        return Some(sibling);
-    }
-
-    None
-}
-
-fn load_model_metadata(path: &Path) -> Option<ModelMetadata> {
-    let raw = fs::read_to_string(path).ok()?;
-    serde_json::from_str::<ModelMetadata>(&raw).ok()
-}
-
-fn load_native_model_metadata(
-    model_path: &Path,
-    tokenizer_path: Option<&Path>,
-) -> (Option<ModelMetadata>, bool, bool) {
-    let gguf_metadata = load_gguf_native_metadata(model_path);
-    let tokenizer_metadata = tokenizer_path.and_then(load_tokenizer_native_metadata);
-    let native_from_gguf = gguf_metadata.is_some();
-    let native_from_tokenizer = tokenizer_metadata.is_some();
-    (
-        merge_model_metadata(gguf_metadata, tokenizer_metadata),
-        native_from_gguf,
-        native_from_tokenizer,
-    )
-}
-
-fn load_gguf_native_metadata(path: &Path) -> Option<ModelMetadata> {
-    let mut file = fs::File::open(path).ok()?;
-    let content = gguf_file::Content::read(&mut file).ok()?;
-    parse_gguf_metadata_map(&content.metadata)
-}
-
-fn parse_gguf_metadata_map(metadata: &HashMap<String, gguf_file::Value>) -> Option<ModelMetadata> {
-    let mut parsed = ModelMetadata::default();
-
-    if let Some(architecture) = metadata
-        .get("general.architecture")
-        .and_then(|value| value.to_string().ok())
-    {
-        parsed.architecture = Some(architecture.to_string());
-        parsed.family = family_label(parse_family_label(architecture));
-    }
-
-    if let Some(template) = metadata
-        .get("tokenizer.chat_template")
-        .and_then(|value| value.to_string().ok())
-        .cloned()
-    {
-        if !template.trim().is_empty() {
-            parsed.chat_template = Some(template);
-        }
-    }
-
-    if parsed == ModelMetadata::default() {
-        None
-    } else {
-        Some(parsed)
-    }
-}
-
-fn load_tokenizer_native_metadata(path: &Path) -> Option<ModelMetadata> {
-    let raw = fs::read_to_string(path).ok()?;
-    parse_tokenizer_metadata_json(&raw)
-}
-
-fn parse_tokenizer_metadata_json(raw: &str) -> Option<ModelMetadata> {
-    let json: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let added_tokens = json.get("added_tokens")?.as_array()?;
-
-    let mut special_tokens = BTreeMap::new();
-    for token in added_tokens {
-        let content = token.get("content")?.as_str()?;
-        let is_special = token
-            .get("special")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-        if !is_special {
-            continue;
-        }
-
-        insert_special_token_aliases(&mut special_tokens, content);
-    }
-
-    if special_tokens.is_empty() {
-        return None;
-    }
-
-    let mut stop_markers = Vec::new();
-    for key in ["eos", "end_of_text", "eot", "im_end", "assistant_end"] {
-        if let Some(value) = special_tokens.get(key) {
-            if !stop_markers.iter().any(|existing| existing == value) {
-                stop_markers.push(value.clone());
-            }
-        }
-    }
-
-    let mut parsed = ModelMetadata::default();
-    parsed.special_tokens = Some(special_tokens);
-    if !stop_markers.is_empty() {
-        parsed.stop_markers = Some(stop_markers);
-    }
-    Some(parsed)
-}
-
-fn insert_special_token_aliases(tokens: &mut BTreeMap<String, String>, content: &str) {
-    let lowered = content.to_ascii_lowercase();
-
-    if lowered.contains("begin_of_text") {
-        tokens.insert("bos".to_string(), content.to_string());
-    }
-    if lowered.contains("end_of_text") || lowered.contains("endoftext") {
-        tokens.insert("eos".to_string(), content.to_string());
-        tokens.insert("end_of_text".to_string(), content.to_string());
-    }
-    if lowered.contains("eot") {
-        tokens.insert("eot".to_string(), content.to_string());
-    }
-    if lowered.contains("im_start") {
-        tokens.insert("im_start".to_string(), content.to_string());
-    }
-    if lowered.contains("im_end") {
-        tokens.insert("im_end".to_string(), content.to_string());
-        tokens.insert("assistant_end".to_string(), content.to_string());
-        tokens.insert("eot".to_string(), content.to_string());
-    }
-    if lowered.contains("start_header_id") {
-        tokens.insert("start_header_id".to_string(), content.to_string());
-    }
-    if lowered.contains("end_header_id") {
-        tokens.insert("end_header_id".to_string(), content.to_string());
-    }
-}
-
-fn merge_model_metadata(
-    base: Option<ModelMetadata>,
-    overlay: Option<ModelMetadata>,
-) -> Option<ModelMetadata> {
-    match (base, overlay) {
-        (None, None) => None,
-        (Some(metadata), None) | (None, Some(metadata)) => Some(metadata),
-        (Some(mut base), Some(overlay)) => {
-            if overlay.family.is_some() {
-                base.family = overlay.family;
-            }
-            if overlay.architecture.is_some() {
-                base.architecture = overlay.architecture;
-            }
-            if overlay.backend_preference.is_some() {
-                base.backend_preference = overlay.backend_preference;
-            }
-            if overlay.chat_template.is_some() {
-                base.chat_template = overlay.chat_template;
-            }
-            if overlay.assistant_preamble.is_some() {
-                base.assistant_preamble = overlay.assistant_preamble;
-            }
-            if overlay.special_tokens.is_some() {
-                base.special_tokens = overlay.special_tokens;
-            }
-            if overlay.stop_markers.is_some() {
-                base.stop_markers = overlay.stop_markers;
-            }
-            if overlay.capabilities.is_some() {
-                base.capabilities = overlay.capabilities;
-            }
-            Some(base)
-        }
-    }
-}
-
-fn describe_metadata_source(
-    native_from_gguf: bool,
-    native_from_tokenizer: bool,
-    sidecar_path: Option<&Path>,
-    metadata: Option<&ModelMetadata>,
-) -> Option<String> {
-    if metadata.is_none() {
-        return None;
-    }
-
-    let mut native_parts = Vec::new();
-    if native_from_gguf {
-        native_parts.push("gguf");
-    }
-    if native_from_tokenizer {
-        native_parts.push("tokenizer");
-    }
-
-    let native_label = if native_parts.is_empty() {
-        None
-    } else {
-        Some(format!("native:{}", native_parts.join("+")))
-    };
-
-    match (native_label, sidecar_path) {
-        (Some(native), Some(path)) => Some(format!("{}+sidecar:{}", native, path.display())),
-        (Some(native), None) => Some(native),
-        (None, Some(path)) => Some(path.display().to_string()),
-        (None, None) => None,
-    }
-}
-
-fn infer_tokenizer_path(models_dir: &Path, model_path: &Path) -> Option<PathBuf> {
-    let model_parent = model_path.parent().unwrap_or(models_dir);
-    let local_tok = model_parent.join("tokenizer.json");
-    if local_tok.exists() {
-        return Some(local_tok);
-    }
-
-    let root_tok = PathBuf::from("tokenizer.json");
-    if root_tok.exists() {
-        return Some(root_tok);
-    }
-
-    let models_tok = models_dir.join("tokenizer.json");
-    if models_tok.exists() {
-        return Some(models_tok);
-    }
-
-    None
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candle_core::quantized::gguf_file;
+    use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]

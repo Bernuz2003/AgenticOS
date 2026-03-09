@@ -63,23 +63,11 @@ pub struct ProcessQuota {
 impl ProcessQuota {
     /// Returns sensible defaults per workload class.
     pub fn defaults_for(workload: WorkloadClass) -> Self {
-        match workload {
-            WorkloadClass::Fast => Self {
-                max_tokens: 512,
-                max_syscalls: 2,
-            },
-            WorkloadClass::Code => Self {
-                max_tokens: 4096,
-                max_syscalls: 16,
-            },
-            WorkloadClass::Reasoning => Self {
-                max_tokens: 8192,
-                max_syscalls: 8,
-            },
-            WorkloadClass::General => Self {
-                max_tokens: 2048,
-                max_syscalls: 8,
-            },
+        let (max_tokens, max_syscalls) = crate::policy::scheduler_quota_defaults(workload);
+
+        Self {
+            max_tokens,
+            max_syscalls,
         }
     }
 }

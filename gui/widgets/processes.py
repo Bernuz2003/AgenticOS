@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui.response_parser import ProcessDetail, StatusSnapshot, normalize_process_detail
+
 _PRIORITY_LEVELS = ["low", "normal", "high", "critical"]
 
 _PROC_COLUMNS = ["PID", "Workload", "Priority", "State", "Tokens", "Syscalls", "Elapsed"]
@@ -157,24 +159,12 @@ class ProcessesSection(QWidget):
 
     # ── Public API ───────────────────────────────────────────
 
-    def update_from_status(self, data: dict):
-        """Parse global STATUS dict (JSON-decoded) and populate process table."""
-        procs = data.get("processes", {})
-        active_pids = [str(p) for p in procs.get("active_pids", [])]
-        waiting_pids = [str(p) for p in procs.get("waiting_pids", [])]
-        in_flight_pids = [str(p) for p in procs.get("in_flight_pids", [])]
-        all_pids = active_pids + waiting_pids + in_flight_pids
-
-        # Scheduler summary
-        sched = data.get("scheduler", {})
-        tracked = sched.get("tracked", 0)
-        crit = sched.get("priority_critical", 0)
-        high = sched.get("priority_high", 0)
-        norm = sched.get("priority_normal", 0)
-        low = sched.get("priority_low", 0)
+    def update_from_status(self, status: StatusSnapshot):
+        """Populate process table from normalized STATUS payload."""
         self.scheduler_label.setText(
-            f"Scheduler: {tracked} tracked  │  "
-            f"Critical: {crit}  High: {high}  Normal: {norm}  Low: {low}"
+            f"Scheduler: {status.scheduler.tracked} tracked  │  "
+            f"Critical: {status.scheduler.critical}  High: {status.scheduler.high}  "
+            f"Normal: {status.scheduler.normal}  Low: {status.scheduler.low}"
         )
 
         # Snapshot current cell values keyed by PID so we can preserve them
@@ -189,29 +179,24 @@ class ProcessesSection(QWidget):
 
         # Update table
         prev_pid = self._selected_pid()
-        self.table.setRowCount(len(all_pids))
+        self.table.setRowCount(len(status.process_rows))
 
-        # Build lookup from active_processes (per-PID detail embedded in global STATUS)
-        _detail: dict[str, dict] = {}
-        for proc in procs.get("active_processes", []):
-            _detail[str(proc.get("pid", ""))] = proc
+        detail_by_pid = {
+            row.pid: row.detail for row in status.process_rows if row.detail is not None
+        }
 
-        for row, pid in enumerate(all_pids):
-            if pid in in_flight_pids:
-                state = "in-flight"
-            elif pid in active_pids:
-                state = "active"
-            else:
-                state = "waiting"
-            detail = _detail.get(pid)
+        for row, proc_row in enumerate(status.process_rows):
+            pid = proc_row.pid
+            state = proc_row.state
+            detail = proc_row.detail
             if detail:
-                workload = str(detail.get("workload", "—"))
-                priority = str(detail.get("priority", "—"))
-                tokens_gen = str(detail.get("tokens_generated", "—"))
-                quota_tokens = str(detail.get("quota_tokens", "—"))
-                syscalls_used = str(detail.get("syscalls_used", "—"))
-                quota_syscalls = str(detail.get("quota_syscalls", "—"))
-                elapsed = detail.get("elapsed_secs", "—")
+                workload = detail.workload
+                priority = detail.priority
+                tokens_gen = detail.tokens_generated
+                quota_tokens = detail.quota_tokens
+                syscalls_used = detail.syscalls_used
+                quota_syscalls = detail.quota_syscalls
+                elapsed = detail.elapsed
                 tok_cell = f"{tokens_gen}/{quota_tokens}"
                 sys_cell = f"{syscalls_used}/{quota_syscalls}"
                 try:
@@ -243,25 +228,26 @@ class ProcessesSection(QWidget):
 
         # Update detail panel for currently selected PID (if it has inline data)
         sel = self._selected_pid()
-        if sel and sel in _detail:
-            self.update_pid_detail(sel, _detail[sel])
+        if sel and sel in detail_by_pid:
+            self.update_pid_detail(detail_by_pid[sel])
 
-    def update_pid_detail(self, pid: str, data: dict):
-        """Update row + detail from per-PID STATUS dict (JSON-decoded)."""
-        if not pid:
-            pid = str(data.get("pid", ""))
-        if not pid:
+    def update_pid_detail(self, detail: ProcessDetail | dict):
+        """Update row + detail from normalized per-PID status/quota payload."""
+        if isinstance(detail, dict):
+            detail = normalize_process_detail(detail)
+        if detail is None:
             return
 
+        pid = detail.pid
         row = self._find_row(pid)
 
-        priority = str(data.get("priority", "—"))
-        workload = str(data.get("workload", "—"))
-        tokens_gen = str(data.get("tokens_generated", "—"))
-        syscalls_used = str(data.get("syscalls_used", "—"))
-        elapsed = str(data.get("elapsed_secs", "—"))
-        quota_tokens = str(data.get("quota_tokens", data.get("max_tokens", "—")))
-        quota_syscalls = str(data.get("quota_syscalls", data.get("max_syscalls", "—")))
+        priority = detail.priority
+        workload = detail.workload
+        tokens_gen = detail.tokens_generated
+        syscalls_used = detail.syscalls_used
+        elapsed = detail.elapsed
+        quota_tokens = detail.quota_tokens
+        quota_syscalls = detail.quota_syscalls
 
         if row >= 0:
             self.table.setItem(row, 1, QTableWidgetItem(workload))
@@ -287,10 +273,10 @@ class ProcessesSection(QWidget):
             if quota_syscalls not in {"—", ""}:
                 self.quota_syscalls.setText(str(quota_syscalls))
 
-    def show_quota(self, data: dict):
-        """Parse GET_QUOTA JSON response dict."""
-        pid = str(data.get("pid", "?"))
-        self.update_pid_detail(pid, data)
+    def show_quota(self, detail: ProcessDetail | dict | None):
+        """Show GET_QUOTA payload using the same detail normalization path."""
+        if detail is not None:
+            self.update_pid_detail(detail)
 
     def show_error(self, text: str):
         self.error_banner.setText(f"⚠ {text}")

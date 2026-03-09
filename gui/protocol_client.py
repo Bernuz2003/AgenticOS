@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import os
 import socket
+import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from agenticos_shared.runtime_config import load_runtime_defaults
 
 FrameCallback = Callable[[str, str, bytes], None]
 
@@ -58,9 +67,17 @@ def consume_framed_messages(buffer: bytearray) -> list[tuple[str, str, bytes]]:
 
 class ProtocolClient:
     def __init__(self, host: str = "127.0.0.1", port: int = 0):
-        import os
-        self.host = host
-        self.port = port if port else int(os.environ.get("AGENTIC_PORT", "6380"))
+        runtime = load_runtime_defaults(
+            {
+                "host": "127.0.0.1",
+                "port": int(os.environ.get("AGENTIC_PORT", "6380")),
+                "kernel_token_path": os.path.join("workspace", ".kernel_token"),
+            },
+            "paths",
+        )
+        self.host = host if host != "127.0.0.1" else runtime["host"]
+        self.port = port if port else runtime["port"]
+        self._token_path = runtime["kernel_token_path"]
         self._auth_token: Optional[str] = None
         # Persistent socket for control-plane requests (protected by lock)
         self._sock: Optional[socket.socket] = None
@@ -70,10 +87,8 @@ class ProtocolClient:
         """Read auth token from workspace/.kernel_token (cached)."""
         if self._auth_token is not None:
             return self._auth_token
-        import os
-        token_path = os.path.join("workspace", ".kernel_token")
         try:
-            with open(token_path, "r") as f:
+            with open(self._token_path, "r") as f:
                 self._auth_token = f.read().strip()
         except FileNotFoundError:
             self._auth_token = ""

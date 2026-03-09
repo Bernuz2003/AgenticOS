@@ -1,8 +1,8 @@
-use crate::config::env_bool;
-use crate::engine::LLMEngine;
-use crate::model_catalog::{infer_workload_class, parse_workload_hint};
+use crate::policy::resolve_exec_workload;
 use crate::protocol;
 use crate::scheduler::ProcessPriority;
+use crate::services::model_runtime::activate_model_target;
+use crate::services::process_runtime::spawn_managed_process;
 
 use super::context::CommandContext;
 use super::metrics::log_event;
@@ -13,9 +13,8 @@ use super::metrics::log_event;
 /// client output buffer (e.g. on error), or `Some(response)` on success.
 pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Option<Vec<u8>> {
     let prompt_raw = String::from_utf8_lossy(payload).to_string();
-    let (hinted_workload, prompt) = parse_workload_hint(&prompt_raw);
-    let workload = hinted_workload.unwrap_or_else(|| infer_workload_class(&prompt));
-    let auto_switch = env_bool("AGENTIC_EXEC_AUTO_SWITCH", false);
+    let (workload, hinted_workload, prompt) = resolve_exec_workload(&prompt_raw);
+    let auto_switch = crate::config::kernel_config().exec.auto_switch;
 
     let _ = ctx.model_catalog.refresh();
     let can_scheduler_switch = auto_switch || hinted_workload.is_some();
@@ -42,14 +41,8 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
                         ));
                         return None;
                     }
-                    *ctx.engine_state = None;
-                    match LLMEngine::load_target(&target) {
-                        Ok(new_engine) => {
-                            let loaded_backend = new_engine.loaded_backend_id().to_string();
-                            *ctx.engine_state = Some(new_engine);
-                            if let Some(model_id) = target.model_id.as_ref() {
-                                ctx.model_catalog.selected_id = Some(model_id.clone());
-                            }
+                    match activate_model_target(ctx.engine_state, ctx.model_catalog, &target) {
+                        Ok(loaded) => {
                             log_event(
                                 "scheduler_model_switch",
                                 ctx.client_id,
@@ -59,7 +52,7 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
                                     workload,
                                     target.model_id.clone().unwrap_or_else(|| "<external-path>".to_string()),
                                     target.family,
-                                    loaded_backend
+                                    loaded.backend_id
                                 ),
                             );
                         }
@@ -85,34 +78,17 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
     }
 
     if let Some(engine) = ctx.engine_state.as_mut() {
-        match engine.spawn_process(&prompt, 0, ctx.client_id) {
-            Ok(pid) => {
-                if let Some(token_slots) = engine.process_max_tokens(pid) {
-                    match ctx.memory.register_process(pid, token_slots) {
-                        Ok(slot_id) => {
-                            if let Err(e) = engine.set_process_context_slot(pid, slot_id) {
-                                let _ = ctx.memory.release_process(pid);
-                                engine.kill_process(pid);
-                                ctx.client.output_buffer.extend(protocol::response_err_code(
-                                    "MEMORY_BINDING",
-                                    &e.to_string(),
-                                ));
-                                return None;
-                            }
-                        }
-                        Err(e) => {
-                            engine.kill_process(pid);
-                            ctx.client.output_buffer.extend(protocol::response_err_code(
-                                "MEMORY_ADMISSION",
-                                &e.to_string(),
-                            ));
-                            return None;
-                        }
-                    }
-                }
-
-                ctx.scheduler
-                    .register(pid, workload, ProcessPriority::Normal);
+        match spawn_managed_process(
+            engine,
+            ctx.memory,
+            ctx.scheduler,
+            &prompt,
+            ctx.client_id,
+            workload,
+            ProcessPriority::Normal,
+        ) {
+            Ok(spawned) => {
+                let pid = spawned.pid;
 
                 ctx.metrics.inc_exec_started();
                 log_event(
@@ -126,7 +102,7 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
                     pid, workload
                 )))
             }
-            Err(e) => Some(protocol::response_err_code("SPAWN_FAILED", &format!("{}", e))),
+            Err(e) => Some(protocol::response_err_code("SPAWN_FAILED", &e)),
         }
     } else {
         Some(protocol::response_err_code("NO_MODEL", "No Model Loaded"))

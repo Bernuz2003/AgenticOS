@@ -21,31 +21,19 @@ pub struct GenerationConfig {
 
 impl GenerationConfig {
     pub fn defaults_for(family: PromptFamily) -> Self {
-        match family {
-            PromptFamily::Llama => Self {
-                temperature: 0.7,
-                top_p: 0.9,
-                seed: 299_792_458,
-                max_tokens: 500,
-            },
-            PromptFamily::Qwen => Self {
-                temperature: 0.7,
-                top_p: 0.9,
-                seed: 299_792_458,
-                max_tokens: 500,
-            },
-            PromptFamily::Mistral => Self {
-                temperature: 0.7,
-                top_p: 0.92,
-                seed: 299_792_458,
-                max_tokens: 500,
-            },
-            PromptFamily::Unknown => Self {
-                temperature: 0.7,
-                top_p: 0.9,
-                seed: 299_792_458,
-                max_tokens: 500,
-            },
+        let generation = &crate::config::kernel_config().generation;
+        let profile = match family {
+            PromptFamily::Llama => &generation.llama,
+            PromptFamily::Qwen => &generation.qwen,
+            PromptFamily::Mistral => &generation.mistral,
+            PromptFamily::Unknown => &generation.unknown,
+        };
+
+        Self {
+            temperature: profile.temperature,
+            top_p: profile.top_p,
+            seed: profile.seed,
+            max_tokens: profile.max_tokens,
         }
     }
 }

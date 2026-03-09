@@ -68,7 +68,7 @@ impl SwapManager {
     pub fn new() -> Self {
         Self {
             enabled: false,
-            dir: PathBuf::from("workspace/swap"),
+            dir: crate::config::kernel_config().memory.swap_dir.clone(),
             tx: None,
             rx: None,
             waiting: HashSet::new(),

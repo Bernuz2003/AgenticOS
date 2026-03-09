@@ -1,29 +1,459 @@
-/// Centralized configuration helpers for the AgenticOS Kernel.
-///
-/// All environment-variable-based configuration reading is consolidated here
-/// to eliminate duplication across modules.
-pub fn env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(default)
+use serde::Deserialize;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+static KERNEL_CONFIG: OnceLock<KernelConfig> = OnceLock::new();
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct KernelConfig {
+    pub network: NetworkConfig,
+    pub paths: PathsConfig,
+    pub memory: MemoryRuntimeConfig,
+    pub checkpoint: CheckpointConfig,
+    pub auth: AuthConfig,
+    pub external_llamacpp: ExternalLlamaCppConfig,
+    pub exec: ExecConfig,
+    pub orchestrator: OrchestratorConfig,
+    pub tools: ToolsRuntimeConfig,
+    pub generation: GenerationProfilesConfig,
+    pub scheduler: SchedulerConfig,
 }
 
+impl Default for KernelConfig {
+    fn default() -> Self {
+        Self {
+            network: NetworkConfig::default(),
+            paths: PathsConfig::default(),
+            memory: MemoryRuntimeConfig::default(),
+            checkpoint: CheckpointConfig::default(),
+            auth: AuthConfig::default(),
+            external_llamacpp: ExternalLlamaCppConfig::default(),
+            exec: ExecConfig::default(),
+            orchestrator: OrchestratorConfig::default(),
+            tools: ToolsRuntimeConfig::default(),
+            generation: GenerationProfilesConfig::default(),
+            scheduler: SchedulerConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct NetworkConfig {
+    pub host: String,
+    pub port: u16,
+    pub poll_timeout_ms: u64,
+    pub log_connections: bool,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 6380,
+            poll_timeout_ms: 5,
+            log_connections: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PathsConfig {
+    pub models_dir: PathBuf,
+    pub workspace_dir: PathBuf,
+    pub checkpoint_path: PathBuf,
+    pub kernel_token_path: PathBuf,
+}
+
+impl Default for PathsConfig {
+    fn default() -> Self {
+        Self {
+            models_dir: PathBuf::from("models"),
+            workspace_dir: PathBuf::from("workspace"),
+            checkpoint_path: PathBuf::from("workspace/checkpoint.json"),
+            kernel_token_path: PathBuf::from("workspace/.kernel_token"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct MemoryRuntimeConfig {
+    pub active: bool,
+    pub swap_async: bool,
+    pub swap_dir: PathBuf,
+    pub block_size: usize,
+    pub hidden_dim: usize,
+    pub total_memory_mb: usize,
+    pub token_slot_quota_per_pid: usize,
+}
+
+impl Default for MemoryRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            active: true,
+            swap_async: true,
+            swap_dir: PathBuf::from("workspace/swap"),
+            block_size: 16,
+            hidden_dim: 256,
+            total_memory_mb: 64,
+            token_slot_quota_per_pid: 4096,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CheckpointConfig {
+    pub interval_secs: u64,
+}
+
+impl Default for CheckpointConfig {
+    fn default() -> Self {
+        Self { interval_secs: 0 }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AuthConfig {
+    pub disabled: bool,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self { disabled: false }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ExternalLlamaCppConfig {
+    pub endpoint: String,
+    pub timeout_ms: u64,
+    pub chunk_tokens: usize,
+}
+
+impl Default for ExternalLlamaCppConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            timeout_ms: 120_000,
+            chunk_tokens: 32,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ExecConfig {
+    pub auto_switch: bool,
+}
+
+impl Default for ExecConfig {
+    fn default() -> Self {
+        Self { auto_switch: false }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct OrchestratorConfig {
+    pub max_output_chars: usize,
+}
+
+impl Default for OrchestratorConfig {
+    fn default() -> Self {
+        Self {
+            max_output_chars: 4096,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ToolsRuntimeConfig {
+    pub sandbox_mode: String,
+    pub allow_host_fallback: bool,
+    pub timeout_s: u64,
+    pub max_calls_per_window: usize,
+    pub window_s: u64,
+    pub error_burst_kill: usize,
+    pub output_truncate_len: usize,
+    pub audit_log_file: String,
+    pub temp_script_prefix: String,
+}
+
+impl Default for ToolsRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            sandbox_mode: "host".to_string(),
+            allow_host_fallback: true,
+            timeout_s: 8,
+            max_calls_per_window: 12,
+            window_s: 10,
+            error_burst_kill: 3,
+            output_truncate_len: 2000,
+            audit_log_file: "syscall_audit.log".to_string(),
+            temp_script_prefix: "agent_script_".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct GenerationProfilesConfig {
+    pub llama: GenerationProfile,
+    pub qwen: GenerationProfile,
+    pub mistral: GenerationProfile,
+    pub unknown: GenerationProfile,
+}
+
+impl Default for GenerationProfilesConfig {
+    fn default() -> Self {
+        Self {
+            llama: GenerationProfile::llama_default(),
+            qwen: GenerationProfile::qwen_default(),
+            mistral: GenerationProfile::mistral_default(),
+            unknown: GenerationProfile::unknown_default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct GenerationProfile {
+    pub temperature: f64,
+    pub top_p: f64,
+    pub seed: u64,
+    pub max_tokens: usize,
+}
+
+impl GenerationProfile {
+    fn llama_default() -> Self {
+        Self {
+            temperature: 0.7,
+            top_p: 0.9,
+            seed: 299_792_458,
+            max_tokens: 500,
+        }
+    }
+
+    fn qwen_default() -> Self {
+        Self::llama_default()
+    }
+
+    fn mistral_default() -> Self {
+        Self {
+            temperature: 0.7,
+            top_p: 0.92,
+            seed: 299_792_458,
+            max_tokens: 500,
+        }
+    }
+
+    fn unknown_default() -> Self {
+        Self::llama_default()
+    }
+}
+
+impl Default for GenerationProfile {
+    fn default() -> Self {
+        Self::llama_default()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SchedulerConfig {
+    pub fast: SchedulerQuotaConfig,
+    pub code: SchedulerQuotaConfig,
+    pub reasoning: SchedulerQuotaConfig,
+    pub general: SchedulerQuotaConfig,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            fast: SchedulerQuotaConfig {
+                max_tokens: 512,
+                max_syscalls: 2,
+            },
+            code: SchedulerQuotaConfig {
+                max_tokens: 4096,
+                max_syscalls: 16,
+            },
+            reasoning: SchedulerQuotaConfig {
+                max_tokens: 8192,
+                max_syscalls: 8,
+            },
+            general: SchedulerQuotaConfig {
+                max_tokens: 2048,
+                max_syscalls: 8,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct SchedulerQuotaConfig {
+    pub max_tokens: usize,
+    pub max_syscalls: usize,
+}
+
+impl Default for SchedulerQuotaConfig {
+    fn default() -> Self {
+        Self {
+            max_tokens: 2048,
+            max_syscalls: 8,
+        }
+    }
+}
+
+pub fn initialize() -> Result<&'static KernelConfig, String> {
+    if let Some(config) = KERNEL_CONFIG.get() {
+        return Ok(config);
+    }
+
+    let config = load_kernel_config()?;
+    let _ = KERNEL_CONFIG.set(config);
+    Ok(KERNEL_CONFIG.get().expect("kernel config initialized"))
+}
+
+pub fn kernel_config() -> &'static KernelConfig {
+    KERNEL_CONFIG.get_or_init(|| {
+        load_kernel_config().unwrap_or_else(|err| {
+            eprintln!("AgenticOS config warning: {err}. Falling back to built-in defaults.");
+            KernelConfig::default()
+        })
+    })
+}
+
+pub fn config_file_path() -> PathBuf {
+    env_string("AGENTIC_CONFIG_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("agenticos.toml"))
+}
+
+fn load_kernel_config() -> Result<KernelConfig, String> {
+    let path = config_file_path();
+    let mut config = if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read config '{}': {}", path.display(), e))?;
+        toml::from_str::<KernelConfig>(&raw)
+            .map_err(|e| format!("invalid config '{}': {}", path.display(), e))?
+    } else {
+        KernelConfig::default()
+    };
+
+    apply_env_overrides(&mut config);
+    Ok(config)
+}
+
+fn apply_env_overrides(config: &mut KernelConfig) {
+    if let Some(value) = env_u16("AGENTIC_PORT") {
+        config.network.port = value;
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_LOG_CONNECTIONS") {
+        config.network.log_connections = value;
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_MEMORY_ACTIVE") {
+        config.memory.active = value;
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_MEMORY_SWAP_ASYNC") {
+        config.memory.swap_async = value;
+    }
+    if let Some(value) = env_string("AGENTIC_MEMORY_SWAP_DIR") {
+        config.memory.swap_dir = PathBuf::from(value);
+    }
+    if let Some(value) = env_u64_opt("AGENTIC_CHECKPOINT_INTERVAL_SECS") {
+        config.checkpoint.interval_secs = value;
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_AUTH_DISABLED") {
+        config.auth.disabled = value;
+    }
+    if let Some(value) = env_string("AGENTIC_LLAMACPP_ENDPOINT") {
+        config.external_llamacpp.endpoint = value;
+    }
+    if let Some(value) = env_u64_opt("AGENTIC_LLAMACPP_TIMEOUT_MS") {
+        config.external_llamacpp.timeout_ms = value;
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_LLAMACPP_CHUNK_TOKENS") {
+        config.external_llamacpp.chunk_tokens = value.max(1);
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_EXEC_AUTO_SWITCH") {
+        config.exec.auto_switch = value;
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_ORCH_MAX_OUTPUT_CHARS") {
+        config.orchestrator.max_output_chars = value.max(1);
+    }
+    if let Some(value) = env_string("AGENTIC_SANDBOX_MODE") {
+        config.tools.sandbox_mode = value;
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_ALLOW_HOST_FALLBACK") {
+        config.tools.allow_host_fallback = value;
+    }
+    if let Some(value) = env_u64_opt("AGENTIC_SYSCALL_TIMEOUT_S") {
+        config.tools.timeout_s = value.max(1);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_SYSCALL_MAX_PER_WINDOW") {
+        config.tools.max_calls_per_window = value.max(1);
+    }
+    if let Some(value) = env_u64_opt("AGENTIC_SYSCALL_WINDOW_S") {
+        config.tools.window_s = value.max(1);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_SYSCALL_ERROR_BURST_KILL") {
+        config.tools.error_burst_kill = value.max(1);
+    }
+}
+
+#[allow(dead_code)]
+pub fn env_bool(name: &str, default: bool) -> bool {
+    env_bool_opt(name).unwrap_or(default)
+}
+
+#[allow(dead_code)]
 pub fn env_u64(name: &str, default: u64) -> u64 {
+    env_u64_opt(name).unwrap_or(default)
+}
+
+#[allow(dead_code)]
+pub fn env_usize(name: &str, default: usize) -> usize {
+    env_usize_opt(name).unwrap_or(default)
+}
+
+fn env_bool_opt(name: &str) -> Option<bool> {
+    std::env::var(name).ok().map(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn env_u16(name: &str) -> Option<u16> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u16>().ok())
+}
+
+fn env_u64_opt(name: &str) -> Option<u64> {
     std::env::var(name)
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(default)
 }
 
-pub fn env_usize(name: &str, default: usize) -> usize {
+fn env_usize_opt(name: &str) -> Option<usize> {
     std::env::var(name)
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or(default)
+}
+
+fn env_string(name: &str) -> Option<String> {
+    std::env::var(name).ok().map(|value| value.trim().to_string())
 }

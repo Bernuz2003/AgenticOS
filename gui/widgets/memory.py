@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui.response_parser import RestoreResult, StatusSnapshot, parse_restore_payload
+
 
 class MemorySection(QWidget):
     """NeuralMemory usage, swap status, CHECKPOINT/RESTORE, and MEMW form."""
@@ -221,9 +223,9 @@ class MemorySection(QWidget):
 
     # ── Public API ───────────────────────────────────────────
 
-    def update_from_status(self, data: dict):
-        """Parse global STATUS dict (JSON-decoded) and update memory stats."""
-        mem = data.get("memory", {})
+    def update_from_status(self, status: StatusSnapshot):
+        """Update memory stats from normalized STATUS payload."""
+        mem = status.memory
 
         # Memory stats
         for key in self._stats:
@@ -251,21 +253,20 @@ class MemorySection(QWidget):
         self.ckpt_output.setText(text[:300])
 
     def show_restore_result(self, text: str):
-        try:
-            import json
-
-            data = json.loads(text)
-        except Exception:
+        data = parse_restore_payload(text)
+        if data is None:
             self.ckpt_output.setText(text[:400])
             return
 
-        limits = data.get("limitations", [])
-        limits_text = "; ".join(limits) if limits else "metadata-only"
+        self.show_restore_details(data)
+
+    def show_restore_details(self, result: RestoreResult):
+        limits_text = "; ".join(result.limitations) if result.limitations else "metadata-only"
         self.ckpt_output.setText(
             "RESTORE applied: "
-            f"cleared={data.get('cleared_scheduler_entries', 0)}  •  "
-            f"restored={data.get('restored_scheduler_entries', 0)}  •  "
-            f"selected_model={data.get('selected_model', '<none>')}\n"
+            f"cleared={result.cleared_scheduler_entries}  •  "
+            f"restored={result.restored_scheduler_entries}  •  "
+            f"selected_model={result.selected_model}\n"
             f"Limits: {limits_text}"
         )
 
