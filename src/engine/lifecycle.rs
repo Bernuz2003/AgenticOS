@@ -200,7 +200,7 @@ impl LLMEngine {
         self.processes
             .iter()
             .filter_map(|(pid, proc)| {
-                if proc.state != ProcessState::Finished {
+                if matches!(proc.state, ProcessState::Ready | ProcessState::Running) {
                     Some(*pid)
                 } else {
                     None

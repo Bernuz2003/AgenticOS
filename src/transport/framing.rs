@@ -1,4 +1,4 @@
-use crate::protocol::CommandHeader;
+use crate::protocol::{validate_content_length, CommandHeader};
 
 use super::{ClientState, ParsedCommand};
 
@@ -33,6 +33,11 @@ pub fn parse_available_commands(buffer: &mut Vec<u8>, state: &mut ClientState) -
                 }
             }
             ClientState::ReadingBody { header } => {
+                if let Err(e) = validate_content_length(header.content_length) {
+                    parsed.push(ParsedCommand::Err(e.to_string()));
+                    *state = ClientState::WaitingForHeader;
+                    continue;
+                }
                 if buffer.len() >= header.content_length {
                     let payload = buffer.drain(..header.content_length).collect::<Vec<u8>>();
                     let copied_header = CommandHeader {

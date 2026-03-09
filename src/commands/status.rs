@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashSet;
 
 use crate::protocol;
 
@@ -182,11 +183,11 @@ pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec
                     let active_pids = engine.list_active_pids();
                     let waiting_pids = engine.list_waiting_pids();
                     let in_flight_pids: Vec<u64> = ctx.in_flight.iter().copied().collect();
-                    let all_pids: Vec<u64> = active_pids.iter()
-                        .chain(waiting_pids.iter())
-                        .chain(in_flight_pids.iter())
-                        .copied()
-                        .collect();
+                    let all_pids = collect_unique_pids([
+                        active_pids.as_slice(),
+                        waiting_pids.as_slice(),
+                        in_flight_pids.as_slice(),
+                    ]);
                     let active_processes: Vec<PidStatusResponse> = all_pids
                         .iter()
                         .map(|&pid| {
@@ -284,6 +285,21 @@ pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec
 
     let json = serde_json::to_string(&resp).expect("StatusResponse is always serializable");
     protocol::response_ok_code("STATUS", &json)
+}
+
+fn collect_unique_pids(groups: [&[u64]; 3]) -> Vec<u64> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+
+    for group in groups {
+        for &pid in group {
+            if seen.insert(pid) {
+                unique.push(pid);
+            }
+        }
+    }
+
+    unique
 }
 
 // ── Per-PID status (JSON) ───────────────────────────────────────────────
@@ -384,4 +400,15 @@ fn build_orch_status(ctx: &mut CommandContext<'_>, orch_id: u64) -> Vec<u8> {
 
     let json = serde_json::to_string(&resp).expect("OrchStatusResponse is always serializable");
     protocol::response_ok_code("STATUS", &json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_unique_pids;
+
+    #[test]
+    fn collect_unique_pids_preserves_first_seen_order() {
+        let unique = collect_unique_pids([&[1, 2, 3], &[3, 4], &[2, 5]]);
+        assert_eq!(unique, vec![1, 2, 3, 4, 5]);
+    }
 }

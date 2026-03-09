@@ -31,6 +31,7 @@ mod tests {
     use crate::memory::{MemoryConfig, NeuralMemory};
     use crate::model_catalog::ModelCatalog;
     use crate::orchestrator::Orchestrator;
+    use crate::protocol::MAX_CONTENT_LENGTH;
     use crate::scheduler::ProcessScheduler;
 
     use super::{handle_read, handle_write, Client};
@@ -176,6 +177,17 @@ mod tests {
     }
 
     #[test]
+    fn oversized_header_returns_error_and_continues() {
+        let mut state = ClientState::WaitingForHeader;
+        let mut buffer = format!("PING 1 {}\nPING 1 0\n", MAX_CONTENT_LENGTH + 1).into_bytes();
+
+        let parsed = parse_available_commands(&mut buffer, &mut state);
+        assert_eq!(parsed.len(), 2);
+        assert!(matches!(parsed[0], ParsedCommand::Err(_)));
+        assert!(matches!(parsed[1], ParsedCommand::Ok { .. }));
+    }
+
+    #[test]
     fn tcp_ping_roundtrip_on_transport_layer() {
         let (mut client, mut peer) = setup_client_and_peer();
         let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
@@ -265,6 +277,38 @@ mod tests {
 
         peer.write_all(b"WHAT 1 0\nPING 1 0\n")
             .expect("write invalid+valid");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "test_token",
+        );
+        let _ = handle_write(&mut client);
+
+        let mut out = [0u8; 512];
+        let n = peer.read(&mut out).expect("read combined responses");
+        let resp = String::from_utf8_lossy(&out[..n]);
+        assert!(resp.contains("-ERR BAD_HEADER"));
+        assert!(resp.contains("+OK PING 4\r\nPONG"));
+    }
+
+    #[test]
+    fn tcp_oversized_header_then_valid_ping_same_stream() {
+        let (mut client, mut peer) = setup_client_and_peer();
+        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
+            setup_shared_state();
+
+        let request = format!("PING 1 {}\nPING 1 0\n", MAX_CONTENT_LENGTH + 1);
+        peer.write_all(request.as_bytes())
+            .expect("write oversized+valid");
         let _ = handle_read(
             &mut client,
             &mut memory,

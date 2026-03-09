@@ -11,7 +11,11 @@ use super::policy::{SandboxMode, SysCallConfig};
 fn truncate_output(text: &str) -> String {
     let limit = kernel_config().tools.output_truncate_len;
     if text.len() > limit {
-        format!("{}... (Output Truncated)", &text[..limit])
+        let mut end = limit;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}... (Output Truncated)", &text[..end])
     } else if text.trim().is_empty() {
         "Done (No Output)".to_string()
     } else {
@@ -225,5 +229,21 @@ pub(crate) fn handle_list_files() -> Result<String, String> {
             }
         }
         Err(e) => Err(format!("SysCall Error: LS failed: {}", e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_output;
+    use crate::config::kernel_config;
+
+    #[test]
+    fn truncate_output_preserves_utf8_boundaries() {
+        let limit = kernel_config().tools.output_truncate_len;
+        let text = format!("{}😀", "a".repeat(limit));
+        let truncated = truncate_output(&text);
+        assert!(truncated.starts_with(&"a".repeat(limit)));
+        assert!(truncated.ends_with("... (Output Truncated)"));
+        assert!(!truncated.contains('😀'));
     }
 }

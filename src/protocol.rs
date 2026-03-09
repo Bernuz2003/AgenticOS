@@ -2,6 +2,8 @@ use std::str;
 
 use crate::errors::ProtocolError;
 
+pub const MAX_CONTENT_LENGTH: usize = 8 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub enum OpCode {
     Ping,           // Ping-Pong
@@ -79,11 +81,24 @@ impl CommandHeader {
             .parse::<usize>()
             .map_err(|_| ProtocolError::InvalidContentLength)?;
 
+        validate_content_length(content_length)?;
+
         Ok(CommandHeader {
             opcode,
             agent_id,
             content_length,
         })
+    }
+}
+
+pub fn validate_content_length(content_length: usize) -> Result<(), ProtocolError> {
+    if content_length > MAX_CONTENT_LENGTH {
+        Err(ProtocolError::ContentLengthTooLarge {
+            requested: content_length,
+            max: MAX_CONTENT_LENGTH,
+        })
+    } else {
+        Ok(())
     }
 }
 
@@ -120,7 +135,9 @@ pub fn response_data(data: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{response_err_code, response_ok_code, CommandHeader, OpCode};
+    use super::{
+        response_err_code, response_ok_code, CommandHeader, OpCode, MAX_CONTENT_LENGTH,
+    };
 
     #[test]
     fn parse_basic_opcodes() {
@@ -215,6 +232,13 @@ mod tests {
         let err =
             CommandHeader::parse("PING 1 0 extra").expect_err("header with extra fields fails");
         assert!(err.to_string().contains("Invalid header format"));
+    }
+
+    #[test]
+    fn parse_rejects_oversized_payloads() {
+        let err = CommandHeader::parse(&format!("EXEC 1 {}", MAX_CONTENT_LENGTH + 1))
+            .expect_err("oversized payload must fail");
+        assert!(err.to_string().contains("exceeds protocol limit"));
     }
 
     #[test]

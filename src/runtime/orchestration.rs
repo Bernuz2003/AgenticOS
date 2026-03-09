@@ -136,7 +136,7 @@ pub(super) fn checkout_active_processes(
             continue;
         }
         if let Some(process) = engine.processes.remove(&pid) {
-            if process.state == ProcessState::Finished {
+            if !matches!(process.state, ProcessState::Ready | ProcessState::Running) {
                 engine.processes.insert(pid, process);
                 continue;
             }

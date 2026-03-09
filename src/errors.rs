@@ -96,6 +96,9 @@ pub enum ProtocolError {
 
     #[error("Invalid content length")]
     InvalidContentLength,
+
+    #[error("Content length {requested} exceeds protocol limit {max}")]
+    ContentLengthTooLarge { requested: usize, max: usize },
 }
 
 // ── Model catalog errors ────────────────────────────────────────────────
