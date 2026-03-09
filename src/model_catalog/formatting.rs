@@ -2,7 +2,8 @@ use serde::Serialize;
 
 use crate::errors::CatalogError;
 
-use super::routing::{driver_view_for_entry, recommend_for_workload};
+use super::driver::driver_view_for_entry;
+use super::routing::recommend_for_workload;
 use super::{ModelCatalog, ModelEntry, WorkloadClass};
 
 #[derive(Serialize)]
