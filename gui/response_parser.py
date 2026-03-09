@@ -190,6 +190,69 @@ def parse_models_payload(payload: str) -> tuple[list[dict[str, Any]], dict[str, 
     return normalized, routing
 
 
+def normalize_tool_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+
+    descriptor = entry.get("descriptor") if isinstance(entry.get("descriptor"), dict) else {}
+    backend = entry.get("backend") if isinstance(entry.get("backend"), dict) else {}
+    name = str(descriptor.get("name", "") or "")
+    if not name:
+        return None
+
+    aliases = descriptor.get("aliases") if isinstance(descriptor.get("aliases"), list) else []
+    capabilities = (
+        descriptor.get("capabilities")
+        if isinstance(descriptor.get("capabilities"), list)
+        else []
+    )
+
+    return {
+        "name": name,
+        "aliases": [str(alias) for alias in aliases],
+        "description": str(descriptor.get("description", "") or ""),
+        "backend_kind": str(descriptor.get("backend_kind", "") or backend.get("kind", "")),
+        "backend": backend,
+        "source": str(descriptor.get("source", "") or ""),
+        "enabled": bool(descriptor.get("enabled", False)),
+        "dangerous": bool(descriptor.get("dangerous", False)),
+        "capabilities": [str(capability) for capability in capabilities],
+        "descriptor": descriptor,
+    }
+
+
+def parse_tools_payload(payload: str) -> list[dict[str, Any]]:
+    data = parse_json_payload(payload)
+    if not isinstance(data, dict):
+        return []
+
+    raw_tools = data.get("tools") if isinstance(data.get("tools"), list) else []
+    normalized = []
+    for entry in raw_tools:
+        if not isinstance(entry, dict):
+            continue
+        tool = normalize_tool_entry(entry)
+        if tool is not None:
+            normalized.append(tool)
+    return normalized
+
+
+def parse_tool_info_payload(payload: str) -> dict[str, Any]:
+    data = parse_json_dict(payload)
+    if not data:
+        return {}
+
+    tool = normalize_tool_entry(data.get("tool", {}))
+    if tool is None:
+        return {}
+
+    sandbox = data.get("sandbox") if isinstance(data.get("sandbox"), dict) else {}
+    return {
+        "tool": tool,
+        "sandbox": sandbox,
+    }
+
+
 def parse_legacy_model_lines(payload: str) -> list[dict[str, Any]]:
     models = []
     for line in payload.splitlines():

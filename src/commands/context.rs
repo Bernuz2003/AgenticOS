@@ -7,6 +7,7 @@ use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::scheduler::ProcessScheduler;
+use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
 use super::metrics::MetricsState;
@@ -20,6 +21,7 @@ pub(crate) struct CommandContext<'a> {
     pub model_catalog: &'a mut ModelCatalog,
     pub scheduler: &'a mut ProcessScheduler,
     pub orchestrator: &'a mut Orchestrator,
+    pub tool_registry: &'a mut ToolRegistry,
     pub client_id: usize,
     pub shutdown_requested: &'a Arc<AtomicBool>,
     // ── Inference worker (checkout/checkin) ──────────────────────

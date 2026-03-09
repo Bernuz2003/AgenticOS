@@ -129,6 +129,25 @@ class RequestHandler:
             on_done=lambda: setattr(self._session, "models_in_flight", False),
         )
 
+    def refresh_tools(self, silent: bool = False, force: bool = False):
+        if self._session.tools_in_flight:
+            return
+        should_refresh = force or self._session.is_connected or self._kernel_is_running() or not silent
+        if not should_refresh:
+            return
+
+        self._session.tools_in_flight = True
+        self.dispatch_control_request(
+            verb="LIST_TOOLS",
+            payload="",
+            show_error_popup=not silent,
+            success_event_kind="tools_list",
+            read_timeout_s=8.0,
+            inactivity_timeout_s=0.6,
+            include_control_log=not silent,
+            on_done=lambda: setattr(self._session, "tools_in_flight", False),
+        )
+
     def load_model(self, model_id: str, on_loading: Callable[[str], None]):
         if self._session.load_in_flight or not model_id:
             return

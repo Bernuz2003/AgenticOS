@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import queue
 import sys
 from pathlib import Path
@@ -30,12 +31,13 @@ from gui.sections import (
     OrchestrationSection,
     ProcessesSection,
     SidebarWidget,
+    ToolsSection,
 )
 from gui.services import GuiSessionState, RequestHandler, UiEvent
 
 
 class MainWindow(QMainWindow):
-    """Main window: Sidebar (fixed 210px) + QStackedWidget with 6 sections."""
+    """Main window: Sidebar (fixed 210px) + QStackedWidget with control sections."""
 
     def __init__(self, workspace_root: Path):
         super().__init__()
@@ -78,6 +80,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.chat_section = ChatSection()
         self.models_section = ModelsSection()
+        self.tools_section = ToolsSection()
         self.processes_section = ProcessesSection()
         self.memory_section = MemorySection()
         self.orchestration_section = OrchestrationSection()
@@ -85,10 +88,11 @@ class MainWindow(QMainWindow):
 
         self.stack.addWidget(self.chat_section)       # 0
         self.stack.addWidget(self.models_section)      # 1
-        self.stack.addWidget(self.processes_section)    # 2
-        self.stack.addWidget(self.memory_section)       # 3
-        self.stack.addWidget(self.orchestration_section)  # 4
-        self.stack.addWidget(self.logs_section)         # 5
+        self.stack.addWidget(self.tools_section)       # 2
+        self.stack.addWidget(self.processes_section)    # 3
+        self.stack.addWidget(self.memory_section)       # 4
+        self.stack.addWidget(self.orchestration_section)  # 5
+        self.stack.addWidget(self.logs_section)         # 6
 
         root_layout.addWidget(self.stack, stretch=1)
         self.setCentralWidget(root)
@@ -122,6 +126,18 @@ class MainWindow(QMainWindow):
         self.models_section.refresh_requested.connect(
             lambda: self._refresh_models(silent=False, force=True)
         )
+
+        # Tools section
+        self.tools_section.refresh_requested.connect(
+            lambda: self._refresh_tools(silent=False, force=True)
+        )
+        self.tools_section.info_requested.connect(
+            lambda name: self._send_with_event("TOOL_INFO", name, "tool_info") if name else None
+        )
+        self.tools_section.register_requested.connect(
+            lambda payload: self._send_with_event("REGISTER_TOOL", payload, "tool_registered")
+        )
+        self.tools_section.unregister_requested.connect(self._unregister_tool)
 
         # Processes section
         self.processes_section.set_priority_requested.connect(
@@ -210,6 +226,10 @@ class MainWindow(QMainWindow):
         self._models_timer.timeout.connect(lambda: self._refresh_models(silent=True, force=False))
         self._models_timer.start(15000)
 
+        self._tools_timer = QTimer(self)
+        self._tools_timer.timeout.connect(lambda: self._refresh_tools(silent=True, force=False))
+        self._tools_timer.start(20000)
+
     # ═══════════════════════════════════════════════════════════
     #  KERNEL LIFECYCLE
     # ═══════════════════════════════════════════════════════════
@@ -223,6 +243,7 @@ class MainWindow(QMainWindow):
         self.client.reset_session()
         QTimer.singleShot(900, lambda: self._refresh_status(force=True))
         QTimer.singleShot(1200, lambda: self._refresh_models(silent=True, force=True))
+        QTimer.singleShot(1500, lambda: self._refresh_tools(silent=True, force=True))
 
     def _stop_kernel(self):
         self.client.reset_session()
@@ -236,6 +257,7 @@ class MainWindow(QMainWindow):
         self.session.active_pids = []
         self.models_section.update_loaded_model("")
         self.sidebar.update_status(online=False)
+        self.tools_section.clear_tools()
 
     # ═══════════════════════════════════════════════════════════
     #  PROTOCOL DISPATCH (background threads → ui_queue)
@@ -286,6 +308,9 @@ class MainWindow(QMainWindow):
     def _refresh_models(self, silent: bool = False, force: bool = False):
         self.request_handler.refresh_models(silent=silent, force=force)
 
+    def _refresh_tools(self, silent: bool = False, force: bool = False):
+        self.request_handler.refresh_tools(silent=silent, force=force)
+
     # ── LOAD (SELECT + LOAD) ────────────────────────────────
 
     def _load_model(self, model_id: str):
@@ -311,6 +336,15 @@ class MainWindow(QMainWindow):
         if not pid:
             return
         self._send_simple(verb, pid)
+
+    def _unregister_tool(self, tool_name: str):
+        if not tool_name:
+            return
+        self._send_with_event(
+            "UNREGISTER_TOOL",
+            json.dumps({"name": tool_name}),
+            "tool_unregistered",
+        )
 
     # ═══════════════════════════════════════════════════════════
     #  UI QUEUE FLUSH → route events to widgets
@@ -341,6 +375,24 @@ class MainWindow(QMainWindow):
 
             elif event.kind == "models_list":
                 self.models_section.update_models(event.message)
+
+            elif event.kind == "tools_list":
+                self.tools_section.clear_error()
+                self.tools_section.update_tools(event.message)
+
+            elif event.kind == "tool_info":
+                self.tools_section.clear_error()
+                self.tools_section.show_tool_info(event.message)
+
+            elif event.kind == "tool_registered":
+                self.tools_section.clear_error()
+                self.tools_section.show_tool_mutation_result(event.message, "REGISTER_TOOL")
+                self._refresh_tools(silent=True, force=True)
+
+            elif event.kind == "tool_unregistered":
+                self.tools_section.clear_error()
+                self.tools_section.show_tool_mutation_result(event.message, "UNREGISTER_TOOL")
+                self._refresh_tools(silent=True, force=True)
 
             elif event.kind == "model_info":
                 self.models_section.show_info(event.message)
@@ -476,7 +528,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         # Stop all timers
         for timer in (self._queue_timer, self._status_timer, self._events_timer,
-                      self._audit_timer, self._models_timer):
+                      self._audit_timer, self._models_timer, self._tools_timer):
             timer.stop()
         self.request_handler.shutdown()
         # Close persistent TCP connection

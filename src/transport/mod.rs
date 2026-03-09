@@ -4,7 +4,9 @@ mod io;
 
 pub use client::{Client, ClientState, ParsedCommand};
 pub use framing::parse_available_commands;
-pub use io::{handle_read, handle_write};
+#[cfg(test)]
+pub use io::handle_read;
+pub use io::{handle_read_with_registry, handle_write};
 
 use mio::Interest;
 
@@ -35,10 +37,11 @@ mod tests {
     use crate::orchestrator::Orchestrator;
     use crate::protocol::MAX_CONTENT_LENGTH;
     use crate::scheduler::ProcessScheduler;
+    use crate::tool_registry::ToolRegistry;
     use jsonschema::JSONSchema;
     use serde_json::Value;
 
-    use super::{handle_read, handle_write, Client};
+    use super::{handle_read, handle_read_with_registry, handle_write, Client};
     use super::{parse_available_commands, ClientState, ParsedCommand};
 
     fn setup_client_and_peer() -> (Client, TcpStream) {
@@ -62,6 +65,54 @@ mod tests {
         let mut out = [0u8; 4096];
         let n = peer.read(&mut out).expect("read frame");
         String::from_utf8_lossy(&out[..n]).to_string()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pump_read_with_registry(
+        client: &mut Client,
+        memory: &mut NeuralMemory,
+        engine_state: &mut Option<LLMEngine>,
+        catalog: &mut ModelCatalog,
+        scheduler: &mut ProcessScheduler,
+        orchestrator: &mut Orchestrator,
+        shutdown_requested: &Arc<AtomicBool>,
+        in_flight: &HashSet<u64>,
+        pending_kills: &mut Vec<u64>,
+        metrics: &mut MetricsState,
+        tool_registry: &mut ToolRegistry,
+        auth_token: &str,
+    ) {
+        for _ in 0..4 {
+            let _ = handle_read_with_registry(
+                client,
+                memory,
+                engine_state,
+                catalog,
+                scheduler,
+                orchestrator,
+                1,
+                shutdown_requested,
+                in_flight,
+                pending_kills,
+                metrics,
+                tool_registry,
+                auth_token,
+            );
+            if !client.output_buffer.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn pump_write(client: &mut Client) {
+        for _ in 0..4 {
+            let _ = handle_write(client);
+            if client.output_buffer.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn control_payload(resp: &str) -> &str {
@@ -699,7 +750,7 @@ mod tests {
         let _ = handle_write(&mut client);
         let _ = read_frame(&mut peer);
 
-        peer.write_all(b"TOOL_INFO 1 0\n").expect("write tool info");
+        peer.write_all(b"TOOL_INFO 1 6\npython").expect("write tool info");
         let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
         let _ = handle_write(&mut client);
 
@@ -710,8 +761,143 @@ mod tests {
         assert_eq!(payload["schema_id"], "agenticos.control.tool_info.v1");
         assert_eq!(payload["ok"], true);
         assert!(payload["request_id"].as_str().unwrap_or("").starts_with("1:"));
-        assert!(payload["data"]["tools"].is_array());
+        assert_eq!(payload["data"]["tool"]["descriptor"]["name"], "python");
+        assert_eq!(payload["data"]["tool"]["backend"]["kind"], "host");
         assert!(payload["data"]["sandbox"].is_object());
+    }
+
+    #[test]
+    fn tcp_list_tools_contract_uses_envelope_after_hello_and_auth() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut peer = TcpStream::connect(addr).expect("connect");
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let (server_stream, _) = listener.accept().expect("accept");
+        server_stream.set_nonblocking(true).unwrap();
+        let mio_stream = mio::net::TcpStream::from_std(server_stream);
+        let mut client = Client::new(mio_stream, false);
+
+        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
+            setup_shared_state();
+
+        let hello_payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
+        let hello_header = format!("HELLO 1 {}\n", hello_payload.len());
+        peer.write_all(hello_header.as_bytes()).expect("write hello header");
+        peer.write_all(hello_payload).expect("write hello payload");
+        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_write(&mut client);
+        let _ = read_frame(&mut peer);
+
+        peer.write_all(b"AUTH 1 12\nsecret_token").expect("write auth");
+        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_write(&mut client);
+        let _ = read_frame(&mut peer);
+
+        peer.write_all(b"LIST_TOOLS 1 0\n").expect("write list tools");
+        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_write(&mut client);
+
+        let resp = read_frame(&mut peer);
+        assert!(resp.starts_with("+OK LIST_TOOLS"));
+        let payload = control_json(&resp);
+        assert_matches_schema("protocol/schemas/v1/list-tools.schema.json", &payload);
+        assert_eq!(payload["schema_id"], "agenticos.control.list_tools.v1");
+        assert_eq!(payload["ok"], true);
+        assert!(payload["data"]["total_tools"].as_u64().unwrap_or(0) >= 5);
+        assert!(payload["data"]["tools"].is_array());
+        assert!(payload["data"]["tools"][0]["descriptor"]["name"].is_string());
+        assert!(payload["data"]["tools"][0]["backend"]["kind"].is_string());
+    }
+
+    #[test]
+    fn tcp_register_and_unregister_tool_contracts_use_envelope_after_hello_and_auth() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut peer = TcpStream::connect(addr).expect("connect");
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let (server_stream, _) = listener.accept().expect("accept");
+        server_stream.set_nonblocking(true).unwrap();
+        let mio_stream = mio::net::TcpStream::from_std(server_stream);
+        let mut client = Client::new(mio_stream, false);
+
+        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
+            setup_shared_state();
+        let mut tool_registry = ToolRegistry::with_builtins();
+
+        let hello_payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
+        let hello_header = format!("HELLO 1 {}\n", hello_payload.len());
+        peer.write_all(hello_header.as_bytes()).expect("write hello header");
+        peer.write_all(hello_payload).expect("write hello payload");
+        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        pump_write(&mut client);
+        let _ = read_frame(&mut peer);
+
+        peer.write_all(b"AUTH 1 12\nsecret_token").expect("write auth");
+        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        pump_write(&mut client);
+        let _ = read_frame(&mut peer);
+
+        let register_payload = br#"{"descriptor":{"name":"runtime_echo","aliases":["ECHO"],"description":"Echo payload through remote backend.","input_schema":{"type":"object"},"output_schema":{"type":"object"},"backend_kind":"remote_http","capabilities":["echo"],"dangerous":false,"enabled":true,"source":"runtime"},"backend":{"kind":"remote_http","url":"http://127.0.0.1:8081/tool","method":"POST","timeout_ms":1500,"headers":{}}}"#;
+        let register_header = format!("REGISTER_TOOL 1 {}\n", register_payload.len());
+        let mut register_frame = register_header.into_bytes();
+        register_frame.extend_from_slice(register_payload);
+        peer.write_all(&register_frame).expect("write register frame");
+        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        pump_write(&mut client);
+
+        let register_resp = read_frame(&mut peer);
+        assert!(register_resp.starts_with("+OK REGISTER_TOOL"));
+        let register_json = control_json(&register_resp);
+        assert_matches_schema("protocol/schemas/v1/register-tool.schema.json", &register_json);
+        assert_eq!(register_json["data"]["tool"]["descriptor"]["name"], "runtime_echo");
+        assert_eq!(register_json["data"]["tool"]["backend"]["kind"], "remote_http");
+
+        let unregister_payload = br#"{"name":"runtime_echo"}"#;
+        let unregister_header = format!("UNREGISTER_TOOL 1 {}\n", unregister_payload.len());
+        let mut unregister_frame = unregister_header.into_bytes();
+        unregister_frame.extend_from_slice(unregister_payload);
+        peer.write_all(&unregister_frame).expect("write unregister frame");
+        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        pump_write(&mut client);
+
+        let unregister_resp = read_frame(&mut peer);
+        assert!(unregister_resp.starts_with("+OK UNREGISTER_TOOL"));
+        let unregister_json = control_json(&unregister_resp);
+        assert_matches_schema("protocol/schemas/v1/unregister-tool.schema.json", &unregister_json);
+        assert_eq!(unregister_json["data"]["tool"]["descriptor"]["name"], "runtime_echo");
+    }
+
+    #[test]
+    fn tcp_register_tool_requires_hello_capability_negotiation() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut peer = TcpStream::connect(addr).expect("connect");
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let (server_stream, _) = listener.accept().expect("accept");
+        server_stream.set_nonblocking(true).unwrap();
+        let mio_stream = mio::net::TcpStream::from_std(server_stream);
+        let mut client = Client::new(mio_stream, false);
+
+        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
+            setup_shared_state();
+        let mut tool_registry = ToolRegistry::with_builtins();
+
+        peer.write_all(b"AUTH 1 12\nsecret_token").expect("write auth");
+        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        pump_write(&mut client);
+        let _ = read_frame(&mut peer);
+
+        let register_payload = br#"{"descriptor":{"name":"runtime_echo","aliases":[],"description":"Echo payload through remote backend.","input_schema":{"type":"object"},"output_schema":{"type":"object"},"backend_kind":"remote_http","capabilities":["echo"],"dangerous":false,"enabled":true,"source":"runtime"},"backend":{"kind":"remote_http","url":"http://127.0.0.1:8081/tool","method":"POST","timeout_ms":1500,"headers":{}}}"#;
+        let register_header = format!("REGISTER_TOOL 1 {}\n", register_payload.len());
+    let mut register_frame = register_header.into_bytes();
+    register_frame.extend_from_slice(register_payload);
+    peer.write_all(&register_frame).expect("write register frame");
+        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        pump_write(&mut client);
+
+        let resp = read_frame(&mut peer);
+        assert!(resp.starts_with("-ERR CAPABILITY_REQUIRED"));
+        assert!(resp.contains("tool_registry_v1"));
     }
 
     #[test]

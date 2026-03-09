@@ -9,6 +9,7 @@ use crate::orchestrator::Orchestrator;
 use crate::process::ProcessState;
 use crate::protocol;
 use crate::scheduler::ProcessScheduler;
+use crate::tool_registry::ToolRegistry;
 use crate::services::process_runtime::kill_managed_process;
 use crate::tools::SyscallRateMap;
 use crate::transport::Client;
@@ -27,6 +28,7 @@ pub(super) fn drain_worker_results(
     in_flight: &mut HashSet<u64>,
     pending_kills: &mut Vec<u64>,
     rate_map: &mut SyscallRateMap,
+    tool_registry: &ToolRegistry,
 ) {
     while let Ok(result) = result_rx.try_recv() {
         match result {
@@ -77,7 +79,7 @@ pub(super) fn drain_worker_results(
                 if let Some(full_command) = pending_syscall {
                     let content = full_command[2..full_command.len() - 2].trim().to_string();
                     tracing::info!(pid, owner_id, command = %full_command, "OS: SysCall intercepted");
-                    dispatch_process_syscall(engine, memory, scheduler, pid, &content, rate_map);
+                    dispatch_process_syscall(engine, memory, scheduler, pid, &content, rate_map, tool_registry);
                 }
 
                 if !text_output.is_empty() && owner_id > 0 {

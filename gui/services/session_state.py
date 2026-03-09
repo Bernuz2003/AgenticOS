@@ -11,6 +11,7 @@ class GuiSessionState:
     last_background_error: str = ""
     status_in_flight: bool = False
     models_in_flight: bool = False
+    tools_in_flight: bool = False
     load_in_flight: bool = False
     active_pids: list[str] = field(default_factory=list)
     loaded_model_id: str = ""

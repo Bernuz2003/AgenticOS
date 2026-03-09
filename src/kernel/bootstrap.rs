@@ -14,6 +14,7 @@ use crate::memory::{MemoryConfig, NeuralMemory};
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::scheduler::ProcessScheduler;
+use crate::tool_registry::ToolRegistry;
 use crate::tools::SyscallRateMap;
 use crate::transport::Client;
 
@@ -76,6 +77,7 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         worker_handle: Some(worker_handle),
         metrics: MetricsState::new(),
         syscall_rates: SyscallRateMap::new(),
+        tool_registry: ToolRegistry::with_builtins(),
         auth_token,
         auth_disabled,
     })

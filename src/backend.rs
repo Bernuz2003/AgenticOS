@@ -10,7 +10,7 @@ use crate::memory::ContextSlotId;
 use crate::prompting::{GenerationConfig, PromptFamily};
 
 mod external_llamacpp;
-mod http;
+pub(crate) mod http;
 mod local;
 mod diagnostics;
 mod remote_adapter;

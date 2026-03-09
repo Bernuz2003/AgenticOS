@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 SECTIONS = [
     ("Chat", "💬"),
     ("Models", "🧠"),
+    ("Tools", "🧰"),
     ("Processes", "⚙"),
     ("Memory", "🗄"),
     ("Orchestration", "🔀"),

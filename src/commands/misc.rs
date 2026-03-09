@@ -19,35 +19,6 @@ pub(crate) fn handle_ping(ctx: &mut CommandContext<'_>) -> Vec<u8> {
     )
 }
 
-pub(crate) fn handle_tool_info(ctx: &mut CommandContext<'_>) -> Vec<u8> {
-    let cfg = crate::config::kernel_config();
-    let data = json!({
-        "tools": [
-            {"id": "PYTHON", "description": "Execute Python code under syscall sandbox"},
-            {"id": "WRITE_FILE", "description": "Write a file inside workspace"},
-            {"id": "READ_FILE", "description": "Read a file inside workspace"},
-            {"id": "LS", "description": "List workspace files"},
-            {"id": "CALC", "description": "Evaluate numeric expressions through Python sandbox"}
-        ],
-        "sandbox": {
-            "mode": cfg.tools.sandbox_mode,
-            "allow_host_fallback": cfg.tools.allow_host_fallback,
-            "timeout_s": cfg.tools.timeout_s,
-            "max_calls_per_window": cfg.tools.max_calls_per_window,
-            "window_s": cfg.tools.window_s,
-            "error_burst_kill": cfg.tools.error_burst_kill,
-        }
-    });
-    protocol::response_protocol_ok(
-        ctx.client,
-        &ctx.request_id,
-        "TOOL_INFO",
-        protocol::schema::TOOL_INFO,
-        &data,
-        Some(&data.to_string()),
-    )
-}
-
 pub(crate) fn handle_shutdown(ctx: &mut CommandContext<'_>) -> Vec<u8> {
     ctx.shutdown_requested.store(true, Ordering::SeqCst);
     ctx.metrics.inc_signal_count();

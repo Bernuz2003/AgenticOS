@@ -1,5 +1,6 @@
 use anyhow::{Error as E, Result};
 use std::io::{Read, Write};
+use std::collections::HashMap;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
@@ -9,6 +10,13 @@ pub(crate) struct HttpJsonResponse {
     pub(crate) status_line: String,
     pub(crate) body: String,
     pub(crate) json: Option<serde_json::Value>,
+}
+
+pub(crate) struct HttpRequestOptions<'a> {
+    pub(crate) timeout_ms: u64,
+    pub(crate) max_request_bytes: usize,
+    pub(crate) max_response_bytes: usize,
+    pub(crate) extra_headers: Option<&'a HashMap<String, String>>,
 }
 
 #[derive(Clone)]
@@ -61,6 +69,26 @@ impl HttpEndpoint {
         payload: Option<&serde_json::Value>,
         timeout_ms: u64,
     ) -> Result<HttpJsonResponse> {
+        self.request_json_with_options(
+            method,
+            path,
+            payload,
+            HttpRequestOptions {
+                timeout_ms,
+                max_request_bytes: usize::MAX,
+                max_response_bytes: usize::MAX,
+                extra_headers: None,
+            },
+        )
+    }
+
+    pub(crate) fn request_json_with_options(
+        &self,
+        method: &str,
+        path: &str,
+        payload: Option<&serde_json::Value>,
+        options: HttpRequestOptions<'_>,
+    ) -> Result<HttpJsonResponse> {
         let addr = format!("{}:{}", self.host, self.port);
         let mut addrs = addr
             .to_socket_addrs()
@@ -68,7 +96,7 @@ impl HttpEndpoint {
         let socket_addr = addrs
             .next()
             .ok_or_else(|| E::msg(format!("No address resolved for external RPC endpoint '{}'.", addr)))?;
-        let timeout = Duration::from_millis(timeout_ms);
+        let timeout = Duration::from_millis(options.timeout_ms);
         let mut stream = TcpStream::connect_timeout(&socket_addr, timeout)
             .map_err(|e| E::msg(format!("Failed to connect to external RPC endpoint '{}': {}", addr, e)))?;
         stream
@@ -79,6 +107,13 @@ impl HttpEndpoint {
             .map_err(|e| E::msg(format!("Failed to configure write timeout: {}", e)))?;
 
         let request_body = payload.map(|value| value.to_string()).unwrap_or_default();
+        if request_body.len() > options.max_request_bytes {
+            return Err(E::msg(format!(
+                "External RPC request body exceeded limit ({} > {} bytes).",
+                request_body.len(),
+                options.max_request_bytes
+            )));
+        }
         let content_header = if payload.is_some() {
             format!(
                 "Content-Type: application/json\r\nContent-Length: {}\r\n",
@@ -87,12 +122,22 @@ impl HttpEndpoint {
         } else {
             String::new()
         };
+        let mut extra_header_block = String::new();
+        if let Some(headers) = options.extra_headers {
+            for (name, value) in headers {
+                extra_header_block.push_str(name);
+                extra_header_block.push_str(": ");
+                extra_header_block.push_str(value);
+                extra_header_block.push_str("\r\n");
+            }
+        }
         let request = format!(
-            "{} {} HTTP/1.1\r\nHost: {}\r\n{}Connection: close\r\n\r\n{}",
+            "{} {} HTTP/1.1\r\nHost: {}\r\n{}{}Connection: close\r\n\r\n{}",
             method,
             path,
             self.host,
             content_header,
+            extra_header_block,
             request_body
         );
         stream
@@ -100,9 +145,23 @@ impl HttpEndpoint {
             .map_err(|e| E::msg(format!("Failed to write external RPC request: {}", e)))?;
 
         let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .map_err(|e| E::msg(format!("Failed to read external RPC response: {}", e)))?;
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = stream
+                .read(&mut chunk)
+                .map_err(|e| E::msg(format!("Failed to read external RPC response: {}", e)))?;
+            if read == 0 {
+                break;
+            }
+            response.extend_from_slice(&chunk[..read]);
+            if response.len() > options.max_response_bytes {
+                return Err(E::msg(format!(
+                    "External RPC response exceeded limit ({} > {} bytes).",
+                    response.len(),
+                    options.max_response_bytes
+                )));
+            }
+        }
 
         let response = String::from_utf8(response)
             .map_err(|e| E::msg(format!("External RPC returned non-UTF8 response: {}", e)))?;

@@ -44,7 +44,11 @@ impl Default for ProtocolRuntimeConfig {
                 "list_models_v1".to_string(),
                 "model_info_v1".to_string(),
                 "backend_diag_v1".to_string(),
+                "list_tools_v1".to_string(),
+                "tool_registry_v1".to_string(),
                 "tool_info_v1".to_string(),
+                "tool_remote_v1".to_string(),
+                "tool_alias_compat_v1".to_string(),
                 "orchestrate_v1".to_string(),
             ],
         }
@@ -177,6 +181,9 @@ pub struct ToolsRuntimeConfig {
     pub window_s: u64,
     pub error_burst_kill: usize,
     pub output_truncate_len: usize,
+    pub remote_http_allowed_hosts: Vec<String>,
+    pub remote_http_max_request_bytes: usize,
+    pub remote_http_max_response_bytes: usize,
     pub audit_log_file: String,
     pub temp_script_prefix: String,
 }
@@ -191,6 +198,9 @@ impl Default for ToolsRuntimeConfig {
             window_s: 10,
             error_burst_kill: 3,
             output_truncate_len: 2000,
+            remote_http_allowed_hosts: Vec::new(),
+            remote_http_max_request_bytes: 16 * 1024,
+            remote_http_max_response_bytes: 64 * 1024,
             audit_log_file: "syscall_audit.log".to_string(),
             temp_script_prefix: "agent_script_".to_string(),
         }
@@ -420,6 +430,19 @@ fn apply_env_overrides(config: &mut KernelConfig) {
     }
     if let Some(value) = env_usize_opt("AGENTIC_SYSCALL_ERROR_BURST_KILL") {
         config.tools.error_burst_kill = value.max(1);
+    }
+    if let Some(value) = env_string("AGENTIC_REMOTE_TOOL_ALLOWED_HOSTS") {
+        config.tools.remote_http_allowed_hosts = value
+            .split(',')
+            .map(|item| item.trim().to_ascii_lowercase())
+            .filter(|item| !item.is_empty())
+            .collect();
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_REMOTE_TOOL_MAX_REQUEST_BYTES") {
+        config.tools.remote_http_max_request_bytes = value.max(256);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_REMOTE_TOOL_MAX_RESPONSE_BYTES") {
+        config.tools.remote_http_max_response_bytes = value.max(256);
     }
 }
 

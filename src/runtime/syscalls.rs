@@ -5,6 +5,7 @@ use crate::scheduler::ProcessScheduler;
 use crate::scheduler::ProcessPriority;
 use crate::services::process_runtime::spawn_managed_process;
 use crate::services::process_runtime::kill_managed_process;
+use crate::tool_registry::ToolRegistry;
 use crate::tools::{handle_syscall, SyscallRateMap};
 
 pub(super) fn scan_syscall_buffer(buffer: &mut String) -> Option<String> {
@@ -29,6 +30,7 @@ pub(super) fn dispatch_process_syscall(
     pid: u64,
     content: &str,
     rate_map: &mut SyscallRateMap,
+    tool_registry: &ToolRegistry,
 ) {
     let quota_exceeded = scheduler.record_syscall(pid);
     if quota_exceeded {
@@ -76,13 +78,8 @@ pub(super) fn dispatch_process_syscall(
         }
     } else if content.starts_with("SEND:") {
         dispatch_send_syscall(engine, pid, content);
-    } else if content.starts_with("PYTHON:")
-        || content.starts_with("WRITE_FILE:")
-        || content.starts_with("READ_FILE:")
-        || content.starts_with("LS")
-        || content.starts_with("CALC:")
-    {
-        let outcome = handle_syscall(content, pid, rate_map);
+    } else {
+        let outcome = handle_syscall(content, pid, rate_map, tool_registry);
         let _ = engine.inject_context(
             pid,
             &engine.format_system_message(&format!("Output:\n{}", outcome.output)),

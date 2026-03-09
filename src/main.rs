@@ -16,6 +16,7 @@ mod protocol;
 mod runtime;
 mod scheduler;
 mod services;
+mod tool_registry;
 mod tools;
 mod transport;
 

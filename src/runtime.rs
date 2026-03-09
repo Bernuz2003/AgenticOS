@@ -11,6 +11,7 @@ use crate::inference_worker::{InferenceCmd, InferenceResult};
 use crate::memory::NeuralMemory;
 use crate::orchestrator::Orchestrator;
 use crate::scheduler::ProcessScheduler;
+use crate::tool_registry::ToolRegistry;
 use crate::tools::SyscallRateMap;
 use crate::transport::Client;
 
@@ -30,6 +31,7 @@ pub fn run_engine_tick(
     in_flight: &mut HashSet<u64>,
     pending_kills: &mut Vec<u64>,
     rate_map: &mut SyscallRateMap,
+    tool_registry: &ToolRegistry,
 ) {
     if let Some(engine) = engine_state.as_mut() {
         let swap_events = memory.poll_swap_events();
@@ -66,6 +68,7 @@ pub fn run_engine_tick(
             in_flight,
             pending_kills,
             rate_map,
+            tool_registry,
         );
 
         handle_finished_processes(engine, memory, clients, poll, scheduler, orchestrator);

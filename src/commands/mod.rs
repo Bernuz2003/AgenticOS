@@ -10,6 +10,7 @@ mod parsing;
 mod process_cmd;
 mod scheduler_cmd;
 mod status;
+mod tools_cmd;
 
 use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
@@ -21,6 +22,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::protocol::OpCode;
 use crate::scheduler::ProcessScheduler;
+use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
 use self::context::CommandContext;
@@ -38,6 +40,7 @@ pub fn execute_command(
     model_catalog: &mut ModelCatalog,
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
+    tool_registry: &mut ToolRegistry,
     client_id: usize,
     shutdown_requested: &Arc<AtomicBool>,
     in_flight: &HashSet<u64>,
@@ -111,6 +114,7 @@ pub fn execute_command(
         model_catalog,
         scheduler,
         orchestrator,
+        tool_registry,
         client_id,
         shutdown_requested,
         in_flight,
@@ -144,7 +148,10 @@ pub fn execute_command(
         OpCode::Orchestrate => {
             if let Some(r) = orchestration_cmd::handle_orchestrate(&mut ctx, &payload) { r } else { return; }
         }
-        OpCode::ToolInfo => misc::handle_tool_info(&mut ctx),
+        OpCode::ListTools => tools_cmd::handle_list_tools(&mut ctx),
+        OpCode::RegisterTool => tools_cmd::handle_register_tool(&mut ctx, &payload),
+        OpCode::ToolInfo => tools_cmd::handle_tool_info(&mut ctx, &payload),
+        OpCode::UnregisterTool => tools_cmd::handle_unregister_tool(&mut ctx, &payload),
         OpCode::Hello => unreachable!("HELLO handled above"),
         OpCode::Auth => unreachable!("AUTH handled above"),
     };

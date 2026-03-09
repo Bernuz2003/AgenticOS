@@ -712,29 +712,79 @@ Questo NON significa, in questa fase:
 ## Roadmap futura — Fase 3: Intelligenza agentica
 
 ### 28) Tool registry dinamico
-**Status:** `TODO`
+**Status:** `IN_PROGRESS`
 
 **Obiettivi**
-- Sostituire il registry hardcoded di tool (`python`, `write_file`, `calc`) con un sistema dinamico.
-- Permettere registrazione/discovery di tool a runtime da parte di agenti o plugin esterni.
-- Abilitare estensibilità senza modificare il codice kernel.
+- Sostituire il dispatch hardcoded dei tool (`PYTHON:`, `WRITE_FILE:`, `READ_FILE:`, `LS`, `CALC:`) con un registry dinamico, interrogabile e governato da policy.
+- Definire una semantica canonica unica per l'invocazione tool da syscall, mantenendo i prefissi legacy solo come alias compatibili nel registry.
+- Permettere registrazione/discovery a runtime di tool built-in e remoti senza modificare il codice kernel.
+- Separare chiaramente descrizione tool, configurazione backend, control-plane protocol e dispatch runtime.
 
 **DoD**
-- [ ] **28.1** `ToolDescriptor` struct: nome, descrizione, schema input (JSON Schema), backend (host/wasm/remote).
-- [ ] **28.2** `ToolRegistry` con `register(descriptor)` / `unregister(name)` / `list()` / `resolve(name)`.
-- [ ] **28.3** Opcodes protocollo: `REGISTER_TOOL <json>`, `LIST_TOOLS`, `TOOL_INFO <name>`.
-- [ ] **28.4** Dispatch syscall aggiornato: lookup nel registry prima del dispatch hardcoded.
-- [ ] **28.5** Tool remoto: possibilità di registrare un tool che fa HTTP call a un endpoint esterno.
-- [ ] **28.6** Integrazione GUI: pannello tool con lista, dettagli, register/unregister.
-- [ ] **28.7** Test: register + invoke, unregister + fallback, tool remoto mock.
-- [ ] **28.8** Suite test verde, clippy pulito.
+- [x] **28.1** Congelare un mini-ADR per il contratto tool con:
+  - `ToolDescriptor` separato da `ToolBackendConfig`
+  - sintassi syscall canonica (`[[TOOL:<name> <json>]]` o equivalente JSON machine-readable)
+  - policy di compatibilita' per alias legacy (`PYTHON:`, `LS`, ecc.)
+- [x] **28.2** Introdurre `ToolDescriptor` con campi minimi: `name`, `aliases`, `description`, `input_schema`, `output_schema`, `backend_kind`, `capabilities`, `dangerous`, `enabled`, `source`.
+- [x] **28.3** Introdurre `ToolRegistry` in-memory con `register`, `unregister`, `list`, `get`, `resolve_invocation_name`, collision detection e bootstrap built-in all'avvio kernel.
+- [x] **28.4** Aggiungere opcodes protocollo e parser: `REGISTER_TOOL`, `UNREGISTER_TOOL`, `LIST_TOOLS`, `TOOL_INFO <name>`.
+- [x] **28.5** Aggiungere/estendere schema JSON v1 in `protocol/schemas/v1/` per list/register/unregister/tool-detail e capability advertise (`tool_registry_v1`, `tool_remote_v1`, `tool_alias_compat_v1`).
+- [x] **28.6** Aggiungere handler dedicati control-plane (`tools_cmd.rs` o equivalente) con validazione robusta di nome, alias, schema, backend config e privilegi; `REGISTER_TOOL` / `UNREGISTER_TOOL` devono essere capability-gated o admin-only.
+- [x] **28.7** Aggiornare il dispatch syscall runtime: lookup sul registry prima del fallback legacy; gli alias legacy devono essere registrati come adapter verso la semantica canonica, con fallback hardcoded dietro feature flag temporanea.
+- [x] **28.8** Implementare backend remoto HTTP con timeout hard, allowlist host/scheme, payload limit request/response, mapping errori stabile e nessuna escalation involontaria verso loopback non dichiarato.
+- [x] **28.9** Integrazione GUI: pannello Tools con `LIST_TOOLS`, dettaglio `TOOL_INFO`, `REGISTER_TOOL`, `UNREGISTER_TOOL`, parser/events coerenti col contratto v1.
+- [x] **28.10** Test e quality gate:
+  - Rust: register+invoke, unregister, alias legacy compat, fallback flag, remote mock
+  - schema validation dei nuovi envelope
+  - GUI parser/client test per nuovi endpoint
+  - `cargo test` verde, `cargo clippy --all-targets --all-features -- -D warnings` verde
 
 **Note di design**
-- Il registry è in-memory (non persistente nel primo rilascio). Checkpoint/restore (M14) può serializzarlo in futuro.
-- I tool WASM sono già supportati come backend sandbox — il registry li rende discoverable programmaticamente.
-- Il JSON Schema dei tool è compatibile con il formato OpenAI function calling per interoperabilità.
+- Il registry resta in-memory nel primo rilascio. Eventuale checkpoint/restore del registry e' rinviato a una milestone successiva.
+- I tool built-in vengono bootstrapati come entry del registry, non come eccezioni hardcoded fuori banda.
+- I prefissi legacy (`PYTHON:`, `WRITE_FILE:`, `READ_FILE:`, `LS`, `CALC:`) sopravvivono solo come alias/adapter registrati verso il contratto canonico.
+- `TOOL_INFO` diventa query puntuale per singolo tool; `LIST_TOOLS` e' l'indice completo.
+- `REGISTER_TOOL` e `UNREGISTER_TOOL` sono operazioni privilegiate e non devono essere esposte a client non autorizzati.
+- Il JSON Schema del descriptor deve restare compatibile con function-calling style, ma il runtime interno non deve dipendere da semantiche esterne non controllate.
 
-**Stima:** ~4-6h
+**Contratto minimo proposto**
+- `ToolDescriptor`: metadati stabili e serializzabili.
+- `ToolBackendConfig`: dettagli operativi del backend (`host`, `wasm`, `remote_http`).
+- `ToolRegistryEntry`: `descriptor + backend + provenance + runtime flags`.
+- Invocazione canonica: un solo formato syscall machine-readable; i prefissi legacy sono tradotti in quel formato prima dell'esecuzione.
+
+**Piano operativo**
+- **Iterazione A — Contract + core registry + runtime dispatch**
+  - mini-ADR M28
+  - `ToolDescriptor`, `ToolBackendConfig`, `ToolRegistry`
+  - bootstrap built-in
+  - opcodes `LIST_TOOLS`, `TOOL_INFO`, `REGISTER_TOOL`, `UNREGISTER_TOOL`
+  - migrazione del dispatch runtime al registry con alias legacy
+- **Iterazione B — Remote HTTP + GUI**
+  - executor remoto hardenizzato
+  - policy di sicurezza e limiti payload
+  - pannello Tools in GUI con list/detail/register/unregister
+- **Iterazione C — Hardening finale**
+  - test schema/envelope
+  - test alias legacy/fallback flag
+  - smoke GUI
+  - cleanup di compatibilita' e riduzione ulteriore del dispatch hardcoded
+
+**Primo slice da implementare subito**
+- Contract freeze dell'ADR M28
+- introduzione `ToolRegistry` in-memory e bootstrap dei built-in
+- `LIST_TOOLS` + `TOOL_INFO <name>`
+- semantica syscall canonica con alias legacy registrati
+
+**Avanzamento 2026-03-09**
+- Primo slice completato: `ToolRegistry` built-in in-memory, `LIST_TOOLS`, `TOOL_INFO <name>`, invocazione canonica `TOOL:<name> <json>` e alias legacy instradati al registry.
+- Secondo slice Iterazione A completato: `ToolBackendConfig` esplicito, `REGISTER_TOOL` / `UNREGISTER_TOOL`, gate privilegiato sulle mutazioni, schemi v1 aggiornati e test transport dedicati.
+- Slice `28.8` completato: executor `remote_http` con allowlist host esplicita, limiti request/response, header forwarding validato e test mock dedicati per invoke/sicurezza.
+- Slice finale GUI completato: pannello Tools in Control Center, wiring `LIST_TOOLS` / `TOOL_INFO` / `REGISTER_TOOL` / `UNREGISTER_TOOL`, parser Python dedicati e test client/parser per gli endpoint M28.
+- Validazione eseguita: `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`.
+- Validazione GUI eseguita: `python -m compileall gui`, `python -m unittest gui.test_response_parser gui.test_protocol_client`.
+
+**Stima:** ~12-20h
 
 ---
 
@@ -796,7 +846,7 @@ Fase 2.10 — Microkernel Driver Boundary (marzo 2026)
   └─ M27  Driver esterno RPC             ~6-10h  (llama.cpp compatibile, no FFI nel kernel)
 
 Fase 3 — Intelligenza agentica (aprile 2026)
-  ├─ M28  Tool registry dinamico         ~4-6h   (estensibilità)
+  ├─ M28  Tool registry dinamico         ~12-20h (registry, runtime, remote, GUI)
   └─ M29  Context window mgmt            ~6-10h  (qualità agentica)
 ```
 

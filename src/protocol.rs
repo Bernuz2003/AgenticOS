@@ -20,12 +20,14 @@ pub mod schema {
     pub const KILL: &str = "agenticos.control.kill.v1";
     pub const LIST_MODELS: &str = "agenticos.control.list_models.v1";
     pub const LOAD: &str = "agenticos.control.load.v1";
+    pub const LIST_TOOLS: &str = "agenticos.control.list_tools.v1";
     pub const MEMORY_WRITE: &str = "agenticos.control.memw.v1";
     pub const MODEL_INFO: &str = "agenticos.control.model_info.v1";
     pub const ORCHESTRATE: &str = "agenticos.control.orchestrate.v1";
     pub const ORCH_STATUS: &str = "agenticos.control.orch_status.v1";
     pub const PID_STATUS: &str = "agenticos.control.pid_status.v1";
     pub const PING: &str = "agenticos.control.ping.v1";
+    pub const REGISTER_TOOL: &str = "agenticos.control.register_tool.v1";
     pub const RESTORE: &str = "agenticos.control.restore.v1";
     pub const SELECT_MODEL: &str = "agenticos.control.select_model.v1";
     pub const SET_GEN: &str = "agenticos.control.set_gen.v1";
@@ -37,6 +39,7 @@ pub mod schema {
     pub const STATUS: &str = "agenticos.control.status.v1";
     pub const TERM: &str = "agenticos.control.term.v1";
     pub const TOOL_INFO: &str = "agenticos.control.tool_info.v1";
+    pub const UNREGISTER_TOOL: &str = "agenticos.control.unregister_tool.v1";
 }
 
 #[derive(Debug, Serialize)]
@@ -94,7 +97,10 @@ pub enum OpCode {
     Checkpoint,     // Salva snapshot kernel su disco
     Restore,        // Ripristina stato kernel da disco
     Orchestrate,    // Registra ed esegue un DAG di task
+    ListTools,      // Elenca tool registrati
+    RegisterTool,   // Registra un nuovo tool runtime
     ToolInfo,       // Descrive tool/syscall disponibili e policy
+    UnregisterTool, // Rimuove un tool runtime
     Auth,           // Autenticazione client con token
 }
 
@@ -141,7 +147,10 @@ impl CommandHeader {
             "CHECKPOINT" => OpCode::Checkpoint,
             "RESTORE" => OpCode::Restore,
             "ORCHESTRATE" => OpCode::Orchestrate,
+            "LIST_TOOLS" => OpCode::ListTools,
+            "REGISTER_TOOL" => OpCode::RegisterTool,
             "TOOL_INFO" => OpCode::ToolInfo,
+            "UNREGISTER_TOOL" => OpCode::UnregisterTool,
             "AUTH" => OpCode::Auth,
             _ => return Err(ProtocolError::UnknownOpcode(parts[0].to_string())),
         };
@@ -414,6 +423,13 @@ mod tests {
         let status = CommandHeader::parse("STATUS 1 0").expect("STATUS should parse");
         assert!(matches!(status.opcode, OpCode::Status));
 
+        let register_tool = CommandHeader::parse("REGISTER_TOOL 1 2").expect("REGISTER_TOOL should parse");
+        assert!(matches!(register_tool.opcode, OpCode::RegisterTool));
+
+        let unregister_tool =
+            CommandHeader::parse("UNREGISTER_TOOL 1 2").expect("UNREGISTER_TOOL should parse");
+        assert!(matches!(unregister_tool.opcode, OpCode::UnregisterTool));
+
         let term = CommandHeader::parse("TERM 1 1").expect("TERM should parse");
         assert!(matches!(term.opcode, OpCode::Term));
 
@@ -474,6 +490,9 @@ mod tests {
         assert!(matches!(o.opcode, OpCode::Orchestrate));
         assert_eq!(o.agent_id, "agent_1");
         assert_eq!(o.content_length, 200);
+
+        let list_tools = CommandHeader::parse("LIST_TOOLS 1 0").expect("LIST_TOOLS should parse");
+        assert!(matches!(list_tools.opcode, OpCode::ListTools));
 
         let tool_info = CommandHeader::parse("TOOL_INFO 1 0").expect("TOOL_INFO should parse");
         assert!(matches!(tool_info.opcode, OpCode::ToolInfo));

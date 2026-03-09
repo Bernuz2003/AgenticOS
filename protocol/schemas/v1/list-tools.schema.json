@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.list_tools.v1",
+  "title": "AgenticOS LIST_TOOLS Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.list_tools.v1"},
+        "data": {
+          "type": "object",
+          "required": ["total_tools", "tools"],
+          "properties": {
+            "total_tools": {"type": "integer", "minimum": 0},
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["descriptor", "backend"],
+                "properties": {
+                  "descriptor": {
+                    "type": "object",
+                    "required": [
+                      "name",
+                      "aliases",
+                      "description",
+                      "input_schema",
+                      "output_schema",
+                      "backend_kind",
+                      "capabilities",
+                      "dangerous",
+                      "enabled",
+                      "source"
+                    ],
+                    "properties": {
+                      "name": {"type": "string"},
+                      "aliases": {"type": "array", "items": {"type": "string"}},
+                      "description": {"type": "string"},
+                      "input_schema": {"type": "object"},
+                      "output_schema": {"type": "object"},
+                      "backend_kind": {"type": "string"},
+                      "capabilities": {"type": "array", "items": {"type": "string"}},
+                      "dangerous": {"type": "boolean"},
+                      "enabled": {"type": "boolean"},
+                      "source": {"type": "string"}
+                    },
+                    "additionalProperties": false
+                  },
+                  "backend": {
+                    "type": "object",
+                    "required": ["kind"],
+                    "properties": {
+                      "kind": {"type": "string"}
+                    },
+                    "additionalProperties": true
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

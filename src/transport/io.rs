@@ -11,9 +11,11 @@ use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::protocol;
 use crate::scheduler::ProcessScheduler;
+use crate::tool_registry::ToolRegistry;
 
 use super::{parse_available_commands, Client, ParsedCommand};
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn handle_read(
     client: &mut Client,
@@ -27,6 +29,40 @@ pub fn handle_read(
     in_flight: &HashSet<u64>,
     pending_kills: &mut Vec<u64>,
     metrics: &mut MetricsState,
+    auth_token: &str,
+) -> bool {
+    let mut tool_registry = ToolRegistry::with_builtins();
+    handle_read_with_registry(
+        client,
+        memory,
+        engine_state,
+        model_catalog,
+        scheduler,
+        orchestrator,
+        client_id,
+        shutdown_requested,
+        in_flight,
+        pending_kills,
+        metrics,
+        &mut tool_registry,
+        auth_token,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn handle_read_with_registry(
+    client: &mut Client,
+    memory: &mut NeuralMemory,
+    engine_state: &mut Option<LLMEngine>,
+    model_catalog: &mut ModelCatalog,
+    scheduler: &mut ProcessScheduler,
+    orchestrator: &mut Orchestrator,
+    client_id: usize,
+    shutdown_requested: &Arc<AtomicBool>,
+    in_flight: &HashSet<u64>,
+    pending_kills: &mut Vec<u64>,
+    metrics: &mut MetricsState,
+    tool_registry: &mut ToolRegistry,
     auth_token: &str,
 ) -> bool {
     let mut chunk = [0; 4096];
@@ -60,6 +96,7 @@ pub fn handle_read(
                 model_catalog,
                 scheduler,
                 orchestrator,
+                tool_registry,
                 client_id,
                 shutdown_requested,
                 in_flight,

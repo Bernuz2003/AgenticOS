@@ -16,8 +16,9 @@ use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::runtime::run_engine_tick;
 use crate::scheduler::ProcessScheduler;
+use crate::tool_registry::ToolRegistry;
 use crate::tools::SyscallRateMap;
-use crate::transport::{handle_read, handle_write, needs_writable_interest, writable_interest, Client};
+use crate::transport::{handle_read_with_registry, handle_write, needs_writable_interest, writable_interest, Client};
 
 use super::{bootstrap, checkpointing};
 
@@ -57,6 +58,7 @@ pub(crate) struct Kernel {
     pub(crate) worker_handle: Option<JoinHandle<()>>,
     pub(crate) metrics: MetricsState,
     pub(crate) syscall_rates: SyscallRateMap,
+    pub(crate) tool_registry: ToolRegistry,
     pub(crate) auth_token: String,
     pub(crate) auth_disabled: bool,
 }
@@ -104,6 +106,7 @@ impl Kernel {
                 &mut self.in_flight,
                 &mut self.pending_kills,
                 &mut self.syscall_rates,
+                &self.tool_registry,
             );
 
             checkpointing::maybe_run_auto_checkpoint(
@@ -166,7 +169,7 @@ fn handle_client_event(
         let mut should_close = false;
 
         if readable
-            && handle_read(
+            && handle_read_with_registry(
                 client,
                 &mut kernel.memory,
                 &mut kernel.engine_state,
@@ -178,6 +181,7 @@ fn handle_client_event(
                 &kernel.in_flight,
                 &mut kernel.pending_kills,
                 &mut kernel.metrics,
+                &mut kernel.tool_registry,
                 &kernel.auth_token,
             )
         {

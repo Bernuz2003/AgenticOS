@@ -9,23 +9,54 @@
         "schema_id": {"const": "agenticos.control.tool_info.v1"},
         "data": {
           "type": "object",
-          "required": ["tools", "sandbox"],
+          "required": ["tool", "sandbox"],
           "properties": {
-            "tools": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "required": ["id", "description"],
-                "properties": {
-                  "id": {"type": "string"},
-                  "description": {"type": "string"}
+            "tool": {
+              "type": "object",
+              "required": ["descriptor", "backend"],
+              "properties": {
+                "descriptor": {
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "aliases",
+                    "description",
+                    "input_schema",
+                    "output_schema",
+                    "backend_kind",
+                    "capabilities",
+                    "dangerous",
+                    "enabled",
+                    "source"
+                  ],
+                  "properties": {
+                    "name": {"type": "string"},
+                    "aliases": {"type": "array", "items": {"type": "string"}},
+                    "description": {"type": "string"},
+                    "input_schema": {"type": "object"},
+                    "output_schema": {"type": "object"},
+                    "backend_kind": {"type": "string"},
+                    "capabilities": {"type": "array", "items": {"type": "string"}},
+                    "dangerous": {"type": "boolean"},
+                    "enabled": {"type": "boolean"},
+                    "source": {"type": "string"}
+                  },
+                  "additionalProperties": false
                 },
-                "additionalProperties": false
-              }
+                "backend": {
+                  "type": "object",
+                  "required": ["kind"],
+                  "properties": {
+                    "kind": {"type": "string"}
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "additionalProperties": false
             },
             "sandbox": {"type": "object"}
           },
-          "additionalProperties": true
+          "additionalProperties": false
         }
       }
     }
