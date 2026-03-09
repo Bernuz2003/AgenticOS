@@ -125,8 +125,11 @@ pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec
     if let Some(orch_id_str) = requested.strip_prefix("orch:") {
         return match orch_id_str.parse::<u64>() {
             Ok(orch_id) => build_orch_status(ctx, orch_id),
-            Err(_) => protocol::response_err_code(
+            Err(_) => protocol::response_protocol_err(
+                ctx.client,
+                &ctx.request_id,
                 "STATUS_INVALID",
+                protocol::schema::ERROR,
                 "Orchestration ID must be numeric (orch:<N>)",
             ),
         };
@@ -136,8 +139,11 @@ pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec
     if !requested.is_empty() {
         return match requested.parse::<u64>() {
             Ok(pid) => build_pid_status(ctx, pid),
-            Err(_) => protocol::response_err_code(
+            Err(_) => protocol::response_protocol_err(
+                ctx.client,
+                &ctx.request_id,
                 "STATUS_INVALID",
+                protocol::schema::ERROR,
                 "STATUS payload must be empty, numeric PID, or orch:<N>",
             ),
         };
@@ -315,15 +321,24 @@ fn build_pid_status(ctx: &mut CommandContext<'_>, pid: u64) -> Vec<u8> {
     let engine = match ctx.engine_state.as_ref() {
         Some(e) => e,
         None => {
-            return protocol::response_err_code("NO_ENGINE", "No model loaded");
+            return protocol::response_protocol_err(
+                ctx.client,
+                &ctx.request_id,
+                "NO_ENGINE",
+                protocol::schema::ERROR,
+                "No model loaded",
+            );
         }
     };
 
     let process = match engine.processes.get(&pid) {
         Some(p) => p,
         None => {
-            return protocol::response_err_code(
+            return protocol::response_protocol_err(
+                ctx.client,
+                &ctx.request_id,
                 "PID_NOT_FOUND",
+                protocol::schema::ERROR,
                 &format!("PID {} not found", pid),
             );
         }
@@ -363,8 +378,11 @@ fn build_orch_status(ctx: &mut CommandContext<'_>, orch_id: u64) -> Vec<u8> {
     let orch = match ctx.orchestrator.get(orch_id) {
         Some(o) => o,
         None => {
-            return protocol::response_err_code(
+            return protocol::response_protocol_err(
+                ctx.client,
+                &ctx.request_id,
                 "ORCH_NOT_FOUND",
+                protocol::schema::ERROR,
                 &format!("Orchestration {} not found", orch_id),
             );
         }

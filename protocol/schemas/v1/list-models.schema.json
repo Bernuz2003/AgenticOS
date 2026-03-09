@@ -8,7 +8,27 @@
       "properties": {
         "schema_id": {"const": "agenticos.control.list_models.v1"},
         "data": {
-          "type": ["array", "object"]
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {"type": "object"}
+            },
+            {
+              "type": "object",
+              "properties": {
+                "models": {
+                  "type": "array",
+                  "items": {"type": "object"}
+                },
+                "routing_recommendations": {
+                  "type": "array",
+                  "items": {"type": "object"}
+                }
+              },
+              "required": ["models"],
+              "additionalProperties": true
+            }
+          ]
         }
       }
     }

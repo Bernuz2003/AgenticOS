@@ -25,6 +25,28 @@ def parse_protocol_envelope(payload: str) -> dict[str, Any] | None:
     return data
 
 
+def parse_json_payload(payload: str) -> Any:
+    try:
+        data = json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if isinstance(data, dict):
+        envelope_data = data.get("data")
+        if {
+            "protocol_version",
+            "schema_id",
+            "request_id",
+            "ok",
+            "code",
+            "data",
+            "error",
+            "warnings",
+        }.issubset(data.keys()):
+            return envelope_data
+    return data
+
+
 def normalize_control_payload(payload: str, ok: bool) -> str:
     envelope = parse_protocol_envelope(payload)
     if envelope is None:
@@ -45,23 +67,7 @@ def normalize_control_payload(payload: str, ok: bool) -> str:
 
 
 def parse_json_dict(payload: str) -> dict[str, Any]:
-    try:
-        data = json.loads(payload)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    if isinstance(data, dict):
-        envelope_data = data.get("data")
-        if {
-            "protocol_version",
-            "schema_id",
-            "request_id",
-            "ok",
-            "code",
-            "data",
-            "error",
-            "warnings",
-        }.issubset(data.keys()) and isinstance(envelope_data, dict):
-            return envelope_data
+    data = parse_json_payload(payload)
     return data if isinstance(data, dict) else {}
 
 
@@ -127,16 +133,22 @@ class ProcessFinishedMarker:
 
 
 def parse_models_payload(payload: str) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    data = parse_json_dict(payload)
-    if not data:
+    data = parse_json_payload(payload)
+    if data is None:
         return parse_legacy_model_lines(payload), {}
 
-    models = data.get("models", []) if isinstance(data.get("models"), list) else []
-    routing_entries = (
-        data.get("routing_recommendations", [])
-        if isinstance(data.get("routing_recommendations"), list)
-        else []
-    )
+    if isinstance(data, list):
+        models = data
+        routing_entries = []
+    elif isinstance(data, dict):
+        models = data.get("models", []) if isinstance(data.get("models"), list) else []
+        routing_entries = (
+            data.get("routing_recommendations", [])
+            if isinstance(data.get("routing_recommendations"), list)
+            else []
+        )
+    else:
+        return parse_legacy_model_lines(payload), {}
     routing = {
         str(entry.get("workload", "")): {
             "model_id": str(entry.get("model_id", "") or ""),

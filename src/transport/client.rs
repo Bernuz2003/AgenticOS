@@ -22,6 +22,7 @@ pub struct Client {
     pub authenticated: bool,
     pub negotiated_protocol_version: Option<String>,
     pub enabled_capabilities: HashSet<String>,
+    request_sequence: u64,
 }
 
 impl Client {
@@ -34,6 +35,12 @@ impl Client {
             authenticated: pre_authenticated,
             negotiated_protocol_version: None,
             enabled_capabilities: HashSet::new(),
+            request_sequence: 0,
         }
+    }
+
+    pub fn allocate_request_id(&mut self, agent_id: &str) -> String {
+        self.request_sequence = self.request_sequence.saturating_add(1);
+        format!("{}:{}", agent_id, self.request_sequence)
     }
 }

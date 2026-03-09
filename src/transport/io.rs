@@ -68,9 +68,16 @@ pub fn handle_read(
                 auth_token,
             ),
             ParsedCommand::Err(e) => {
+                let request_id = client.allocate_request_id("transport");
                 client
                     .output_buffer
-                    .extend(protocol::response_err_code("BAD_HEADER", &e));
+                    .extend(protocol::response_protocol_err(
+                        client,
+                        &request_id,
+                        "BAD_HEADER",
+                        protocol::schema::ERROR,
+                        &e,
+                    ));
             }
         }
     }

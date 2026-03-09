@@ -18,6 +18,7 @@ pub fn writable_interest() -> Interest {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::AtomicBool;
@@ -34,6 +35,7 @@ mod tests {
     use crate::orchestrator::Orchestrator;
     use crate::protocol::MAX_CONTENT_LENGTH;
     use crate::scheduler::ProcessScheduler;
+    use jsonschema::JSONSchema;
     use serde_json::Value;
 
     use super::{handle_read, handle_write, Client};
@@ -68,6 +70,95 @@ mod tests {
 
     fn control_json(resp: &str) -> Value {
         serde_json::from_str(control_payload(resp)).expect("valid json payload")
+    }
+
+    fn load_schema(rel_path: &str) -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
+        load_schema_from_path(&path)
+    }
+
+    fn load_schema_from_path(path: &std::path::Path) -> Value {
+        let text = fs::read_to_string(path).expect("schema file");
+        let mut schema: Value = serde_json::from_str(&text).expect("schema json");
+        resolve_local_refs(path.parent().expect("schema parent"), &mut schema);
+        strip_schema_ids(&mut schema);
+        schema
+    }
+
+    fn resolve_local_refs(base_dir: &std::path::Path, node: &mut Value) {
+        match node {
+            Value::Object(map) => {
+                if let Some(Value::String(reference)) = map.get("$ref") {
+                    if let Some(relative_path) = reference.strip_prefix("./") {
+                        let ref_path = base_dir.join(relative_path);
+                        *node = load_schema_from_path(&ref_path);
+                        return;
+                    }
+                }
+
+                for value in map.values_mut() {
+                    resolve_local_refs(base_dir, value);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    resolve_local_refs(base_dir, item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn strip_schema_ids(node: &mut Value) {
+        match node {
+            Value::Object(map) => {
+                map.remove("$id");
+                for value in map.values_mut() {
+                    strip_schema_ids(value);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    strip_schema_ids(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn assert_matches_schema(schema_rel_path: &str, instance: &Value) {
+        let schema = load_schema(schema_rel_path);
+        let compiled = JSONSchema::compile(&schema).expect("compile schema");
+        let validation = compiled
+            .validate(instance)
+            .map_err(|errors| errors.map(|item| item.to_string()).collect::<Vec<_>>());
+        if let Err(details) = validation {
+            panic!("schema validation failed: {}", details.join(" | "));
+        }
+    }
+
+    fn parse_control_json_frames(resp: &str) -> Vec<Value> {
+        let bytes = resp.as_bytes();
+        let mut offset = 0usize;
+        let mut payloads = Vec::new();
+
+        while offset < bytes.len() {
+            let remaining = &bytes[offset..];
+            let Some(header_end) = remaining.windows(2).position(|window| window == b"\r\n") else {
+                break;
+            };
+            let header = std::str::from_utf8(&remaining[..header_end]).expect("utf8 header");
+            let parts: Vec<&str> = header.split_whitespace().collect();
+            assert!(parts.len() >= 3, "invalid frame header: {header}");
+            let payload_len = parts[2].parse::<usize>().expect("payload len");
+            let payload_start = offset + header_end + 2;
+            let payload_end = payload_start + payload_len;
+            let payload = std::str::from_utf8(&bytes[payload_start..payload_end]).expect("utf8 payload");
+            payloads.push(serde_json::from_str::<Value>(payload).expect("json payload"));
+            offset = payload_end;
+        }
+
+        payloads
     }
 
     #[allow(clippy::type_complexity)]
@@ -574,6 +665,7 @@ mod tests {
         let resp = read_frame(&mut peer);
         assert!(resp.starts_with("+OK HELLO"));
         let payload = control_json(&resp);
+        assert_matches_schema("protocol/schemas/v1/hello.schema.json", &payload);
         assert_eq!(payload["protocol_version"], "v1");
         assert_eq!(payload["schema_id"], "agenticos.control.hello.v1");
         assert_eq!(payload["ok"], true);
@@ -614,6 +706,7 @@ mod tests {
         let resp = read_frame(&mut peer);
         assert!(resp.starts_with("+OK TOOL_INFO"));
         let payload = control_json(&resp);
+        assert_matches_schema("protocol/schemas/v1/tool-info.schema.json", &payload);
         assert_eq!(payload["schema_id"], "agenticos.control.tool_info.v1");
         assert_eq!(payload["ok"], true);
         assert!(payload["request_id"].as_str().unwrap_or("").starts_with("1:"));
@@ -656,9 +749,51 @@ mod tests {
         let resp = read_frame(&mut peer);
         assert!(resp.starts_with("+OK GET_QUOTA"));
         let payload = control_json(&resp);
+        assert_matches_schema("protocol/schemas/v1/scheduler-control.schema.json", &payload);
         assert_eq!(payload["schema_id"], "agenticos.control.get_quota.v1");
         assert_eq!(payload["data"]["pid"], 77);
         assert_eq!(payload["data"]["priority"], "high");
+    }
+
+    #[test]
+    fn tcp_bad_header_after_hello_uses_error_envelope_with_unique_request_id() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut peer = TcpStream::connect(addr).expect("connect");
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let (server_stream, _) = listener.accept().expect("accept");
+        server_stream.set_nonblocking(true).unwrap();
+        let mio_stream = mio::net::TcpStream::from_std(server_stream);
+        let mut client = Client::new(mio_stream, false);
+
+        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
+            setup_shared_state();
+
+        let hello_payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
+        let hello_header = format!("HELLO 1 {}\n", hello_payload.len());
+        peer.write_all(hello_header.as_bytes()).expect("write hello header");
+        peer.write_all(hello_payload).expect("write hello payload");
+        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_write(&mut client);
+        let _ = read_frame(&mut peer);
+
+        peer.write_all(b"WHAT 1 0\nTOOL_INFO 1 0\n").expect("write malformed and tool_info");
+        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_write(&mut client);
+
+        let combined = read_frame(&mut peer);
+        let frames: Vec<&str> = combined.split("-ERR ").collect();
+        assert!(!frames.is_empty());
+        assert!(combined.contains("BAD_HEADER"));
+        assert!(combined.contains("AUTH_REQUIRED"));
+
+        let payloads = parse_control_json_frames(&combined);
+        assert_eq!(payloads.len(), 2);
+        assert_matches_schema("protocol/schemas/v1/error.schema.json", &payloads[0]);
+        assert_matches_schema("protocol/schemas/v1/error.schema.json", &payloads[1]);
+        assert_ne!(payloads[0]["request_id"], payloads[1]["request_id"]);
+        assert_eq!(payloads[0]["code"], "BAD_HEADER");
+        assert_eq!(payloads[1]["code"], "AUTH_REQUIRED");
     }
 
     #[test]

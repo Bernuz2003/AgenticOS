@@ -353,12 +353,15 @@ fn hello_error_response(error: ProtocolError, request_id: &str, code: &str) -> V
 }
 
 pub fn should_use_protocol_v1(client: &Client) -> bool {
+    let protocol_cfg = &kernel_config().protocol;
+
     client
         .negotiated_protocol_version
         .as_deref()
         .map(|version| version == PROTOCOL_VERSION_V1)
         .unwrap_or(false)
-        || kernel_config().protocol.default_contract_v1
+        || protocol_cfg.default_contract_v1
+        || !protocol_cfg.allow_legacy_fallback
 }
 
 pub fn stable_capabilities() -> Vec<String> {

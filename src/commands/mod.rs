@@ -45,7 +45,7 @@ pub fn execute_command(
     metrics: &mut MetricsState,
     auth_token: &str,
 ) {
-    let request_id = format!("{}:{}", header.agent_id, metrics.total_commands + 1);
+    let request_id = client.allocate_request_id(&header.agent_id);
 
     // ── C3: Auth gate — only AUTH and PING allowed before authentication ──
     if !client.authenticated && !matches!(header.opcode, OpCode::Auth | OpCode::Ping | OpCode::Hello) {
