@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.envelope.v1",
+  "title": "AgenticOS Control Envelope v1",
+  "type": "object",
+  "required": [
+    "protocol_version",
+    "schema_id",
+    "request_id",
+    "ok",
+    "code",
+    "data",
+    "error",
+    "warnings"
+  ],
+  "properties": {
+    "protocol_version": {"const": "v1"},
+    "schema_id": {"type": "string", "minLength": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "ok": {"type": "boolean"},
+    "code": {"type": "string", "minLength": 1},
+    "data": {},
+    "error": {
+      "type": ["object", "null"],
+      "required": ["message"],
+      "properties": {
+        "message": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    },
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "additionalProperties": false
+}

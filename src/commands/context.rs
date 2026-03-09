@@ -14,6 +14,7 @@ use super::metrics::MetricsState;
 /// Shared references for all command handlers, replacing loose parameters.
 pub(crate) struct CommandContext<'a> {
     pub client: &'a mut Client,
+    pub request_id: String,
     pub memory: &'a mut NeuralMemory,
     pub engine_state: &'a mut Option<LLMEngine>,
     pub model_catalog: &'a mut ModelCatalog,

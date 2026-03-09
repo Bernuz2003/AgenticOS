@@ -45,11 +45,30 @@ pub fn execute_command(
     metrics: &mut MetricsState,
     auth_token: &str,
 ) {
+    let request_id = format!("{}:{}", header.agent_id, metrics.total_commands + 1);
+
     // ── C3: Auth gate — only AUTH and PING allowed before authentication ──
-    if !client.authenticated && !matches!(header.opcode, OpCode::Auth | OpCode::Ping) {
+    if !client.authenticated && !matches!(header.opcode, OpCode::Auth | OpCode::Ping | OpCode::Hello) {
         client
             .output_buffer
-            .extend(crate::protocol::response_err_code("AUTH_REQUIRED", "Authenticate first with AUTH <token>"));
+            .extend(crate::protocol::response_protocol_err(
+                client,
+                &request_id,
+                "AUTH_REQUIRED",
+                crate::protocol::schema::ERROR,
+                "Authenticate first with AUTH <token>",
+            ));
+        return;
+    }
+
+    if matches!(header.opcode, OpCode::Hello) {
+        let response = crate::protocol::handle_hello(client, &payload, &request_id);
+        if response.starts_with(b"+OK") {
+            metrics.record_command(true);
+        } else {
+            metrics.record_command(false);
+        }
+        client.output_buffer.extend(response);
         return;
     }
 
@@ -58,9 +77,22 @@ pub fn execute_command(
         let token_attempt = String::from_utf8_lossy(&payload).trim().to_string();
         let response = if token_attempt == auth_token {
             client.authenticated = true;
-            crate::protocol::response_ok_code("AUTH", "OK")
+            crate::protocol::response_protocol_ok(
+                client,
+                &request_id,
+                "AUTH",
+                crate::protocol::schema::AUTH,
+                &serde_json::json!({"status": "ok"}),
+                Some("OK"),
+            )
         } else {
-            crate::protocol::response_err_code("AUTH_FAILED", "Invalid auth token")
+            crate::protocol::response_protocol_err(
+                client,
+                &request_id,
+                "AUTH_FAILED",
+                crate::protocol::schema::ERROR,
+                "Invalid auth token",
+            )
         };
         if response.starts_with(b"+OK") {
             metrics.record_command(true);
@@ -73,6 +105,7 @@ pub fn execute_command(
 
     let mut ctx = CommandContext {
         client,
+        request_id,
         memory,
         engine_state,
         model_catalog,
@@ -87,7 +120,7 @@ pub fn execute_command(
 
     // Handlers that may write directly to client.output_buffer and return None.
     let response = match header.opcode {
-        OpCode::Ping => misc::handle_ping(),
+        OpCode::Ping => misc::handle_ping(&mut ctx),
         OpCode::Load => model::handle_load(&mut ctx, &payload),
         OpCode::ListModels => model::handle_list_models(&mut ctx),
         OpCode::SelectModel => model::handle_select_model(&mut ctx, &payload),
@@ -111,6 +144,8 @@ pub fn execute_command(
         OpCode::Orchestrate => {
             if let Some(r) = orchestration_cmd::handle_orchestrate(&mut ctx, &payload) { r } else { return; }
         }
+        OpCode::ToolInfo => misc::handle_tool_info(&mut ctx),
+        OpCode::Hello => unreachable!("HELLO handled above"),
         OpCode::Auth => unreachable!("AUTH handled above"),
     };
 

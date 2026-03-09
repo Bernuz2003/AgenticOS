@@ -9,6 +9,7 @@ static KERNEL_CONFIG: OnceLock<KernelConfig> = OnceLock::new();
 #[serde(default)]
 pub struct KernelConfig {
     pub network: NetworkConfig,
+    pub protocol: ProtocolRuntimeConfig,
     pub paths: PathsConfig,
     pub memory: MemoryRuntimeConfig,
     pub checkpoint: CheckpointConfig,
@@ -25,6 +26,7 @@ impl Default for KernelConfig {
     fn default() -> Self {
         Self {
             network: NetworkConfig::default(),
+            protocol: ProtocolRuntimeConfig::default(),
             paths: PathsConfig::default(),
             memory: MemoryRuntimeConfig::default(),
             checkpoint: CheckpointConfig::default(),
@@ -35,6 +37,35 @@ impl Default for KernelConfig {
             tools: ToolsRuntimeConfig::default(),
             generation: GenerationProfilesConfig::default(),
             scheduler: SchedulerConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ProtocolRuntimeConfig {
+    pub default_contract_v1: bool,
+    pub allow_legacy_fallback: bool,
+    pub enabled_capabilities: Vec<String>,
+}
+
+impl Default for ProtocolRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            default_contract_v1: false,
+            allow_legacy_fallback: true,
+            enabled_capabilities: vec![
+                "control_envelope_v1".to_string(),
+                "hello_v1".to_string(),
+                "status_v1".to_string(),
+                "pid_status_v1".to_string(),
+                "orch_status_v1".to_string(),
+                "list_models_v1".to_string(),
+                "model_info_v1".to_string(),
+                "backend_diag_v1".to_string(),
+                "tool_info_v1".to_string(),
+                "orchestrate_v1".to_string(),
+            ],
         }
     }
 }
@@ -361,6 +392,23 @@ fn apply_env_overrides(config: &mut KernelConfig) {
     }
     if let Some(value) = env_bool_opt("AGENTIC_LOG_CONNECTIONS") {
         config.network.log_connections = value;
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_PROTOCOL_DEFAULT_V1") {
+        config.protocol.default_contract_v1 = value;
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_PROTOCOL_ALLOW_LEGACY") {
+        config.protocol.allow_legacy_fallback = value;
+    }
+    if let Some(value) = env_string("AGENTIC_PROTOCOL_CAPABILITIES") {
+        let capabilities: Vec<String> = value
+            .split(',')
+            .map(|item| item.trim())
+            .filter(|item| !item.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        if !capabilities.is_empty() {
+            config.protocol.enabled_capabilities = capabilities;
+        }
     }
     if let Some(value) = env_bool_opt("AGENTIC_MEMORY_ACTIVE") {
         config.memory.active = value;

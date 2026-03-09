@@ -26,9 +26,22 @@ pub(crate) fn handle_checkpoint(ctx: &mut CommandContext<'_>, payload: &[u8]) ->
     match checkpoint::save_checkpoint(&snapshot, &path) {
         Ok(msg) => {
             log_event("checkpoint_save", ctx.client_id, None, &msg);
-            protocol::response_ok_code("CHECKPOINT", &msg)
+            protocol::response_protocol_ok(
+                ctx.client,
+                &ctx.request_id,
+                "CHECKPOINT",
+                protocol::schema::CHECKPOINT,
+                &json!({"message": msg}),
+                Some(&msg),
+            )
         }
-        Err(e) => protocol::response_err_code("CHECKPOINT_FAILED", &e),
+        Err(e) => protocol::response_protocol_err(
+            ctx.client,
+            &ctx.request_id,
+            "CHECKPOINT_FAILED",
+            protocol::schema::ERROR,
+            &e,
+        ),
     }
 }
 
@@ -41,8 +54,11 @@ pub(crate) fn handle_restore(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Ve
     };
 
     if !ctx.in_flight.is_empty() {
-        return protocol::response_err_code(
+        return protocol::response_protocol_err(
+            ctx.client,
+            &ctx.request_id,
             "RESTORE_BUSY",
+            protocol::schema::ERROR,
             "RESTORE requires an idle kernel: in-flight inference is still running",
         );
     }
@@ -50,8 +66,11 @@ pub(crate) fn handle_restore(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Ve
     if let Some(engine) = ctx.engine_state.as_ref() {
         let live_processes = engine.processes.len();
         if live_processes > 0 {
-            return protocol::response_err_code(
+            return protocol::response_protocol_err(
+                ctx.client,
+                &ctx.request_id,
                 "RESTORE_BUSY",
+                protocol::schema::ERROR,
                 &format!(
                     "RESTORE requires an idle kernel: {} live process(es) still present",
                     live_processes
@@ -95,9 +114,22 @@ pub(crate) fn handle_restore(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Ve
                     path
                 ),
             );
-            protocol::response_ok_code("RESTORE", &response.to_string())
+            protocol::response_protocol_ok(
+                ctx.client,
+                &ctx.request_id,
+                "RESTORE",
+                protocol::schema::RESTORE,
+                &response,
+                Some(&response.to_string()),
+            )
         }
-        Err(e) => protocol::response_err_code("RESTORE_FAILED", &e),
+        Err(e) => protocol::response_protocol_err(
+            ctx.client,
+            &ctx.request_id,
+            "RESTORE_FAILED",
+            protocol::schema::ERROR,
+            &e,
+        ),
     }
 }
 

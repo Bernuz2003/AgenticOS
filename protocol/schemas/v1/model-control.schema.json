@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.model_control.v1",
+  "title": "AgenticOS Model Control Responses v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"enum": ["agenticos.control.load.v1", "agenticos.control.select_model.v1"]},
+        "data": {"type": "object"}
+      }
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 use crate::protocol;
+use serde_json::json;
 
 use super::context::CommandContext;
 use super::parsing::parse_memw_payload;
@@ -19,14 +20,40 @@ pub(crate) fn handle_memory_write(ctx: &mut CommandContext<'_>, payload: &[u8]) 
                         if let Some(engine) = ctx.engine_state.as_mut() {
                             let _ = engine.set_process_waiting_for_memory(pid);
                         }
-                        protocol::response_ok_code("MEMW_QUEUED", &msg)
+                        protocol::response_protocol_ok(
+                            ctx.client,
+                            &ctx.request_id,
+                            "MEMW_QUEUED",
+                            protocol::schema::MEMORY_WRITE,
+                            &json!({"pid": pid, "status": "queued", "message": msg}),
+                            Some(&msg),
+                        )
                     } else {
-                        protocol::response_ok_code("MEMW", &msg)
+                        protocol::response_protocol_ok(
+                            ctx.client,
+                            &ctx.request_id,
+                            "MEMW",
+                            protocol::schema::MEMORY_WRITE,
+                            &json!({"pid": pid, "status": "written", "message": msg}),
+                            Some(&msg),
+                        )
                     }
                 }
-                Err(e) => protocol::response_err_code("MEMW_FAILED", &e.to_string()),
+                Err(e) => protocol::response_protocol_err(
+                    ctx.client,
+                    &ctx.request_id,
+                    "MEMW_FAILED",
+                    protocol::schema::ERROR,
+                    &e.to_string(),
+                ),
             }
         }
-        Err(e) => protocol::response_err_code("MEMW_INVALID", &e),
+        Err(e) => protocol::response_protocol_err(
+            ctx.client,
+            &ctx.request_id,
+            "MEMW_INVALID",
+            protocol::schema::ERROR,
+            &e,
+        ),
     }
 }

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.scheduler_control.v1",
+  "title": "AgenticOS Scheduler Control Responses v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"enum": ["agenticos.control.set_priority.v1", "agenticos.control.get_quota.v1", "agenticos.control.set_quota.v1"]},
+        "data": {"type": "object"}
+      }
+    }
+  ]
+}

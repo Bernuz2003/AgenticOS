@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.hello.v1",
+  "title": "AgenticOS HELLO Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.hello.v1"},
+        "data": {
+          "type": "object",
+          "required": [
+            "negotiated_version",
+            "enabled_capabilities",
+            "legacy_fallback_allowed"
+          ],
+          "properties": {
+            "negotiated_version": {"const": "v1"},
+            "enabled_capabilities": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "legacy_fallback_allowed": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.list_models.v1",
+  "title": "AgenticOS LIST_MODELS Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.list_models.v1"},
+        "data": {
+          "type": ["array", "object"]
+        }
+      }
+    }
+  ]
+}

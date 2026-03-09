@@ -284,7 +284,14 @@ pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec
     };
 
     let json = serde_json::to_string(&resp).expect("StatusResponse is always serializable");
-    protocol::response_ok_code("STATUS", &json)
+    protocol::response_protocol_ok(
+        ctx.client,
+        &ctx.request_id,
+        "STATUS",
+        protocol::schema::STATUS,
+        &resp,
+        Some(&json),
+    )
 }
 
 fn collect_unique_pids(groups: [&[u64]; 3]) -> Vec<u64> {
@@ -340,7 +347,14 @@ fn build_pid_status(ctx: &mut CommandContext<'_>, pid: u64) -> Vec<u8> {
     };
 
     let json = serde_json::to_string(&resp).expect("PidStatusResponse is always serializable");
-    protocol::response_ok_code("STATUS", &json)
+    protocol::response_protocol_ok(
+        ctx.client,
+        &ctx.request_id,
+        "STATUS",
+        protocol::schema::PID_STATUS,
+        &resp,
+        Some(&json),
+    )
 }
 
 // ── Orchestration status (JSON) ─────────────────────────────────────────
@@ -399,7 +413,14 @@ fn build_orch_status(ctx: &mut CommandContext<'_>, orch_id: u64) -> Vec<u8> {
     };
 
     let json = serde_json::to_string(&resp).expect("OrchStatusResponse is always serializable");
-    protocol::response_ok_code("STATUS", &json)
+    protocol::response_protocol_ok(
+        ctx.client,
+        &ctx.request_id,
+        "STATUS",
+        protocol::schema::ORCH_STATUS,
+        &resp,
+        Some(&json),
+    )
 }
 
 #[cfg(test)]

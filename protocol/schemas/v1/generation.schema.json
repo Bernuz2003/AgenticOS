@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.generation.v1",
+  "title": "AgenticOS Generation Control Responses v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"enum": ["agenticos.control.set_gen.v1", "agenticos.control.get_gen.v1"]},
+        "data": {
+          "type": "object",
+          "required": ["temperature", "top_p", "seed", "max_tokens"],
+          "properties": {
+            "temperature": {"type": "number"},
+            "top_p": {"type": "number"},
+            "seed": {"type": "integer", "minimum": 0},
+            "max_tokens": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

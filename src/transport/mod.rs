@@ -29,10 +29,12 @@ mod tests {
     use crate::commands::MetricsState;
     use crate::engine::LLMEngine;
     use crate::memory::{MemoryConfig, NeuralMemory};
+    use crate::model_catalog::WorkloadClass;
     use crate::model_catalog::ModelCatalog;
     use crate::orchestrator::Orchestrator;
     use crate::protocol::MAX_CONTENT_LENGTH;
     use crate::scheduler::ProcessScheduler;
+    use serde_json::Value;
 
     use super::{handle_read, handle_write, Client};
     use super::{parse_available_commands, ClientState, ParsedCommand};
@@ -52,6 +54,20 @@ mod tests {
 
         let mio_stream = mio::net::TcpStream::from_std(server_stream);
         (Client::new(mio_stream, true), peer)
+    }
+
+    fn read_frame(peer: &mut TcpStream) -> String {
+        let mut out = [0u8; 4096];
+        let n = peer.read(&mut out).expect("read frame");
+        String::from_utf8_lossy(&out[..n]).to_string()
+    }
+
+    fn control_payload(resp: &str) -> &str {
+        resp.split_once("\r\n").map(|(_, payload)| payload).expect("framed payload")
+    }
+
+    fn control_json(resp: &str) -> Value {
+        serde_json::from_str(control_payload(resp)).expect("valid json payload")
     }
 
     #[allow(clippy::type_complexity)]
@@ -518,6 +534,131 @@ mod tests {
         let resp = String::from_utf8_lossy(&out[..n]);
         assert!(resp.starts_with("+OK SHUTDOWN"));
         assert!(shutdown_requested.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn tcp_hello_contract_negotiates_v1_envelope() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut peer = TcpStream::connect(addr).expect("connect");
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let (server_stream, _) = listener.accept().expect("accept");
+        server_stream.set_nonblocking(true).unwrap();
+        let mio_stream = mio::net::TcpStream::from_std(server_stream);
+        let mut client = Client::new(mio_stream, false);
+
+        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
+            setup_shared_state();
+
+        let payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
+        let header = format!("HELLO 1 {}\n", payload.len());
+        peer.write_all(header.as_bytes()).expect("write hello header");
+        peer.write_all(payload).expect("write hello payload");
+
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
+        let _ = handle_write(&mut client);
+
+        let resp = read_frame(&mut peer);
+        assert!(resp.starts_with("+OK HELLO"));
+        let payload = control_json(&resp);
+        assert_eq!(payload["protocol_version"], "v1");
+        assert_eq!(payload["schema_id"], "agenticos.control.hello.v1");
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["data"]["negotiated_version"], "v1");
+    }
+
+    #[test]
+    fn tcp_tool_info_contract_uses_envelope_after_hello_and_auth() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut peer = TcpStream::connect(addr).expect("connect");
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let (server_stream, _) = listener.accept().expect("accept");
+        server_stream.set_nonblocking(true).unwrap();
+        let mio_stream = mio::net::TcpStream::from_std(server_stream);
+        let mut client = Client::new(mio_stream, false);
+
+        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
+            setup_shared_state();
+
+        let hello_payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
+        let hello_header = format!("HELLO 1 {}\n", hello_payload.len());
+        peer.write_all(hello_header.as_bytes()).expect("write hello header");
+        peer.write_all(hello_payload).expect("write hello payload");
+        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_write(&mut client);
+        let _ = read_frame(&mut peer);
+
+        peer.write_all(b"AUTH 1 12\nsecret_token").expect("write auth");
+        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_write(&mut client);
+        let _ = read_frame(&mut peer);
+
+        peer.write_all(b"TOOL_INFO 1 0\n").expect("write tool info");
+        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_write(&mut client);
+
+        let resp = read_frame(&mut peer);
+        assert!(resp.starts_with("+OK TOOL_INFO"));
+        let payload = control_json(&resp);
+        assert_eq!(payload["schema_id"], "agenticos.control.tool_info.v1");
+        assert_eq!(payload["ok"], true);
+        assert!(payload["request_id"].as_str().unwrap_or("").starts_with("1:"));
+        assert!(payload["data"]["tools"].is_array());
+        assert!(payload["data"]["sandbox"].is_object());
+    }
+
+    #[test]
+    fn tcp_get_quota_contract_uses_envelope_after_hello() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut peer = TcpStream::connect(addr).expect("connect");
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let (server_stream, _) = listener.accept().expect("accept");
+        server_stream.set_nonblocking(true).unwrap();
+        let mio_stream = mio::net::TcpStream::from_std(server_stream);
+        let mut client = Client::new(mio_stream, false);
+
+        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
+            setup_shared_state();
+        scheduler.register(77, WorkloadClass::General, crate::scheduler::ProcessPriority::High);
+
+        let hello_payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
+        let hello_header = format!("HELLO 1 {}\n", hello_payload.len());
+        peer.write_all(hello_header.as_bytes()).expect("write hello header");
+        peer.write_all(hello_payload).expect("write hello payload");
+        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_write(&mut client);
+        let _ = read_frame(&mut peer);
+
+        peer.write_all(b"AUTH 1 12\nsecret_token").expect("write auth");
+        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_write(&mut client);
+        let _ = read_frame(&mut peer);
+
+        peer.write_all(b"GET_QUOTA 1 2\n77").expect("write get_quota");
+        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_write(&mut client);
+
+        let resp = read_frame(&mut peer);
+        assert!(resp.starts_with("+OK GET_QUOTA"));
+        let payload = control_json(&resp);
+        assert_eq!(payload["schema_id"], "agenticos.control.get_quota.v1");
+        assert_eq!(payload["data"]["pid"], 77);
+        assert_eq!(payload["data"]["priority"], "high");
     }
 
     #[test]

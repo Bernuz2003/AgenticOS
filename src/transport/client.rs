@@ -1,4 +1,5 @@
 use crate::protocol::CommandHeader;
+use std::collections::HashSet;
 
 pub enum ClientState {
     WaitingForHeader,
@@ -19,6 +20,8 @@ pub struct Client {
     pub output_buffer: std::collections::VecDeque<u8>,
     pub state: ClientState,
     pub authenticated: bool,
+    pub negotiated_protocol_version: Option<String>,
+    pub enabled_capabilities: HashSet<String>,
 }
 
 impl Client {
@@ -29,6 +32,8 @@ impl Client {
             output_buffer: std::collections::VecDeque::new(),
             state: ClientState::WaitingForHeader,
             authenticated: pre_authenticated,
+            negotiated_protocol_version: None,
+            enabled_capabilities: HashSet::new(),
         }
     }
 }

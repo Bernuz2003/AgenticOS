@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.exec.v1",
+  "title": "AgenticOS EXEC Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.exec.v1"},
+        "data": {
+          "type": "object",
+          "required": ["pid", "workload", "priority"],
+          "properties": {
+            "pid": {"type": "integer", "minimum": 0},
+            "workload": {"type": "string"},
+            "priority": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

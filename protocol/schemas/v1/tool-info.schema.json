@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.tool_info.v1",
+  "title": "AgenticOS TOOL_INFO Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.tool_info.v1"},
+        "data": {
+          "type": "object",
+          "required": ["tools", "sandbox"],
+          "properties": {
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["id", "description"],
+                "properties": {
+                  "id": {"type": "string"},
+                  "description": {"type": "string"}
+                },
+                "additionalProperties": false
+              }
+            },
+            "sandbox": {"type": "object"}
+          },
+          "additionalProperties": true
+        }
+      }
+    }
+  ]
+}

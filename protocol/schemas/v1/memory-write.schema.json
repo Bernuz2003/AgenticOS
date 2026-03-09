@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.memw.v1",
+  "title": "AgenticOS MEMW Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.memw.v1"},
+        "data": {
+          "type": "object",
+          "required": ["pid", "status", "message"],
+          "properties": {
+            "pid": {"type": "integer", "minimum": 0},
+            "status": {"type": "string"},
+            "message": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

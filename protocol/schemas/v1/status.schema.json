@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.status.v1",
+  "title": "AgenticOS STATUS Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"enum": ["agenticos.control.status.v1", "agenticos.control.pid_status.v1", "agenticos.control.orch_status.v1"]},
+        "data": {"type": "object"}
+      }
+    }
+  ]
+}

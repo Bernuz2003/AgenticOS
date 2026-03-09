@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import socket
 import sys
@@ -14,7 +15,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from agenticos_shared.runtime_config import load_runtime_defaults
-from gui.response_parser import parse_process_finished_marker
+from gui.response_parser import normalize_control_payload, parse_json_dict, parse_process_finished_marker
 
 FrameCallback = Callable[[str, str, bytes], None]
 
@@ -83,6 +84,8 @@ class ProtocolClient:
         # Persistent socket for control-plane requests (protected by lock)
         self._sock: Optional[socket.socket] = None
         self._lock = threading.Lock()
+        self._negotiated_version: str = "legacy"
+        self._enabled_capabilities: set[str] = set()
 
     def _load_token(self) -> str:
         """Read auth token from workspace/.kernel_token (cached)."""
@@ -124,6 +127,39 @@ class ProtocolClient:
         with self._lock:
             self._close_persistent()
             self._auth_token = None
+            self._negotiated_version = "legacy"
+            self._enabled_capabilities.clear()
+
+    def _negotiate_protocol(self, sock: socket.socket) -> None:
+        payload = {
+            "supported_versions": ["v1"],
+            "required_capabilities": [],
+        }
+        payload_bytes = json.dumps(payload).encode("utf-8")
+        header = f"HELLO 1 {len(payload_bytes)}\n".encode("utf-8")
+        sock.sendall(header)
+        sock.sendall(payload_bytes)
+
+        buf = bytearray()
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            frames = consume_framed_messages(buf)
+            if not frames:
+                continue
+            kind, _code, body = frames[0]
+            text = body.decode("utf-8", errors="replace")
+            if kind == "+OK":
+                data = parse_json_dict(text)
+                negotiated = str(data.get("negotiated_version", "") or "")
+                capabilities = data.get("enabled_capabilities", [])
+                if negotiated:
+                    self._negotiated_version = negotiated
+                if isinstance(capabilities, list):
+                    self._enabled_capabilities = {str(item) for item in capabilities}
+            break
 
     def _ensure_connection(self, read_timeout_s: float) -> socket.socket:
         """Return the persistent socket, reconnecting if needed."""
@@ -139,6 +175,7 @@ class ProtocolClient:
         sock.settimeout(read_timeout_s)
         sock.connect((self.host, self.port))
         self._authenticate(sock)
+        self._negotiate_protocol(sock)
         self._sock = sock
         return sock
 
@@ -204,7 +241,10 @@ class ProtocolClient:
                             control = ControlResponse(
                                 ok=(kind == "+OK"),
                                 code=code,
-                                payload=body.decode("utf-8", errors="replace"),
+                                payload=normalize_control_payload(
+                                    body.decode("utf-8", errors="replace"),
+                                    kind == "+OK",
+                                ),
                                 duration_s=time.perf_counter() - start,
                             )
                             break
@@ -254,6 +294,7 @@ class ProtocolClient:
             sock.settimeout(connect_timeout_s)
             sock.connect((self.host, self.port))
             self._authenticate(sock)
+            self._negotiate_protocol(sock)
             sock.sendall(header)
             if payload_bytes:
                 sock.sendall(payload_bytes)
@@ -286,7 +327,10 @@ class ProtocolClient:
                             control = ControlResponse(
                                 ok=(kind == "+OK"),
                                 code=code,
-                                payload=body.decode("utf-8", errors="replace"),
+                                payload=normalize_control_payload(
+                                    body.decode("utf-8", errors="replace"),
+                                    kind == "+OK",
+                                ),
                                 duration_s=time.perf_counter() - start,
                             )
                 except socket.timeout:

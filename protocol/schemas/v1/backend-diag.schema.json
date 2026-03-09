@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.backend_diag.v1",
+  "title": "AgenticOS BACKEND_DIAG Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.backend_diag.v1"},
+        "data": {"type": "object"}
+      }
+    }
+  ]
+}

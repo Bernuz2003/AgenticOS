@@ -33,8 +33,11 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
                 };
                 if should_reload {
                     if !ctx.in_flight.is_empty() {
-                        ctx.client.output_buffer.extend(protocol::response_err_code(
+                        ctx.client.output_buffer.extend(protocol::response_protocol_err(
+                            ctx.client,
+                            &ctx.request_id,
                             "IN_FLIGHT",
+                            protocol::schema::ERROR,
                             &format!(
                                 "Cannot switch model while {} process(es) are in-flight",
                                 ctx.in_flight.len()
@@ -58,8 +61,11 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
                             );
                         }
                         Err(e) => {
-                            ctx.client.output_buffer.extend(protocol::response_err_code(
+                            ctx.client.output_buffer.extend(protocol::response_protocol_err(
+                                ctx.client,
+                                &ctx.request_id,
                                 "SCHEDULER_LOAD_FAILED",
+                                protocol::schema::ERROR,
                                 &format!("{}", e),
                             ));
                             return None;
@@ -69,8 +75,11 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
             }
             Ok(None) => {}
             Err(e) => {
-                ctx.client.output_buffer.extend(protocol::response_err_code(
+                ctx.client.output_buffer.extend(protocol::response_protocol_err(
+                    ctx.client,
+                    &ctx.request_id,
                     "SCHEDULER_TARGET_FAILED",
+                    protocol::schema::ERROR,
                     &e.to_string(),
                 ));
                 return None;
@@ -98,19 +107,35 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
                     Some(pid),
                     &format!("exec_started workload={:?} priority=normal", workload),
                 );
-                Some(protocol::response_ok_code(
-                    "EXEC",
-                    &json!({
+                let payload = json!({
                         "pid": pid,
                         "workload": format!("{:?}", workload).to_lowercase(),
                         "priority": "normal",
-                    })
-                    .to_string(),
+                    });
+                Some(protocol::response_protocol_ok(
+                    ctx.client,
+                    &ctx.request_id,
+                    "EXEC",
+                    protocol::schema::EXEC,
+                    &payload,
+                    Some(&payload.to_string()),
                 ))
             }
-            Err(e) => Some(protocol::response_err_code("SPAWN_FAILED", &e)),
+            Err(e) => Some(protocol::response_protocol_err(
+                ctx.client,
+                &ctx.request_id,
+                "SPAWN_FAILED",
+                protocol::schema::ERROR,
+                &e,
+            )),
         }
     } else {
-        Some(protocol::response_err_code("NO_MODEL", "No Model Loaded"))
+        Some(protocol::response_protocol_err(
+            ctx.client,
+            &ctx.request_id,
+            "NO_MODEL",
+            protocol::schema::ERROR,
+            "No Model Loaded",
+        ))
     }
 }

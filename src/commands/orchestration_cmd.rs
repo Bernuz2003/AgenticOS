@@ -14,7 +14,13 @@ use serde_json;
 pub(crate) fn handle_orchestrate(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Option<Vec<u8>> {
     if ctx.engine_state.is_none() {
         ctx.client.output_buffer.extend(
-            protocol::response_err_code("NO_MODEL", "No Model Loaded — ORCHESTRATE requires a loaded engine"),
+            protocol::response_protocol_err(
+                ctx.client,
+                &ctx.request_id,
+                "NO_MODEL",
+                protocol::schema::ERROR,
+                "No Model Loaded — ORCHESTRATE requires a loaded engine",
+            ),
         );
         return None;
     }
@@ -27,8 +33,11 @@ pub(crate) fn handle_orchestrate(ctx: &mut CommandContext<'_>, payload: &[u8]) -
                 Ok((orch_id, spawn_requests)) => {
                     let mut spawned = 0usize;
                     let Some(engine) = ctx.engine_state.as_mut() else {
-                        return Some(protocol::response_err_code(
+                        return Some(protocol::response_protocol_err(
+                            ctx.client,
+                            &ctx.request_id,
                             "NO_MODEL",
+                            protocol::schema::ERROR,
                             "No Model Loaded — ORCHESTRATE requires a loaded engine",
                         ));
                     };
@@ -61,11 +70,30 @@ pub(crate) fn handle_orchestrate(ctx: &mut CommandContext<'_>, payload: &[u8]) -
                         "total_tasks": total_tasks,
                         "spawned": spawned,
                     });
-                    Some(protocol::response_ok_code("ORCHESTRATE", &json.to_string()))
+                    Some(protocol::response_protocol_ok(
+                        ctx.client,
+                        &ctx.request_id,
+                        "ORCHESTRATE",
+                        protocol::schema::ORCHESTRATE,
+                        &json,
+                        Some(&json.to_string()),
+                    ))
                 }
-                Err(e) => Some(protocol::response_err_code("ORCHESTRATE_INVALID", &e.to_string())),
+                Err(e) => Some(protocol::response_protocol_err(
+                    ctx.client,
+                    &ctx.request_id,
+                    "ORCHESTRATE_INVALID",
+                    protocol::schema::ERROR,
+                    &e.to_string(),
+                )),
             }
         }
-        Err(e) => Some(protocol::response_err_code("ORCHESTRATE_JSON", &format!("Invalid task graph JSON: {}", e))),
+        Err(e) => Some(protocol::response_protocol_err(
+            ctx.client,
+            &ctx.request_id,
+            "ORCHESTRATE_JSON",
+            protocol::schema::ERROR,
+            &format!("Invalid task graph JSON: {}", e),
+        )),
     }
 }

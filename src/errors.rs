@@ -102,6 +102,15 @@ pub enum ProtocolError {
 
     #[error("Content length {requested} exceeds protocol limit {max}")]
     ContentLengthTooLarge { requested: usize, max: usize },
+
+    #[error("Unsupported protocol version(s): {0}")]
+    UnsupportedProtocolVersion(String),
+
+    #[error("Missing required capability: {0}")]
+    MissingCapability(String),
+
+    #[error("Invalid protocol JSON: {0}")]
+    InvalidProtocolJson(String),
 }
 
 // ── Orchestrator errors ────────────────────────────────────────────────

@@ -12,11 +12,56 @@ _PROCESS_FINISHED_RE = re.compile(
 )
 
 
+def parse_protocol_envelope(payload: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    required = {"protocol_version", "schema_id", "request_id", "ok", "code", "data", "error", "warnings"}
+    if not required.issubset(data.keys()):
+        return None
+    return data
+
+
+def normalize_control_payload(payload: str, ok: bool) -> str:
+    envelope = parse_protocol_envelope(payload)
+    if envelope is None:
+        return payload
+
+    if ok:
+        data = envelope.get("data")
+        if isinstance(data, (dict, list)):
+            return json.dumps(data)
+        if data is None:
+            return ""
+        return str(data)
+
+    error = envelope.get("error")
+    if isinstance(error, dict) and error.get("message"):
+        return str(error.get("message"))
+    return payload
+
+
 def parse_json_dict(payload: str) -> dict[str, Any]:
     try:
         data = json.loads(payload)
     except (json.JSONDecodeError, TypeError):
         return {}
+    if isinstance(data, dict):
+        envelope_data = data.get("data")
+        if {
+            "protocol_version",
+            "schema_id",
+            "request_id",
+            "ok",
+            "code",
+            "data",
+            "error",
+            "warnings",
+        }.issubset(data.keys()) and isinstance(envelope_data, dict):
+            return envelope_data
     return data if isinstance(data, dict) else {}
 
 

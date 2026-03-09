@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.checkpoint.v1",
+  "title": "AgenticOS CHECKPOINT Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.checkpoint.v1"},
+        "data": {
+          "type": "object",
+          "required": ["message"],
+          "properties": {
+            "message": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}
