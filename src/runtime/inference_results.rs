@@ -42,6 +42,10 @@ pub(super) fn drain_worker_results(
                 let mut process = *process;
                 in_flight.remove(&pid);
 
+                if generated_tokens > 0 || !text_output.is_empty() {
+                    process.record_model_output(&text_output, generated_tokens);
+                }
+
                 if !finished
                     && !text_output.is_empty()
                     && crate::prompting::should_stop_on_text_with_metadata(

@@ -1,6 +1,6 @@
 use crate::checkpoint;
 use crate::protocol;
-use crate::scheduler::{ProcessPriority, ProcessQuota};
+use crate::scheduler::{ProcessPriority, ProcessQuota, RestoredProcessMetadata};
 
 use serde_json::json;
 
@@ -143,6 +143,7 @@ fn apply_restore_snapshot(
     for pid in existing_pids {
         scheduler.unregister(pid);
     }
+    scheduler.clear_restored_processes();
 
     model_catalog.clear_selected();
 
@@ -156,6 +157,37 @@ fn apply_restore_snapshot(
             max_syscalls: entry.max_syscalls,
         };
         scheduler.set_quota(entry.pid, quota);
+    }
+
+    for process in &snap.processes {
+        if scheduler.snapshot(process.pid).is_none() {
+            scheduler.register(
+                process.pid,
+                crate::model_catalog::WorkloadClass::General,
+                ProcessPriority::Normal,
+            );
+            scheduler.set_quota(
+                process.pid,
+                ProcessQuota {
+                    max_tokens: process.max_tokens,
+                    max_syscalls: crate::policy::scheduler_quota_defaults(
+                        crate::model_catalog::WorkloadClass::General,
+                    )
+                    .1,
+                },
+            );
+        }
+        scheduler.record_restored_process(
+            process.pid,
+            RestoredProcessMetadata {
+                owner_id: process.owner_id,
+                state: process.state.clone(),
+                token_count: process.token_count,
+                max_tokens: process.max_tokens,
+                context_policy: process.context_policy.clone(),
+                context_state: process.context_state.clone(),
+            },
+        );
     }
 
     if let Some(ref model_id) = snap.selected_model {
@@ -173,6 +205,7 @@ mod tests {
         ProcessSnapshot, SchedulerEntrySnapshot, SchedulerStateSnapshot,
     };
     use crate::model_catalog::ModelCatalog;
+    use crate::process::{ContextPolicy, ContextState, ContextStrategy};
     use crate::scheduler::ProcessScheduler;
     use std::fs;
     use std::path::PathBuf;
@@ -209,6 +242,16 @@ mod tests {
                 state: "Orphaned".to_string(),
                 token_count: 0,
                 max_tokens: 256,
+                context_policy: ContextPolicy::new(ContextStrategy::Summarize, 256, 224, 192, 3),
+                context_state: ContextState {
+                    tokens_used: 12,
+                    context_compressions: 1,
+                    context_retrieval_hits: 0,
+                    last_compaction_reason: Some("summarize_compacted_segments=2 replaced_tokens=42".to_string()),
+                    last_summary_ts: Some("epoch_123".to_string()),
+                    segments: Vec::new(),
+                    episodic_segments: Vec::new(),
+                },
             }],
             scheduler: SchedulerStateSnapshot {
                 entries: vec![SchedulerEntrySnapshot {
@@ -247,6 +290,9 @@ mod tests {
         assert_eq!(cleared, 2);
         assert_eq!(scheduler.registered_pids(), vec![7]);
         assert_eq!(catalog.selected_id.as_deref(), Some(model_id.as_str()));
+        let restored = scheduler.restored_process(7).expect("restored process exists");
+        assert_eq!(restored.context_policy.strategy, ContextStrategy::Summarize);
+        assert_eq!(restored.context_state.tokens_used, 12);
 
         let _ = fs::remove_dir_all(base);
     }

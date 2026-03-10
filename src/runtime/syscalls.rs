@@ -3,8 +3,7 @@ use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;
 use crate::scheduler::ProcessScheduler;
 use crate::scheduler::ProcessPriority;
-use crate::services::process_runtime::spawn_managed_process;
-use crate::services::process_runtime::kill_managed_process;
+use crate::services::process_runtime::{kill_managed_process, spawn_managed_process, ManagedProcessRequest};
 use crate::tool_registry::ToolRegistry;
 use crate::tools::{handle_syscall, SyscallRateMap};
 
@@ -51,15 +50,22 @@ pub(super) fn dispatch_process_syscall(
             .as_ref()
             .map(|snapshot| snapshot.priority)
             .unwrap_or(ProcessPriority::Normal);
+        let inherited_context_policy = engine
+            .processes
+            .get(&pid)
+            .map(|process| process.context_policy.clone());
 
         match spawn_managed_process(
             engine,
             memory,
             scheduler,
-            prompt,
-            owner_id,
-            workload,
-            priority,
+            ManagedProcessRequest {
+                prompt: prompt.to_string(),
+                owner_id,
+                workload,
+                priority,
+                context_policy: inherited_context_policy,
+            },
         ) {
             Ok(new_pid) => {
                 let msg = format!(

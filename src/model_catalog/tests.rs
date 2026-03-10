@@ -220,7 +220,7 @@ fn resolve_load_target_prefers_model_id_even_if_contains_slash() {
 
 #[test]
 fn parse_and_infer_workload() {
-    let (hint, stripped) = parse_workload_hint("capability=code; scrivi parser rust");
+    let (hint, stripped) = super::workload::parse_workload_hint("capability=code; scrivi parser rust");
     assert_eq!(hint, Some(WorkloadClass::Code));
     assert_eq!(stripped, "scrivi parser rust");
 

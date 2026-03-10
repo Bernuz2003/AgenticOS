@@ -1,10 +1,19 @@
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;
+use crate::process::ContextPolicy;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 
 pub struct ManagedProcessSpawn {
     pub pid: u64,
+}
+
+pub struct ManagedProcessRequest {
+    pub prompt: String,
+    pub owner_id: usize,
+    pub workload: WorkloadClass,
+    pub priority: ProcessPriority,
+    pub context_policy: Option<ContextPolicy>,
 }
 
 pub fn free_backend_slot_if_known(engine: &mut LLMEngine, memory: &NeuralMemory, pid: u64) {
@@ -42,13 +51,13 @@ pub fn spawn_managed_process(
     engine: &mut LLMEngine,
     memory: &mut NeuralMemory,
     scheduler: &mut ProcessScheduler,
-    prompt: &str,
-    owner_id: usize,
-    workload: WorkloadClass,
-    priority: ProcessPriority,
+    request: ManagedProcessRequest,
 ) -> Result<ManagedProcessSpawn, String> {
+    let context_policy = request
+        .context_policy
+        .unwrap_or_else(ContextPolicy::from_kernel_defaults);
     let pid = engine
-        .spawn_process(prompt, 0, owner_id)
+        .spawn_process(&request.prompt, 0, request.owner_id, context_policy)
         .map_err(|e| e.to_string())?;
 
     if let Some(token_slots) = engine.process_max_tokens(pid) {
@@ -67,6 +76,6 @@ pub fn spawn_managed_process(
         }
     }
 
-    scheduler.register(pid, workload, priority);
+    scheduler.register(pid, request.workload, request.priority);
     Ok(ManagedProcessSpawn { pid })
 }

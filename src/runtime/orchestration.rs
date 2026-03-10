@@ -9,7 +9,7 @@ use crate::orchestrator::Orchestrator;
 use crate::process::ProcessState;
 use crate::protocol;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
-use crate::services::process_runtime::{kill_managed_process, spawn_managed_process};
+use crate::services::process_runtime::{kill_managed_process, spawn_managed_process, ManagedProcessRequest};
 use crate::transport::Client;
 
 pub(super) fn handle_finished_processes(
@@ -97,10 +97,13 @@ pub(super) fn advance_orchestrator(
             engine,
             memory,
             scheduler,
-            &req.prompt,
-            req.owner_id,
-            req.workload,
-            ProcessPriority::Normal,
+            ManagedProcessRequest {
+                prompt: req.prompt.clone(),
+                owner_id: req.owner_id,
+                workload: req.workload,
+                priority: ProcessPriority::Normal,
+                context_policy: None,
+            },
         ) {
             Ok(spawned_process) => {
                 let pid = spawned_process.pid;
@@ -135,10 +138,21 @@ pub(super) fn checkout_active_processes(
         if in_flight.contains(&pid) {
             continue;
         }
-        if let Some(process) = engine.processes.remove(&pid) {
+        if let Some(mut process) = engine.processes.remove(&pid) {
             if !matches!(process.state, ProcessState::Ready | ProcessState::Running) {
                 engine.processes.insert(pid, process);
                 continue;
+            }
+            if let Some(event) = process.enforce_context_budget() {
+                tracing::info!(
+                    pid,
+                    strategy = event.strategy.label(),
+                    dropped_segments = event.dropped_segments,
+                    dropped_tokens = event.dropped_tokens,
+                    tokens_after = event.tokens_after,
+                    reason = %event.reason,
+                    "CONTEXT: pre-step compaction applied"
+                );
             }
             in_flight.insert(pid);
             let _ = cmd_tx.send(InferenceCmd::Step {

@@ -789,27 +789,63 @@ Questo NON significa, in questa fase:
 ---
 
 ### 29) Context window management
-**Status:** `TODO`
+**Status:** `IN_PROGRESS`
 
 **Obiettivi**
 - Gestire intelligentemente la finestra di contesto LLM per processi long-running.
 - Evitare troncamento silenzioso su prompt lunghi e conversazioni multi-turn.
 - Abilitare strategie di compressione contesto (summarization, sliding window, retrieval).
+- Trattare la policy di contesto come parte del process model, non come accessorio effimero di `EXEC`.
 
 **DoD**
-- [ ] **29.1** Tracking context usage: ogni processo traccia token count corrente vs window size del modello caricato.
-- [ ] **29.2** Strategia `sliding_window`: mantiene ultimi N token, scarta i più vecchi con boundary allineato a turni conversazione.
-- [ ] **29.3** Strategia `summarize`: quando il contesto supera soglia, genera un riassunto dei turni più vecchi usando il modello stesso e lo sostituisce al contesto originale.
-- [ ] **29.4** Strategia `retrieve`: integrazione con NeuralMemory per storage/retrieval semantico di frammenti di contesto evicted (RAG-like from memory store).
-- [ ] **29.5** Strategia selezionabile per processo via hint su `EXEC` (`context_strategy=sliding|summarize|retrieve`).
-- [ ] **29.6** Metriche context in `STATUS`: `context_tokens_used`, `context_window_size`, `context_compressions`.
-- [ ] **29.7** Test unitari: overflow detection, sliding window boundary, summarize trigger.
-- [ ] **29.8** Suite test verde, clippy pulito.
+- [x] **29.1** Process model esteso con `ContextStrategy`, `ContextPolicy`, `ContextState` e ledger `ContextSegment` serializzabili per PID.
+- [x] **29.2** Tracking context usage: ogni processo traccia token count corrente vs window size policy/model-driven senza perdere i boundary di turno.
+- [x] **29.3** Strategia `sliding_window`: mantiene ultimi N token, scarta i più vecchi solo per segmenti/turni completi e resetta coerentemente l'eventuale state del backend.
+- [x] **29.4** Strategia `summarize`: quando supera soglia, genera un summary dei turni vecchi tramite compaction event non bloccante e sostituisce il blocco storico con un segmento summary.
+- [x] **29.5** Strategia `retrieve`: store episodico pragmatico per PID con retrieval top-k e hit accounting esplicito prima del prossimo step.
+- [x] **29.6** Strategia selezionabile per processo via hint `EXEC`, con default kernel-side coerente e inheritance documentata per spawn/orchestration.
+- [x] **29.7** `STATUS` globale/per-PID/per-orchestration espone almeno: `context_strategy`, `context_tokens_used`, `context_window_size`, `context_compressions`, `context_retrieval_hits`, `last_compaction_reason`, `last_summary_ts`.
+- [x] **29.8** Checkpoint/restore metadata-only persistono policy e stato context per PID senza promettere live process restore.
+- [x] **29.9** Test unitari/integration: overflow detection, sliding boundary alignment, summarize trigger+sostituzione, retrieve base+hit accounting, persistenza policy/state, no regressioni scheduler/quota/syscall.
+- [x] **29.10** Suite test verde, clippy pulito.
 
 **Note di design**
-- La strategia `summarize` introduce un "meta-step" nel runtime: il processo genera un riassunto prima di proseguire. Richiede attenzione al budget token (la summarization stessa consuma quota).
-- La strategia `retrieve` sfrutta NeuralMemory come store vettoriale — i tensori già allocati per PID diventano embedding recuperabili. Questo è il primo passo verso una vera memoria episodica.
-- Default: `sliding_window` (zero overhead). Le altre strategie sono opt-in.
+- Prerequisito esplicito: il PID deve possedere un ledger di segmenti/turni (`ContextSegment`) invece di dipendere solo da `process.tokens`.
+- La strategia `summarize` non deve bloccare l'event loop `mio`: va modellata come compaction/meta-step esplicito nel runtime, non come chiamata sincrona improvvisata nel path hot.
+- La strategia `retrieve` parte in modo pragmatico: store episodico per-frammento/PID e ranking semplice; un vero retrieval semantico resta evoluzione successiva.
+- Il restore resta onesto: vengono ripristinati metadata e policy context, non processi vivi o KV cache del backend.
+- Default: `sliding_window` kernel-side. `summarize` e `retrieve` sono additive e opt-in.
+
+**Iterazioni operative**
+- **Iterazione A — Process model + segment ledger + sliding_window + STATUS**
+  - introdurre `ContextStrategy` / `ContextPolicy` / `ContextState` / `ContextSegment`
+  - hint `EXEC` additive per override policy
+  - enforcement pre-step `sliding_window`
+  - campi context additive in `STATUS` globale e per-PID
+- **Iterazione B — Summarize + checkpoint/restore**
+  - compaction event non bloccante per summarize
+  - persistenza policy/state/segment metadata nel checkpoint
+  - restore coerente col modello metadata-only esistente
+- **Iterazione C — Retrieve + orchestration + hardening**
+  - store episodico per PID e retrieval top-k con hit accounting
+  - inheritance/override policy nei task orchestrati
+  - hardening contratti/test/schema
+
+**Avanzamento 2026-03-10**
+- Piano M29 raffinato per riflettere i prerequisiti architetturali reali del repo: `ContextSegment`, summarize non bloccante, retrieve pragmatico e restore metadata-only esplicito.
+- Slice core dell'Iterazione A implementato: process model esteso, hint `EXEC` additive (`context_strategy`, `context_window`, `context_trigger`, `context_target`), default kernel-side, inheritance per spawn da syscall, enforcement `sliding_window` pre-step con reset coerente del context slot backend e accounting nel PID.
+- `STATUS` globale e per-PID ora includono snapshot context additive (`context_strategy`, `context_tokens_used`, `context_window_size`, `context_compressions`, `context_retrieval_hits`, `last_compaction_reason`, `last_summary_ts`, `context_segments`). `EXEC` response/schema v1 estesi additivamente con `context_strategy` e `context_window_size`.
+- File principali toccati: `src/config.rs`, `src/process.rs`, `src/policy/mod.rs`, `src/engine/lifecycle.rs`, `src/services/process_runtime.rs`, `src/commands/exec.rs`, `src/commands/status.rs`, `src/commands/orchestration_cmd.rs`, `src/runtime/orchestration.rs`, `src/runtime/syscalls.rs`, `src/runtime/inference_results.rs`, `protocol/schemas/v1/exec.schema.json`, `src/model_catalog/{mod.rs,tests.rs,workload.rs}`.
+- Iterazione B implementata sul kernel-side metadata path: `summarize` ora e' un compaction event sintetico non bloccante che sostituisce turni storici con un segmento `Summary`, resetta coerentemente il context slot backend e aggiorna `last_summary_ts`.
+- Checkpoint/restore ora persistono `ContextPolicy` e `ContextState` per PID; il restore ricostruisce uno store metadata-only nello scheduler per mantenere osservabili policy/stato context anche senza live process restore.
+- `STATUS` globale e per-PID leggono anche i processi restaurati metadata-only, invece di dipendere solo da `engine.processes`; questo rende coerente il post-restore senza promettere ripristino di KV cache o processi vivi.
+- File aggiuntivi toccati nell'Iterazione B: `src/scheduler.rs`, `src/checkpoint.rs`, `src/commands/checkpoint_cmd.rs`.
+- Iterazione C avviata e chiusa sul ramo pragmatico previsto dalla roadmap: `retrieve` usa ora uno store episodico serializzabile per PID (`episodic_segments`), archivia segmenti storici completi, reinietta top-k per recenza prima del prossimo step e aggiorna `context_retrieval_hits` senza bloccare l'event loop.
+- `STATUS orch:` espone ora anche lo snapshot context dei task running, riallineando la vista orchestration ai campi gia' presenti in `STATUS` globale/per-PID.
+- File aggiuntivi toccati nell'Iterazione C: `src/process.rs`, `src/commands/status.rs`.
+- Test eseguiti: `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`.
+- Risultato validazione aggiornato: `cargo test` verde (`163 passed, 0 failed, 1 ignored`), Clippy verde con `-D warnings`.
+- Limiti residui espliciti dopo il terzo slice: l'episodic retrieval resta recency-based e non semantico; i task orchestrati usano ancora default kernel-side senza override JSON esplicito della context policy.
 
 **Stima:** ~6-10h
 

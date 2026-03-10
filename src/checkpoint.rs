@@ -6,9 +6,12 @@
 //! `LOAD` + `EXEC` cycle.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::process::{ContextPolicy, ContextState};
 
 fn current_family_snapshot(
     engine_state: Option<&crate::engine::LLMEngine>,
@@ -57,6 +60,14 @@ pub struct ProcessSnapshot {
     pub state: String,
     pub token_count: usize,
     pub max_tokens: usize,
+    #[serde(default = "default_context_policy")]
+    pub context_policy: ContextPolicy,
+    #[serde(default)]
+    pub context_state: ContextState,
+}
+
+fn default_context_policy() -> ContextPolicy {
+    ContextPolicy::from_kernel_defaults()
 }
 
 /// Scheduler state for all registered PIDs.
@@ -216,17 +227,40 @@ pub fn build_kernel_snapshot(
     let (uptime_s, total_cmd, total_err, total_exec, total_signals) = metrics.snapshot();
 
     let (processes, generation) = if let Some(engine) = engine_state {
-        let processes = engine
+        let mut live_pids = HashSet::new();
+        let mut processes: Vec<ProcessSnapshot> = engine
             .processes
             .iter()
-            .map(|(pid, process)| ProcessSnapshot {
-                pid: *pid,
-                owner_id: process.owner_id,
-                state: format!("{:?}", process.state),
-                token_count: process.tokens.len(),
-                max_tokens: process.max_tokens,
+            .map(|(pid, process)| {
+                live_pids.insert(*pid);
+                ProcessSnapshot {
+                    pid: *pid,
+                    owner_id: process.owner_id,
+                    state: format!("{:?}", process.state),
+                    token_count: process.tokens.len(),
+                    max_tokens: process.max_tokens,
+                    context_policy: process.context_policy.clone(),
+                    context_state: process.context_state.clone(),
+                }
             })
             .collect();
+        processes.extend(
+            scheduler
+                .restored_pids()
+                .into_iter()
+                .filter(|pid| !live_pids.contains(pid))
+                .filter_map(|pid| {
+                    scheduler.restored_process(pid).map(|metadata| ProcessSnapshot {
+                        pid,
+                        owner_id: metadata.owner_id,
+                        state: metadata.state.clone(),
+                        token_count: metadata.token_count,
+                        max_tokens: metadata.max_tokens,
+                        context_policy: metadata.context_policy.clone(),
+                        context_state: metadata.context_state.clone(),
+                    })
+                }),
+        );
         let cfg = engine.generation_config();
         let generation = Some(GenerationSnapshot {
             temperature: cfg.temperature,
@@ -236,7 +270,24 @@ pub fn build_kernel_snapshot(
         });
         (processes, generation)
     } else {
-        (vec![], None)
+        (
+            scheduler
+                .restored_pids()
+                .into_iter()
+                .filter_map(|pid| {
+                    scheduler.restored_process(pid).map(|metadata| ProcessSnapshot {
+                        pid,
+                        owner_id: metadata.owner_id,
+                        state: metadata.state.clone(),
+                        token_count: metadata.token_count,
+                        max_tokens: metadata.max_tokens,
+                        context_policy: metadata.context_policy.clone(),
+                        context_state: metadata.context_state.clone(),
+                    })
+                })
+                .collect(),
+            None,
+        )
     };
 
     KernelSnapshot {
@@ -283,6 +334,8 @@ mod tests {
                     state: "Running".to_string(),
                     token_count: 128,
                     max_tokens: 256,
+                    context_policy: ContextPolicy::from_kernel_defaults(),
+                    context_state: ContextState::default(),
                 },
                 ProcessSnapshot {
                     pid: 2,
@@ -290,6 +343,8 @@ mod tests {
                     state: "Paused".to_string(),
                     token_count: 64,
                     max_tokens: 512,
+                    context_policy: ContextPolicy::from_kernel_defaults(),
+                    context_state: ContextState::default(),
                 },
             ],
             scheduler: SchedulerStateSnapshot {

@@ -33,6 +33,7 @@ pub fn infer_workload_class(prompt: &str) -> WorkloadClass {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn parse_workload_hint(prompt: &str) -> (Option<WorkloadClass>, String) {
     let trimmed = prompt.trim_start();
     let lower = trimmed.to_lowercase();

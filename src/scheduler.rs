@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::model_catalog::WorkloadClass;
+use crate::process::{ContextPolicy, ContextState};
 
 // ── Priority ────────────────────────────────────────────────────────────
 
@@ -112,12 +113,23 @@ pub struct ProcessSchedulerSnapshot {
     pub workload: WorkloadClass,
 }
 
+#[derive(Debug, Clone)]
+pub struct RestoredProcessMetadata {
+    pub owner_id: usize,
+    pub state: String,
+    pub token_count: usize,
+    pub max_tokens: usize,
+    pub context_policy: ContextPolicy,
+    pub context_state: ContextState,
+}
+
 // ── ProcessScheduler ────────────────────────────────────────────────────
 
 pub struct ProcessScheduler {
     priorities: HashMap<u64, ProcessPriority>,
     quotas: HashMap<u64, ProcessQuota>,
     accounting: HashMap<u64, ResourceAccounting>,
+    restored_processes: HashMap<u64, RestoredProcessMetadata>,
 }
 
 impl ProcessScheduler {
@@ -126,6 +138,7 @@ impl ProcessScheduler {
             priorities: HashMap::new(),
             quotas: HashMap::new(),
             accounting: HashMap::new(),
+            restored_processes: HashMap::new(),
         }
     }
 
@@ -142,6 +155,7 @@ impl ProcessScheduler {
         self.priorities.insert(pid, priority);
         self.quotas.insert(pid, ProcessQuota::defaults_for(workload));
         self.accounting.insert(pid, ResourceAccounting::new(workload));
+        self.restored_processes.remove(&pid);
     }
 
     /// Remove all scheduler state for a process.
@@ -149,6 +163,25 @@ impl ProcessScheduler {
         self.priorities.remove(&pid);
         self.quotas.remove(&pid);
         self.accounting.remove(&pid);
+        self.restored_processes.remove(&pid);
+    }
+
+    pub fn clear_restored_processes(&mut self) {
+        self.restored_processes.clear();
+    }
+
+    pub fn record_restored_process(&mut self, pid: u64, metadata: RestoredProcessMetadata) {
+        self.restored_processes.insert(pid, metadata);
+    }
+
+    pub fn restored_process(&self, pid: u64) -> Option<&RestoredProcessMetadata> {
+        self.restored_processes.get(&pid)
+    }
+
+    pub fn restored_pids(&self) -> Vec<u64> {
+        let mut pids: Vec<u64> = self.restored_processes.keys().copied().collect();
+        pids.sort_unstable();
+        pids
     }
 
     // ── Priority ────────────────────────────────────────────────────────

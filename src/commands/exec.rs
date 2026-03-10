@@ -1,8 +1,8 @@
-use crate::policy::resolve_exec_workload;
+use crate::policy::resolve_exec_policy;
 use crate::protocol;
 use crate::scheduler::ProcessPriority;
 use crate::services::model_runtime::activate_model_target;
-use crate::services::process_runtime::spawn_managed_process;
+use crate::services::process_runtime::{spawn_managed_process, ManagedProcessRequest};
 use serde_json::json;
 
 use super::context::CommandContext;
@@ -14,7 +14,10 @@ use super::metrics::log_event;
 /// client output buffer (e.g. on error), or `Some(response)` on success.
 pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Option<Vec<u8>> {
     let prompt_raw = String::from_utf8_lossy(payload).to_string();
-    let (workload, hinted_workload, prompt) = resolve_exec_workload(&prompt_raw);
+    let resolved = resolve_exec_policy(&prompt_raw);
+    let workload = resolved.workload;
+    let hinted_workload = resolved.hinted_workload;
+    let prompt = resolved.prompt;
     let auto_switch = crate::config::kernel_config().exec.auto_switch;
 
     let _ = ctx.model_catalog.refresh();
@@ -92,10 +95,13 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
             engine,
             ctx.memory,
             ctx.scheduler,
-            &prompt,
-            ctx.client_id,
-            workload,
-            ProcessPriority::Normal,
+            ManagedProcessRequest {
+                prompt: prompt.clone(),
+                owner_id: ctx.client_id,
+                workload,
+                priority: ProcessPriority::Normal,
+                context_policy: Some(resolved.context_policy.clone()),
+            },
         ) {
             Ok(spawned) => {
                 let pid = spawned.pid;
@@ -111,6 +117,8 @@ pub(crate) fn handle_exec(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Optio
                         "pid": pid,
                         "workload": format!("{:?}", workload).to_lowercase(),
                         "priority": "normal",
+                    "context_strategy": resolved.context_policy.strategy.label(),
+                    "context_window_size": resolved.context_policy.window_size_tokens,
                     });
                 Some(protocol::response_protocol_ok(
                     ctx.client,

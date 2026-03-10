@@ -13,7 +13,9 @@
           "properties": {
             "pid": {"type": "integer", "minimum": 0},
             "workload": {"type": "string"},
-            "priority": {"type": "string"}
+            "priority": {"type": "string"},
+            "context_strategy": {"type": "string"},
+            "context_window_size": {"type": "integer", "minimum": 1}
           },
           "additionalProperties": false
         }

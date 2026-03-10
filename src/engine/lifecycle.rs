@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::backend::{DriverResolution, RuntimeModel};
 use crate::memory::ContextSlotId;
 use crate::model_catalog::{ModelMetadata, ResolvedModelTarget};
-use crate::process::{AgentProcess, ProcessState};
+use crate::process::{AgentProcess, ContextPolicy, InitialContextSeed, ProcessState};
 use crate::prompting::{
     format_interprocess_user_message_with_metadata,
     format_system_injection_with_metadata,
@@ -96,6 +96,7 @@ impl LLMEngine {
         prompt: &str,
         _max_tokens: usize,
         owner_id: usize,
+        context_policy: ContextPolicy,
     ) -> Result<u64> {
         let pid = self.next_pid;
         self.next_pid += 1;
@@ -148,7 +149,7 @@ impl LLMEngine {
 
         let tokens = self
             .tokenizer
-            .encode(formatted_prompt, true)
+            .encode(formatted_prompt.as_str(), true)
             .map_err(E::msg)?
             .get_ids()
             .to_vec();
@@ -160,6 +161,10 @@ impl LLMEngine {
             self.tokenizer.clone(),
             tokens,
             self.generation,
+            InitialContextSeed {
+                policy: context_policy,
+                initial_segment_text: formatted_prompt,
+            },
         );
         self.processes.insert(pid, process);
 
@@ -189,9 +194,11 @@ impl LLMEngine {
             .map_err(E::msg)?
             .get_ids()
             .to_vec();
+        let injected_len = new_tokens.len();
 
         tracing::debug!(pid, tokens = new_tokens.len(), "OS: Injecting tokens");
         process.tokens.extend(new_tokens);
+        process.record_injected_context(&formatted_text, injected_len);
         process.state = ProcessState::Running;
         Ok(())
     }

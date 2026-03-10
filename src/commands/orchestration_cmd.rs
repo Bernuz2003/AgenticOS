@@ -1,6 +1,6 @@
 use crate::protocol;
 use crate::scheduler::ProcessPriority;
-use crate::services::process_runtime::spawn_managed_process;
+use crate::services::process_runtime::{spawn_managed_process, ManagedProcessRequest};
 
 use super::context::CommandContext;
 use super::metrics::log_event;
@@ -45,10 +45,13 @@ pub(crate) fn handle_orchestrate(ctx: &mut CommandContext<'_>, payload: &[u8]) -
                             engine,
                             ctx.memory,
                             ctx.scheduler,
-                            &req.prompt,
-                            req.owner_id,
-                            req.workload,
-                            ProcessPriority::Normal,
+                            ManagedProcessRequest {
+                                prompt: req.prompt.clone(),
+                                owner_id: req.owner_id,
+                                workload: req.workload,
+                                priority: ProcessPriority::Normal,
+                                context_policy: None,
+                            },
                         ) {
                             Ok(spawned_process) => {
                                 ctx.orchestrator.register_pid(spawned_process.pid, orch_id, &req.task_id);

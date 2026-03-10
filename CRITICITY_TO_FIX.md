@@ -603,6 +603,7 @@ L'orchestratore accumula output completi dei task e li reinietta integralmente n
 - Introdotto cap configurabile `AGENTIC_ORCH_MAX_OUTPUT_CHARS` per l'output memorizzato per task.
 - Gli output oltre soglia vengono troncati con marker esplicito `[TRUNCATED]`.
 - `STATUS orch:` e la GUI Orchestration mostrano truncation count e caratteri attualmente memorizzati.
+- Delta 2026-03-10: M29 ha esteso questa disciplina con context-window management per PID e osservabilita' orchestration coerente. I task running in `STATUS orch:` espongono ora anche lo snapshot context (`context_strategy`, token usage, compression/retrieval counters), mentre la nuova strategia `retrieve` usa uno store episodico pragmatico per evitare crescita cieca del contesto live.
 
 #### DoD
 

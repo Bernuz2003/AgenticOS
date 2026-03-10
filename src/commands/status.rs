@@ -1,7 +1,9 @@
 use serde::Serialize;
 use std::collections::HashSet;
 
+use crate::process::ContextStatusSnapshot;
 use crate::protocol;
+use crate::scheduler::RestoredProcessMetadata;
 
 use super::context::CommandContext;
 
@@ -88,6 +90,7 @@ pub(crate) struct PidStatusResponse {
     pub tokens_generated: usize,
     pub syscalls_used: usize,
     pub elapsed_secs: f64,
+    pub context: Option<ContextStatusSnapshot>,
 }
 
 #[derive(Serialize)]
@@ -113,6 +116,7 @@ pub(crate) struct OrchTaskEntry {
     pub status: String,
     pub pid: Option<u64>,
     pub error: Option<String>,
+    pub context: Option<ContextStatusSnapshot>,
 }
 
 // ── Handler ─────────────────────────────────────────────────────────────
@@ -189,44 +193,16 @@ pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec
                     let active_pids = engine.list_active_pids();
                     let waiting_pids = engine.list_waiting_pids();
                     let in_flight_pids: Vec<u64> = ctx.in_flight.iter().copied().collect();
+                    let restored_pids = ctx.scheduler.restored_pids();
                     let all_pids = collect_unique_pids([
                         active_pids.as_slice(),
                         waiting_pids.as_slice(),
                         in_flight_pids.as_slice(),
+                        restored_pids.as_slice(),
                     ]);
                     let active_processes: Vec<PidStatusResponse> = all_pids
                         .iter()
-                        .map(|&pid| {
-                            let sched = ctx.scheduler.snapshot(pid);
-                            let (owner_id, state, tokens, index_pos, max_tokens) =
-                                if let Some(process) = engine.processes.get(&pid) {
-                                    (
-                                        process.owner_id,
-                                        format!("{:?}", process.state),
-                                        process.tokens.len(),
-                                        process.index_pos,
-                                        process.max_tokens,
-                                    )
-                                } else {
-                                    // In-flight (checked out for inference)
-                                    (0, "InFlight".to_string(), 0, 0, 0)
-                                };
-                            PidStatusResponse {
-                                pid,
-                                owner_id,
-                                state,
-                                tokens,
-                                index_pos,
-                                max_tokens,
-                                priority: sched.as_ref().map(|s| format!("{}", s.priority)).unwrap_or_default(),
-                                workload: sched.as_ref().map(|s| format!("{:?}", s.workload)).unwrap_or_default(),
-                                quota_tokens: sched.as_ref().map(|s| s.quota.max_tokens as u64).unwrap_or(0),
-                                quota_syscalls: sched.as_ref().map(|s| s.quota.max_syscalls as u64).unwrap_or(0),
-                                tokens_generated: sched.as_ref().map(|s| s.tokens_generated).unwrap_or(0),
-                                syscalls_used: sched.as_ref().map(|s| s.syscalls_used).unwrap_or(0),
-                                elapsed_secs: sched.as_ref().map(|s| s.elapsed_secs).unwrap_or(0.0),
-                            }
-                        })
+                        .map(|&pid| build_pid_status_response(ctx, Some(engine), pid))
                         .collect();
                     ProcessesStatus {
                         active_pids,
@@ -250,7 +226,12 @@ pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec
                     active_pids: vec![],
                     waiting_pids: vec![],
                     in_flight_pids: vec![],
-                    active_processes: vec![],
+                    active_processes: ctx
+                        .scheduler
+                        .restored_pids()
+                        .into_iter()
+                        .map(|pid| build_pid_status_response(ctx, None, pid))
+                        .collect(),
                 },
             )
         };
@@ -300,7 +281,7 @@ pub(crate) fn handle_status(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec
     )
 }
 
-fn collect_unique_pids(groups: [&[u64]; 3]) -> Vec<u64> {
+fn collect_unique_pids<const N: usize>(groups: [&[u64]; N]) -> Vec<u64> {
     let mut seen = HashSet::new();
     let mut unique = Vec::new();
 
@@ -318,47 +299,14 @@ fn collect_unique_pids(groups: [&[u64]; 3]) -> Vec<u64> {
 // ── Per-PID status (JSON) ───────────────────────────────────────────────
 
 fn build_pid_status(ctx: &mut CommandContext<'_>, pid: u64) -> Vec<u8> {
-    let engine = match ctx.engine_state.as_ref() {
-        Some(e) => e,
-        None => {
-            return protocol::response_protocol_err(
-                ctx.client,
-                &ctx.request_id,
-                "NO_ENGINE",
-                protocol::schema::ERROR,
-                "No model loaded",
-            );
-        }
-    };
-
-    let process = match engine.processes.get(&pid) {
-        Some(p) => p,
-        None => {
-            return protocol::response_protocol_err(
-                ctx.client,
-                &ctx.request_id,
-                "PID_NOT_FOUND",
-                protocol::schema::ERROR,
-                &format!("PID {} not found", pid),
-            );
-        }
-    };
-
-    let sched = ctx.scheduler.snapshot(pid);
-    let resp = PidStatusResponse {
-        pid,
-        owner_id: process.owner_id,
-        state: format!("{:?}", process.state),
-        tokens: process.tokens.len(),
-        index_pos: process.index_pos,
-        max_tokens: process.max_tokens,
-        priority: sched.as_ref().map(|s| format!("{}", s.priority)).unwrap_or_default(),
-        workload: sched.as_ref().map(|s| format!("{:?}", s.workload)).unwrap_or_default(),
-        quota_tokens: sched.as_ref().map(|s| s.quota.max_tokens as u64).unwrap_or(0),
-        quota_syscalls: sched.as_ref().map(|s| s.quota.max_syscalls as u64).unwrap_or(0),
-        tokens_generated: sched.as_ref().map(|s| s.tokens_generated).unwrap_or(0),
-        syscalls_used: sched.as_ref().map(|s| s.syscalls_used).unwrap_or(0),
-        elapsed_secs: sched.as_ref().map(|s| s.elapsed_secs).unwrap_or(0.0),
+    let Some(resp) = build_pid_status_response_checked(ctx, ctx.engine_state.as_ref(), pid) else {
+        return protocol::response_protocol_err(
+            ctx.client,
+            &ctx.request_id,
+            "PID_NOT_FOUND",
+            protocol::schema::ERROR,
+            &format!("PID {} not found", pid),
+        );
     };
 
     let json = serde_json::to_string(&resp).expect("PidStatusResponse is always serializable");
@@ -370,6 +318,88 @@ fn build_pid_status(ctx: &mut CommandContext<'_>, pid: u64) -> Vec<u8> {
         &resp,
         Some(&json),
     )
+}
+
+fn build_pid_status_response(
+    ctx: &CommandContext<'_>,
+    engine: Option<&crate::engine::LLMEngine>,
+    pid: u64,
+) -> PidStatusResponse {
+    build_pid_status_response_checked(ctx, engine, pid).unwrap_or_else(|| PidStatusResponse {
+        pid,
+        owner_id: 0,
+        state: "InFlight".to_string(),
+        tokens: 0,
+        index_pos: 0,
+        max_tokens: 0,
+        priority: String::new(),
+        workload: String::new(),
+        quota_tokens: 0,
+        quota_syscalls: 0,
+        tokens_generated: 0,
+        syscalls_used: 0,
+        elapsed_secs: 0.0,
+        context: None,
+    })
+}
+
+fn build_pid_status_response_checked(
+    ctx: &CommandContext<'_>,
+    engine: Option<&crate::engine::LLMEngine>,
+    pid: u64,
+) -> Option<PidStatusResponse> {
+    let sched = ctx.scheduler.snapshot(pid);
+
+    if let Some(engine) = engine {
+        if let Some(process) = engine.processes.get(&pid) {
+            return Some(PidStatusResponse {
+                pid,
+                owner_id: process.owner_id,
+                state: format!("{:?}", process.state),
+                tokens: process.tokens.len(),
+                index_pos: process.index_pos,
+                max_tokens: process.max_tokens,
+                priority: sched.as_ref().map(|s| format!("{}", s.priority)).unwrap_or_default(),
+                workload: sched.as_ref().map(|s| format!("{:?}", s.workload)).unwrap_or_default(),
+                quota_tokens: sched.as_ref().map(|s| s.quota.max_tokens as u64).unwrap_or(0),
+                quota_syscalls: sched.as_ref().map(|s| s.quota.max_syscalls as u64).unwrap_or(0),
+                tokens_generated: sched.as_ref().map(|s| s.tokens_generated).unwrap_or(0),
+                syscalls_used: sched.as_ref().map(|s| s.syscalls_used).unwrap_or(0),
+                elapsed_secs: sched.as_ref().map(|s| s.elapsed_secs).unwrap_or(0.0),
+                context: Some(process.context_status_snapshot()),
+            });
+        }
+    }
+
+    ctx.scheduler.restored_process(pid).map(|metadata| {
+        restored_pid_status_response(pid, sched.as_ref(), metadata)
+    })
+}
+
+fn restored_pid_status_response(
+    pid: u64,
+    sched: Option<&crate::scheduler::ProcessSchedulerSnapshot>,
+    metadata: &RestoredProcessMetadata,
+) -> PidStatusResponse {
+    PidStatusResponse {
+        pid,
+        owner_id: metadata.owner_id,
+        state: metadata.state.clone(),
+        tokens: metadata.token_count,
+        index_pos: 0,
+        max_tokens: metadata.max_tokens,
+        priority: sched.map(|s| format!("{}", s.priority)).unwrap_or_default(),
+        workload: sched.map(|s| format!("{:?}", s.workload)).unwrap_or_default(),
+        quota_tokens: sched.map(|s| s.quota.max_tokens as u64).unwrap_or(0),
+        quota_syscalls: sched.map(|s| s.quota.max_syscalls as u64).unwrap_or(0),
+        tokens_generated: sched.map(|s| s.tokens_generated).unwrap_or(0),
+        syscalls_used: sched.map(|s| s.syscalls_used).unwrap_or(0),
+        elapsed_secs: sched.map(|s| s.elapsed_secs).unwrap_or(0.0),
+        context: Some(ContextStatusSnapshot::from_parts(
+            &metadata.context_policy,
+            &metadata.context_state,
+        )),
+    }
 }
 
 // ── Orchestration status (JSON) ─────────────────────────────────────────
@@ -398,18 +428,24 @@ fn build_orch_status(ctx: &mut CommandContext<'_>, orch_id: u64) -> Vec<u8> {
         .iter()
         .map(|task_id| {
             let status = &orch.status[task_id];
-            let (pid, error) = match status {
-                crate::orchestrator::TaskStatus::Running { pid } => (Some(*pid), None),
+            let (pid, error, context) = match status {
+                crate::orchestrator::TaskStatus::Running { pid } => (
+                    Some(*pid),
+                    None,
+                    build_pid_status_response_checked(ctx, ctx.engine_state.as_ref(), *pid)
+                        .and_then(|response| response.context),
+                ),
                 crate::orchestrator::TaskStatus::Failed { error } => {
-                    (None, Some(error.clone()))
+                    (None, Some(error.clone()), None)
                 }
-                _ => (None, None),
+                _ => (None, None, None),
             };
             OrchTaskEntry {
                 task: task_id.clone(),
                 status: status.label().to_string(),
                 pid,
                 error,
+                context,
             }
         })
         .collect();
@@ -447,7 +483,7 @@ mod tests {
 
     #[test]
     fn collect_unique_pids_preserves_first_seen_order() {
-        let unique = collect_unique_pids([&[1, 2, 3], &[3, 4], &[2, 5]]);
+        let unique = collect_unique_pids([&[1, 2, 3], &[3, 4], &[2, 5], &[]]);
         assert_eq!(unique, vec![1, 2, 3, 4, 5]);
     }
 }

@@ -12,6 +12,7 @@ pub struct KernelConfig {
     pub protocol: ProtocolRuntimeConfig,
     pub paths: PathsConfig,
     pub memory: MemoryRuntimeConfig,
+    pub context: ContextConfig,
     pub checkpoint: CheckpointConfig,
     pub auth: AuthConfig,
     pub external_llamacpp: ExternalLlamaCppConfig,
@@ -117,6 +118,28 @@ impl Default for MemoryRuntimeConfig {
             hidden_dim: 256,
             total_memory_mb: 64,
             token_slot_quota_per_pid: 4096,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ContextConfig {
+    pub default_strategy: String,
+    pub default_window_tokens: usize,
+    pub compaction_trigger_tokens: usize,
+    pub compaction_target_tokens: usize,
+    pub retrieve_top_k: usize,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            default_strategy: "sliding".to_string(),
+            default_window_tokens: 2048,
+            compaction_trigger_tokens: 1792,
+            compaction_target_tokens: 1536,
+            retrieve_top_k: 3,
         }
     }
 }
@@ -391,6 +414,21 @@ fn apply_env_overrides(config: &mut KernelConfig) {
     }
     if let Some(value) = env_string("AGENTIC_MEMORY_SWAP_DIR") {
         config.memory.swap_dir = PathBuf::from(value);
+    }
+    if let Some(value) = env_string("AGENTIC_CONTEXT_DEFAULT_STRATEGY") {
+        config.context.default_strategy = value;
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_CONTEXT_WINDOW_TOKENS") {
+        config.context.default_window_tokens = value.max(1);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_CONTEXT_TRIGGER_TOKENS") {
+        config.context.compaction_trigger_tokens = value.max(1);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_CONTEXT_TARGET_TOKENS") {
+        config.context.compaction_target_tokens = value.max(1);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_CONTEXT_RETRIEVE_TOP_K") {
+        config.context.retrieve_top_k = value.max(1);
     }
     if let Some(value) = env_u64_opt("AGENTIC_CHECKPOINT_INTERVAL_SECS") {
         config.checkpoint.interval_secs = value;

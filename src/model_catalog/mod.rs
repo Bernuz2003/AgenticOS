@@ -15,7 +15,7 @@ mod tests;
 mod workload;
 
 pub use metadata::ModelMetadata;
-pub use workload::{infer_workload_class, parse_workload_hint, parse_workload_label, WorkloadClass};
+pub use workload::{infer_workload_class, parse_workload_label, WorkloadClass};
 
 use cache::RenderCache;
 use discovery::{build_entry, compute_catalog_fingerprint, discover_entries};
