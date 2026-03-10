@@ -102,7 +102,7 @@ pub(super) fn advance_orchestrator(
                 owner_id: req.owner_id,
                 workload: req.workload,
                 priority: ProcessPriority::Normal,
-                context_policy: None,
+                context_policy: Some(req.context_policy.clone()),
             },
         ) {
             Ok(spawned_process) => {

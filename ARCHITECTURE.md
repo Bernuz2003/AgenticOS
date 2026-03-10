@@ -1,6 +1,6 @@
 # AgenticOS — Architecture
 
-> Versione: `0.5.0` · Aggiornamento: 2026-03-07
+> Versione: `0.5.0` · Aggiornamento: 2026-03-10
 
 AgenticOS è un **AI workstation OS local-first, single-node**: un kernel per agenti LLM che espone un runtime TCP event-driven e una GUI di controllo per gestire processi autonomi basati su Large Language Model.
 Ogni processo possiede un'istanza del modello, genera token in streaming, può invocare tool di sistema (syscall) e comunicare con altri processi.
@@ -332,8 +332,20 @@ AgentProcess
 ├── tokens: Vec<u32>            # Buffer token (prompt + generati)
 ├── index_pos: usize            # Posizione corrente nella sequenza
 ├── max_tokens: usize           # Limite token massimi
-└── syscall_buffer: String      # Accumulo output per detection [[...]]
+├── syscall_buffer: String      # Accumulo output per detection [[...]]
+├── context_policy              # Strategia per-PID (`sliding_window`/`summarize`/`retrieve`)
+└── context_state               # Ledger segmenti, compaction stats, retrieval hits, episodic store
 ```
+
+### Context window management per PID
+
+Ogni `AgentProcess` possiede ora una policy di contesto first-class, indipendente dal solo prompt iniziale. Il kernel supporta tre strategie additive:
+
+- `sliding_window` — scarta segmenti completi piu' vecchi e resetta coerentemente il context slot backend.
+- `summarize` — sostituisce blocchi storici con un segmento `Summary` tramite compaction event non bloccante.
+- `retrieve` — archivia segmenti storici in uno store episodico serializzabile e reinietta top-k prima del prossimo step, con ranking ibrido lessicale+recency.
+
+La policy puo' arrivare da `EXEC` oppure dal payload `ORCHESTRATE` per-task (`context_strategy`, `context_window_size`, `context_trigger_tokens`, `context_target_tokens`, `context_retrieve_top_k`). Tutte le metriche risultanti sono osservabili via `STATUS` globale, per-PID e `STATUS orch:N`.
 
 ### Ciclo di vita di un processo
 
@@ -596,7 +608,15 @@ Il kernel può salvare un'istantanea del proprio stato su disco per resilienza a
   "selected_model": "llama3.1-8b",
   "generation": { "temperature": 0.7, "top_p": 0.9, "seed": 42, "max_tokens": 256 },
   "processes": [
-    { "pid": 1, "owner_id": 10, "state": "Running", "token_count": 128, "max_tokens": 256 }
+        {
+            "pid": 1,
+            "owner_id": 10,
+            "state": "Running",
+            "token_count": 128,
+            "max_tokens": 256,
+            "context_policy": { "strategy": "retrieve", "window_size_tokens": 512, "compaction_trigger_tokens": 448, "compaction_target_tokens": 384, "retrieve_top_k": 3 },
+            "context_state": { "tokens_used": 128, "context_compressions": 2, "context_retrieval_hits": 4, "last_compaction_reason": "retrieve_archived_segments=2 archived_tokens=36 retrieval_hits=2", "last_summary_ts": null, "segments": [], "episodic_segments": [] }
+        }
   ],
   "scheduler": {
     "entries": [
@@ -618,7 +638,7 @@ Il kernel può salvare un'istantanea del proprio stato su disco per resilienza a
 | Configurazione generazione | Connessioni TCP |
 | Modello selezionato | Output buffer dei client |
 
-**Al restore:** il kernel richiede stato idle, azzera la porzione restore-able gia' presente e riapplica lo snapshot in modalita' `metadata_only_clear_and_apply`. Scheduler entries, selected model hint e generation config vengono ripristinati; processi live, pesi, tensori e output buffer non vengono mai ripresi.
+**Al restore:** il kernel richiede stato idle, azzera la porzione restore-able gia' presente e riapplica lo snapshot in modalita' `metadata_only_clear_and_apply`. Scheduler entries, selected model hint, generation config e metadata di context policy/state vengono ripristinati; processi live, pesi, tensori e output buffer non vengono mai ripresi.
 
 ### Auto-checkpoint
 

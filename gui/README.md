@@ -48,6 +48,8 @@ python3 -m gui.app
 - Per mostrare i log `New connection` nel terminale kernel, abilita `AGENTIC_LOG_CONNECTIONS=1` (default: off).
 - Lo scheduler di auto-switch modello su `EXEC` è ora **opt-in** (`AGENTIC_EXEC_AUTO_SWITCH=1`); default: disabilitato per evitare reload inattesi.
 - `STATUS` espone sempre `selected_model_id` e `loaded_model_id`: la GUI mostra entrambi nel pannello `Control`.
+- La sezione Orchestration accetta ora override context per task nel JSON (`context_strategy`, `context_window_size`, `context_trigger_tokens`, `context_target_tokens`, `context_retrieve_top_k`) e mostra in tabella lo snapshot context dei task running.
+- `STATUS orch:N` include `context_strategy`, token usage, compression count e retrieval hits per i task in esecuzione; la GUI li rende visibili nella colonna `Context`.
 
 ## Smoke test manuale E2E (runbook)
 
@@ -58,12 +60,13 @@ python3 -m gui.app
 5. Premi `Backend Diag` nella sezione Models e verifica il report JSON del backend esterno quando `AGENTIC_LLAMACPP_ENDPOINT` e' configurato.
 6. In Generation premi `GET_GEN`, modifica un valore e premi `SET_GEN`; verifica eco dei valori.
 7. In `Exec` invia un prompt breve e controlla stream output + marker di fine processo.
-8. Nella sezione Memory prova `MEMW` solo come strumento diagnostico low-level; verifica che payload disallineati restituiscano errore esplicito.
-9. Premi `RESTORE` su snapshot valido e verifica nel pannello Memory il riepilogo metadata-only (clear/apply + limiti del restore).
-10. Esegui `TERM`/`KILL` su PID valido e verifica risposta.
-11. Verifica tab `Behind the scenes`:
+8. Nella sezione Orchestration prova un DAG con override context per task (`retrieve` o `summarize`) e verifica che `Poll Status` mostri la colonna `Context` valorizzata per i task running.
+9. Nella sezione Memory prova `MEMW` solo come strumento diagnostico low-level; verifica che payload disallineati restituiscano errore esplicito.
+10. Premi `RESTORE` su snapshot valido e verifica nel pannello Memory il riepilogo metadata-only (clear/apply + limiti del restore).
+11. Esegui `TERM`/`KILL` su PID valido e verifica risposta.
+12. Verifica tab `Behind the scenes`:
   - eventi kernel popolati,
   - tail di `workspace/syscall_audit.log` popolato,
   - filtri testuali funzionanti.
-12. Premi `Export snapshot` e verifica presenza file in `reports/`.
-13. Premi `SHUTDOWN` oppure `Stop Kernel` e verifica chiusura pulita.
+13. Premi `Export snapshot` e verifica presenza file in `reports/`.
+14. Premi `SHUTDOWN` oppure `Stop Kernel` e verifica chiusura pulita.

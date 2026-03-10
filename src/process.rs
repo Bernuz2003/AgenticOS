@@ -1,5 +1,6 @@
 use candle_transformers::generation::LogitsProcessor;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use tokenizers::Tokenizer;
 
 use crate::backend::RuntimeModel;
@@ -509,19 +510,45 @@ impl AgentProcess {
             return None;
         }
 
+        let live_query = self
+            .context_state
+            .segments
+            .iter()
+            .filter(|segment| segment.kind != ContextSegmentKind::RetrievedMemory)
+            .rev()
+            .take(3)
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let query_terms = lexical_terms(&live_query);
+
+        let mut ranked: Vec<(usize, usize, String)> = corpus
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, segment)| {
+                let candidate_text = segment.text.trim().to_string();
+                if candidate_text.is_empty() {
+                    return None;
+                }
+                let overlap = lexical_overlap_score(&query_terms, &candidate_text);
+                let recency_bonus = idx + 1;
+                let score = overlap.saturating_mul(100) + recency_bonus;
+                Some((score, idx, candidate_text))
+            })
+            .collect();
+        ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+
+        let mut chosen: Vec<(usize, String)> = ranked
+            .into_iter()
+            .take(self.context_policy.retrieve_top_k)
+            .map(|(_, idx, text)| (idx, text))
+            .collect();
+        chosen.sort_by_key(|(idx, _)| *idx);
+
         let mut selected_texts: Vec<String> = Vec::new();
         let mut selected_hits = 0usize;
 
-        for segment in corpus
-            .iter()
-            .rev()
-            .take(self.context_policy.retrieve_top_k)
-        {
-            let candidate_text = segment.text.trim().to_string();
-            if candidate_text.is_empty() {
-                continue;
-            }
-
+        for (_idx, candidate_text) in chosen {
             let mut next_texts = vec![candidate_text];
             next_texts.extend(selected_texts.iter().cloned());
             let next_text = next_texts.join("\n");
@@ -590,9 +617,26 @@ fn build_summary_text(_segments: &[ContextSegment]) -> String {
     "summary".to_string()
 }
 
+fn lexical_terms(text: &str) -> HashSet<String> {
+    text.split(|ch: char| !ch.is_alphanumeric())
+        .filter(|term| term.len() >= 3)
+        .map(|term| term.to_ascii_lowercase())
+        .collect()
+}
+
+fn lexical_overlap_score(query_terms: &HashSet<String>, candidate_text: &str) -> usize {
+    if query_terms.is_empty() {
+        return 0;
+    }
+    lexical_terms(candidate_text)
+        .into_iter()
+        .filter(|term| query_terms.contains(term))
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AgentProcess, ContextPolicy, ContextSegmentKind, ContextStrategy, InitialContextSeed};
+    use super::{AgentProcess, ContextPolicy, ContextSegment, ContextSegmentKind, ContextStrategy, InitialContextSeed};
     use crate::backend::{
         ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult,
         RuntimeModel,
@@ -697,6 +741,21 @@ mod tests {
         (process, frees)
     }
 
+    fn append_segment_tokens(
+        process: &mut AgentProcess,
+        kind: ContextSegmentKind,
+        text: &str,
+        tokens: &[u32],
+    ) {
+        process.tokens.extend(tokens.iter().copied());
+        process.context_state.segments.push(ContextSegment::new(
+            kind,
+            tokens.len(),
+            text.to_string(),
+        ));
+        process.context_state.tokens_used = process.tokens.len();
+    }
+
     #[test]
     fn sliding_window_drops_complete_segments_and_resets_backend_slot() {
         let policy = ContextPolicy::new(ContextStrategy::SlidingWindow, 8, 7, 5, 3);
@@ -781,5 +840,95 @@ mod tests {
         assert_eq!(process.context_state.context_retrieval_hits, 1);
         assert!(process.tokens.len() <= process.context_policy.window_size_tokens);
         assert_eq!(*frees.lock().expect("lock frees"), vec![13]);
+    }
+
+    #[test]
+    fn retrieve_prefers_overlap_before_pure_recency() {
+        let policy = ContextPolicy::new(ContextStrategy::Retrieve, 24, 12, 10, 2);
+        let (mut process, _frees) = test_process(policy);
+        process.context_state.episodic_segments = vec![
+            ContextSegment::new(
+                ContextSegmentKind::AssistantTurn,
+                2,
+                "generic archive".to_string(),
+            ),
+            ContextSegment::new(
+                ContextSegmentKind::AssistantTurn,
+                2,
+                "kernel scheduler quota".to_string(),
+            ),
+        ];
+        process.context_state.segments = vec![ContextSegment::new(
+            ContextSegmentKind::UserTurn,
+            3,
+            "explain scheduler quota".to_string(),
+        )];
+        process.tokens = vec![1, 2, 1];
+        process.context_state.tokens_used = process.tokens.len();
+
+        let payload = process
+            .build_retrieval_payload(&process.context_state.episodic_segments, 8)
+            .expect("retrieval payload");
+
+        assert!(payload.0.contains("kernel scheduler quota"));
+    }
+
+    #[test]
+    fn long_running_multi_turn_strategies_remain_bounded_and_observable() {
+        let strategies = [
+            ContextStrategy::SlidingWindow,
+            ContextStrategy::Summarize,
+            ContextStrategy::Retrieve,
+        ];
+
+        for (offset, strategy) in strategies.into_iter().enumerate() {
+            let policy = ContextPolicy::new(strategy, 12, 10, 8, 2);
+            let (mut process, frees) = test_process(policy);
+            process.context_slot_id = Some((offset as u64) + 21);
+
+            for turn in 0..8 {
+                append_segment_tokens(
+                    &mut process,
+                    ContextSegmentKind::UserTurn,
+                    &format!("user turn {} scheduler quota", turn),
+                    &[1, 2],
+                );
+                append_segment_tokens(
+                    &mut process,
+                    ContextSegmentKind::AssistantTurn,
+                    &format!("assistant reply {} scheduler", turn),
+                    &[3, 4],
+                );
+
+                let _ = process.enforce_context_budget();
+
+                assert!(
+                    process.tokens.len() <= process.context_policy.window_size_tokens,
+                    "strategy {} exceeded window", strategy.label()
+                );
+                assert!(!process.context_state.segments.is_empty());
+                assert!(process.context_state.tokens_used <= process.context_policy.window_size_tokens);
+            }
+
+            match strategy {
+                ContextStrategy::SlidingWindow => {
+                    assert!(process.context_state.context_compressions > 0);
+                    assert!(process.context_state.last_compaction_reason.is_some());
+                }
+                ContextStrategy::Summarize => {
+                    assert!(process.context_state.context_compressions > 0);
+                    assert!(process.context_state.last_summary_ts.is_some());
+                    assert!(process.context_state.segments.iter().any(|segment| {
+                        segment.kind == ContextSegmentKind::Summary
+                    }));
+                }
+                ContextStrategy::Retrieve => {
+                    assert!(process.context_state.last_compaction_reason.is_some());
+                    assert!(process.context_state.context_retrieval_hits > 0);
+                    assert!(!process.context_state.episodic_segments.is_empty());
+                }
+            }
+            assert!(!frees.lock().expect("lock frees").is_empty());
+        }
     }
 }

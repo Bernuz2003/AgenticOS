@@ -2,12 +2,59 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "agenticos.control.status.v1",
   "title": "AgenticOS STATUS Response v1",
+  "$defs": {
+    "contextSnapshot": {
+      "type": "object",
+      "properties": {
+        "context_strategy": {"type": "string"},
+        "context_tokens_used": {"type": "integer", "minimum": 0},
+        "context_window_size": {"type": "integer", "minimum": 1},
+        "context_compressions": {"type": "integer", "minimum": 0},
+        "context_retrieval_hits": {"type": "integer", "minimum": 0},
+        "last_compaction_reason": {"type": ["string", "null"]},
+        "last_summary_ts": {"type": ["string", "null"]},
+        "context_segments": {"type": "integer", "minimum": 0}
+      },
+      "required": [
+        "context_strategy",
+        "context_tokens_used",
+        "context_window_size",
+        "context_compressions",
+        "context_retrieval_hits",
+        "last_compaction_reason",
+        "last_summary_ts",
+        "context_segments"
+      ]
+    }
+  },
   "allOf": [
     {"$ref": "./control-envelope.schema.json"},
     {
       "properties": {
         "schema_id": {"enum": ["agenticos.control.status.v1", "agenticos.control.pid_status.v1", "agenticos.control.orch_status.v1"]},
-        "data": {"type": "object"}
+        "data": {
+          "type": "object",
+          "properties": {
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "task": {"type": "string"},
+                  "status": {"type": "string"},
+                  "pid": {"type": ["integer", "null"]},
+                  "error": {"type": ["string", "null"]},
+                  "context": {
+                    "oneOf": [
+                      {"$ref": "#/$defs/contextSnapshot"},
+                      {"type": "null"}
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   ]

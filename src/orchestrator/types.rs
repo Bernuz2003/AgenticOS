@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::model_catalog::WorkloadClass;
+use crate::process::{ContextPolicy, ContextStrategy};
 
 /// Failure policy for an orchestration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -26,7 +27,39 @@ pub struct TaskNodeDef {
     #[serde(default)]
     pub workload: Option<String>,
     #[serde(default)]
+    pub context_strategy: Option<String>,
+    #[serde(default)]
+    pub context_window_size: Option<usize>,
+    #[serde(default)]
+    pub context_trigger_tokens: Option<usize>,
+    #[serde(default)]
+    pub context_target_tokens: Option<usize>,
+    #[serde(default)]
+    pub context_retrieve_top_k: Option<usize>,
+    #[serde(default)]
     pub deps: Vec<String>,
+}
+
+impl TaskNodeDef {
+    pub fn resolved_context_policy(&self) -> ContextPolicy {
+        let defaults = ContextPolicy::from_kernel_defaults();
+        let strategy = self
+            .context_strategy
+            .as_deref()
+            .and_then(ContextStrategy::parse)
+            .unwrap_or(defaults.strategy);
+        ContextPolicy::new(
+            strategy,
+            self.context_window_size
+                .unwrap_or(defaults.window_size_tokens),
+            self.context_trigger_tokens
+                .unwrap_or(defaults.compaction_trigger_tokens),
+            self.context_target_tokens
+                .unwrap_or(defaults.compaction_target_tokens),
+            self.context_retrieve_top_k
+                .unwrap_or(defaults.retrieve_top_k),
+        )
+    }
 }
 
 /// Full task-graph payload (JSON-deserializable).
@@ -135,6 +168,7 @@ pub struct SpawnRequest {
     pub prompt: String,
     pub workload: WorkloadClass,
     pub owner_id: usize,
+    pub context_policy: ContextPolicy,
 }
 
 /// Manages all active orchestrations.

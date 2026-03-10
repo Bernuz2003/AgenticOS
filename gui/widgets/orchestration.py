@@ -20,8 +20,25 @@ from PySide6.QtWidgets import (
 _ORCH_TEMPLATE = json.dumps(
     {
         "tasks": [
-            {"id": "t1", "prompt": "hello", "workload": "chat", "deps": []},
-            {"id": "t2", "prompt": "summarise t1", "workload": "chat", "deps": ["t1"]},
+            {
+                "id": "t1",
+                "prompt": "hello",
+                "workload": "chat",
+                "context_strategy": "retrieve",
+                "context_window_size": 512,
+                "context_retrieve_top_k": 2,
+                "deps": [],
+            },
+            {
+                "id": "t2",
+                "prompt": "summarise t1",
+                "workload": "chat",
+                "context_strategy": "summarize",
+                "context_window_size": 384,
+                "context_trigger_tokens": 320,
+                "context_target_tokens": 256,
+                "deps": ["t1"],
+            },
         ],
         "failure_policy": "fail_fast",
     },
@@ -36,7 +53,7 @@ class OrchestrationSection(QWidget):
     poll_orch_requested = Signal(str)        # orchestration_id
     refresh_requested = Signal()
 
-    _TASK_COLS = ["Task", "Status", "PID", "Error"]
+    _TASK_COLS = ["Task", "Status", "PID", "Context", "Error"]
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -137,6 +154,7 @@ class OrchestrationSection(QWidget):
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.task_table.setMaximumHeight(200)
         layout.addWidget(self.task_table)
 
@@ -188,8 +206,18 @@ class OrchestrationSection(QWidget):
             task_id = str(entry.get("task", "?"))
             status = str(entry.get("status", "?"))
             pid = str(entry.get("pid", "—")) if entry.get("pid") is not None else "—"
+            context_data = entry.get("context") or {}
+            context = ""
+            if isinstance(context_data, dict) and context_data:
+                context = (
+                    f"{context_data.get('context_strategy', '?')}"
+                    f" • tok={context_data.get('context_tokens_used', '?')}"
+                    f"/{context_data.get('context_window_size', '?')}"
+                    f" • cmp={context_data.get('context_compressions', 0)}"
+                    f" • ret={context_data.get('context_retrieval_hits', 0)}"
+                )
             error = str(entry.get("error", "")) if entry.get("error") is not None else ""
-            for col, val in enumerate([task_id, status, pid, error]):
+            for col, val in enumerate([task_id, status, pid, context, error]):
                 item = QTableWidgetItem(val)
                 if col == 1:
                     item.setForeground(self._status_color(status))

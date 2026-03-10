@@ -7,27 +7,26 @@ use super::output::build_task_prompt;
 use super::validation::topological_sort;
 use super::*;
 
+fn task_node(id: &str, prompt: &str, workload: Option<&str>, deps: Vec<&str>) -> TaskNodeDef {
+    TaskNodeDef {
+        id: id.into(),
+        prompt: prompt.into(),
+        workload: workload.map(str::to_string),
+        context_strategy: None,
+        context_window_size: None,
+        context_trigger_tokens: None,
+        context_target_tokens: None,
+        context_retrieve_top_k: None,
+        deps: deps.into_iter().map(str::to_string).collect(),
+    }
+}
+
 fn make_linear_graph() -> TaskGraphDef {
     TaskGraphDef {
         tasks: vec![
-            TaskNodeDef {
-                id: "A".into(),
-                prompt: "Task A".into(),
-                workload: None,
-                deps: vec![],
-            },
-            TaskNodeDef {
-                id: "B".into(),
-                prompt: "Task B".into(),
-                workload: Some("code".into()),
-                deps: vec!["A".into()],
-            },
-            TaskNodeDef {
-                id: "C".into(),
-                prompt: "Task C".into(),
-                workload: None,
-                deps: vec!["B".into()],
-            },
+            task_node("A", "Task A", None, vec![]),
+            task_node("B", "Task B", Some("code"), vec!["A"]),
+            task_node("C", "Task C", None, vec!["B"]),
         ],
         failure_policy: FailurePolicy::FailFast,
     }
@@ -36,30 +35,10 @@ fn make_linear_graph() -> TaskGraphDef {
 fn make_parallel_graph() -> TaskGraphDef {
     TaskGraphDef {
         tasks: vec![
-            TaskNodeDef {
-                id: "A".into(),
-                prompt: "Task A".into(),
-                workload: None,
-                deps: vec![],
-            },
-            TaskNodeDef {
-                id: "B".into(),
-                prompt: "Task B".into(),
-                workload: None,
-                deps: vec!["A".into()],
-            },
-            TaskNodeDef {
-                id: "C".into(),
-                prompt: "Task C".into(),
-                workload: None,
-                deps: vec!["A".into()],
-            },
-            TaskNodeDef {
-                id: "D".into(),
-                prompt: "Task D".into(),
-                workload: None,
-                deps: vec!["B".into(), "C".into()],
-            },
+            task_node("A", "Task A", None, vec![]),
+            task_node("B", "Task B", None, vec!["A"]),
+            task_node("C", "Task C", None, vec!["A"]),
+            task_node("D", "Task D", None, vec!["B", "C"]),
         ],
         failure_policy: FailurePolicy::BestEffort,
     }
@@ -73,6 +52,34 @@ fn linear_graph_registers_and_spawns_root() {
     assert_eq!(spawns.len(), 1);
     assert_eq!(spawns[0].task_id, "A");
     assert_eq!(spawns[0].prompt, "Task A");
+    assert_eq!(spawns[0].context_policy.strategy.label(), "sliding_window");
+}
+
+#[test]
+fn task_context_policy_overrides_are_preserved_in_spawn_requests() {
+    let graph = TaskGraphDef {
+        tasks: vec![TaskNodeDef {
+            id: "A".into(),
+            prompt: "Task A".into(),
+            workload: None,
+            context_strategy: Some("retrieve".into()),
+            context_window_size: Some(300),
+            context_trigger_tokens: Some(250),
+            context_target_tokens: Some(180),
+            context_retrieve_top_k: Some(4),
+            deps: vec![],
+        }],
+        failure_policy: FailurePolicy::FailFast,
+    };
+    let mut orch = Orchestrator::new();
+    let (_, spawns) = orch.register(graph, 1).expect("register");
+
+    assert_eq!(spawns.len(), 1);
+    assert_eq!(spawns[0].context_policy.strategy.label(), "retrieve");
+    assert_eq!(spawns[0].context_policy.window_size_tokens, 300);
+    assert_eq!(spawns[0].context_policy.compaction_trigger_tokens, 250);
+    assert_eq!(spawns[0].context_policy.compaction_target_tokens, 180);
+    assert_eq!(spawns[0].context_policy.retrieve_top_k, 4);
 }
 
 #[test]
@@ -175,9 +182,9 @@ fn fail_fast_kills_running_tasks() {
     let mut orch = Orchestrator::new();
     let graph = TaskGraphDef {
         tasks: vec![
-            TaskNodeDef { id: "A".into(), prompt: "A".into(), workload: None, deps: vec![] },
-            TaskNodeDef { id: "B".into(), prompt: "B".into(), workload: None, deps: vec!["A".into()] },
-            TaskNodeDef { id: "C".into(), prompt: "C".into(), workload: None, deps: vec!["A".into()] },
+            task_node("A", "A", None, vec![]),
+            task_node("B", "B", None, vec!["A"]),
+            task_node("C", "C", None, vec!["A"]),
         ],
         failure_policy: FailurePolicy::FailFast,
     };
@@ -233,8 +240,8 @@ fn best_effort_skips_dependents_of_failed() {
 fn cyclic_graph_rejected() {
     let graph = TaskGraphDef {
         tasks: vec![
-            TaskNodeDef { id: "A".into(), prompt: "A".into(), workload: None, deps: vec!["B".into()] },
-            TaskNodeDef { id: "B".into(), prompt: "B".into(), workload: None, deps: vec!["A".into()] },
+            task_node("A", "A", None, vec!["B"]),
+            task_node("B", "B", None, vec!["A"]),
         ],
         failure_policy: FailurePolicy::FailFast,
     };
@@ -258,8 +265,8 @@ fn empty_graph_rejected() {
 fn duplicate_task_id_rejected() {
     let graph = TaskGraphDef {
         tasks: vec![
-            TaskNodeDef { id: "A".into(), prompt: "A".into(), workload: None, deps: vec![] },
-            TaskNodeDef { id: "A".into(), prompt: "A2".into(), workload: None, deps: vec![] },
+            task_node("A", "A", None, vec![]),
+            task_node("A", "A2", None, vec![]),
         ],
         failure_policy: FailurePolicy::FailFast,
     };
@@ -271,12 +278,7 @@ fn duplicate_task_id_rejected() {
 #[test]
 fn unknown_dependency_rejected() {
     let graph = TaskGraphDef {
-        tasks: vec![TaskNodeDef {
-            id: "A".into(),
-            prompt: "A".into(),
-            workload: None,
-            deps: vec!["Z".into()],
-        }],
+        tasks: vec![task_node("A", "A", None, vec!["Z"])],
         failure_policy: FailurePolicy::FailFast,
     };
     let mut orch = Orchestrator::new();
@@ -287,12 +289,7 @@ fn unknown_dependency_rejected() {
 #[test]
 fn self_dependency_rejected() {
     let graph = TaskGraphDef {
-        tasks: vec![TaskNodeDef {
-            id: "A".into(),
-            prompt: "A".into(),
-            workload: None,
-            deps: vec!["A".into()],
-        }],
+        tasks: vec![task_node("A", "A", None, vec!["A"])],
         failure_policy: FailurePolicy::FailFast,
     };
     let mut orch = Orchestrator::new();
@@ -303,9 +300,9 @@ fn self_dependency_rejected() {
 #[test]
 fn topological_sort_deterministic() {
     let tasks = vec![
-        TaskNodeDef { id: "C".into(), prompt: String::new(), workload: None, deps: vec!["A".into()] },
-        TaskNodeDef { id: "A".into(), prompt: String::new(), workload: None, deps: vec![] },
-        TaskNodeDef { id: "B".into(), prompt: String::new(), workload: None, deps: vec!["A".into()] },
+        task_node("C", "", None, vec!["A"]),
+        task_node("A", "", None, vec![]),
+        task_node("B", "", None, vec!["A"]),
     ];
     let order = topological_sort(&tasks).unwrap();
     assert_eq!(order, vec!["A", "B", "C"]);
@@ -357,12 +354,7 @@ fn workload_parsing() {
 
 #[test]
 fn build_prompt_injects_dependency_output() {
-    let task = TaskNodeDef {
-        id: "D".into(),
-        prompt: "Summarise everything".into(),
-        workload: None,
-        deps: vec!["A".into(), "B".into()],
-    };
+    let task = task_node("D", "Summarise everything", None, vec!["A", "B"]);
     let mut outputs = HashMap::new();
     outputs.insert("A".to_string(), "output A".to_string());
     outputs.insert("B".to_string(), "output B".to_string());
@@ -375,12 +367,7 @@ fn build_prompt_injects_dependency_output() {
 
 #[test]
 fn build_prompt_without_deps_returns_raw() {
-    let task = TaskNodeDef {
-        id: "root".into(),
-        prompt: "do it".into(),
-        workload: None,
-        deps: vec![],
-    };
+    let task = task_node("root", "do it", None, vec![]);
     let prompt = build_task_prompt(&task, &HashMap::new());
     assert_eq!(prompt, "do it");
 }

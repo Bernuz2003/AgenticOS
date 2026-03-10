@@ -604,6 +604,7 @@ L'orchestratore accumula output completi dei task e li reinietta integralmente n
 - Gli output oltre soglia vengono troncati con marker esplicito `[TRUNCATED]`.
 - `STATUS orch:` e la GUI Orchestration mostrano truncation count e caratteri attualmente memorizzati.
 - Delta 2026-03-10: M29 ha esteso questa disciplina con context-window management per PID e osservabilita' orchestration coerente. I task running in `STATUS orch:` espongono ora anche lo snapshot context (`context_strategy`, token usage, compression/retrieval counters), mentre la nuova strategia `retrieve` usa uno store episodico pragmatico per evitare crescita cieca del contesto live.
+- Delta 2026-03-10 (slice finale M29): il payload `ORCHESTRATE` supporta ora override espliciti della context policy per task (`context_strategy`, window/trigger/target/retrieve_top_k`), propagati fino agli spawn runtime; schema e GUI sono stati riallineati per rendere questo contratto osservabile.
 
 #### DoD
 

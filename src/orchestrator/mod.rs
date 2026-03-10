@@ -72,6 +72,7 @@ impl Orchestrator {
                     prompt: task.prompt.clone(),
                     workload: workload_from_label_or_default(task.workload.as_deref()),
                     owner_id,
+                    context_policy: task.resolved_context_policy(),
                 });
             }
         }
@@ -220,6 +221,7 @@ impl Orchestrator {
                     prompt: build_task_prompt(task, &orch.output),
                     workload: workload_from_label_or_default(task.workload.as_deref()),
                     owner_id,
+                    context_policy: task.resolved_context_policy(),
                 });
             }
         }
