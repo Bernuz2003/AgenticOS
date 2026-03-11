@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use agentic_control_models::ExecStartPayload;
 use agentic_protocol::OpCode;
+use serde::{Deserialize, Serialize};
 
 use super::audit::AuditLogEntry;
 use super::auth::kernel_token_path;
@@ -21,14 +22,19 @@ pub struct TimelineStore {
     sessions: HashMap<u64, TimelineSessionState>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TimelineTurn {
+    prompt: String,
+    assistant_stream: String,
+    running: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TimelineSessionState {
     session_id: String,
     pid: u64,
-    running: bool,
     workload: String,
-    prompt: String,
-    assistant_stream: String,
+    turns: Vec<TimelineTurn>,
     error: Option<String>,
     system_events: Vec<(String, String)>,
 }
@@ -42,17 +48,57 @@ pub(crate) struct ProcessFinishedMarker {
 
 impl TimelineStore {
     pub fn insert_started_session(&mut self, pid: u64, prompt: String, workload: String) {
+        if let Some(session) = self.sessions.get_mut(&pid) {
+            session.workload = workload;
+            session.error = None;
+            if session.turns.is_empty() {
+                session.turns.push(TimelineTurn {
+                    prompt,
+                    assistant_stream: String::new(),
+                    running: true,
+                });
+            }
+            return;
+        }
+
         let state = TimelineSessionState {
             session_id: format!("pid-{pid}"),
             pid,
-            running: true,
             workload,
-            prompt,
-            assistant_stream: String::new(),
+            turns: vec![TimelineTurn {
+                prompt,
+                assistant_stream: String::new(),
+                running: true,
+            }],
             error: None,
             system_events: Vec::new(),
         };
         self.sessions.insert(pid, state);
+    }
+
+    pub fn append_user_turn(&mut self, pid: u64, prompt: String) {
+        let Some(session) = self.sessions.get_mut(&pid) else {
+            return;
+        };
+        if let Some(current_turn) = session.turns.last_mut() {
+            current_turn.running = false;
+        }
+        session.error = None;
+        session.turns.push(TimelineTurn {
+            prompt,
+            assistant_stream: String::new(),
+            running: true,
+        });
+    }
+
+    pub fn resume_last_turn(&mut self, pid: u64) {
+        let Some(session) = self.sessions.get_mut(&pid) else {
+            return;
+        };
+        if let Some(turn) = session.turns.last_mut() {
+            turn.running = true;
+        }
+        session.error = None;
     }
 
     pub fn append_assistant_chunk(&mut self, pid: u64, text: &str) {
@@ -62,7 +108,10 @@ impl TimelineStore {
         let Some(session) = self.sessions.get_mut(&pid) else {
             return;
         };
-        session.assistant_stream.push_str(text);
+        let Some(turn) = session.turns.last_mut() else {
+            return;
+        };
+        turn.assistant_stream.push_str(text);
     }
 
     pub fn finish_session_with_reason(
@@ -74,7 +123,9 @@ impl TimelineStore {
         let Some(session) = self.sessions.get_mut(&pid) else {
             return;
         };
-        session.running = false;
+        if let Some(turn) = session.turns.last_mut() {
+            turn.running = false;
+        }
         if let Some(marker) = marker {
             session.system_events.push((
                 format!(
@@ -94,7 +145,9 @@ impl TimelineStore {
         let Some(session) = self.sessions.get_mut(&pid) else {
             return;
         };
-        session.running = false;
+        if let Some(turn) = session.turns.last_mut() {
+            turn.running = false;
+        }
         session.error = Some(error.clone());
         session.system_events.push((error, "error".to_string()));
     }
@@ -103,7 +156,7 @@ impl TimelineStore {
         self.sessions.get(&pid).map(|session| TimelineSnapshot {
             session_id: session.session_id.clone(),
             pid: session.pid,
-            running: session.running,
+            running: session.turns.last().is_some_and(|turn| turn.running),
             workload: session.workload.clone(),
             source: "live_exec".to_string(),
             fallback_notice: None,
@@ -111,6 +164,80 @@ impl TimelineStore {
             items: build_live_timeline_items(session),
         })
     }
+
+    fn insert_persisted_session(&mut self, session: TimelineSessionState) {
+        self.sessions.insert(session.pid, session);
+    }
+}
+
+fn timeline_sessions_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join("timeline_sessions")
+}
+
+fn timeline_session_path(workspace_root: &Path, pid: u64) -> PathBuf {
+    timeline_sessions_dir(workspace_root).join(format!("pid-{pid}.json"))
+}
+
+pub fn persist_session_snapshot(
+    workspace_root: &Path,
+    store: &TimelineStore,
+    pid: u64,
+) -> Result<(), String> {
+    let Some(session) = store.sessions.get(&pid).cloned() else {
+        return Ok(());
+    };
+
+    fs::create_dir_all(timeline_sessions_dir(workspace_root)).map_err(|err| err.to_string())?;
+    let payload = serde_json::to_vec_pretty(&session).map_err(|err| err.to_string())?;
+    fs::write(timeline_session_path(workspace_root, pid), payload).map_err(|err| err.to_string())
+}
+
+fn load_persisted_session(
+    workspace_root: &Path,
+    pid: u64,
+) -> Result<Option<TimelineSessionState>, String> {
+    let path = timeline_session_path(workspace_root, pid);
+    match fs::read(path) {
+        Ok(payload) => serde_json::from_slice(&payload)
+            .map(Some)
+            .map_err(|err| err.to_string()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn sync_persisted_session_with_workspace_snapshot(
+    session: &mut TimelineSessionState,
+    snapshot: &WorkspaceSnapshot,
+) {
+    session.workload = snapshot.workload.clone();
+    if let Some(turn) = session.turns.last_mut() {
+        turn.running = matches!(
+            snapshot.state.as_str(),
+            "Running" | "WaitingForSyscall" | "InFlight"
+        );
+    }
+}
+
+pub fn hydrate_session_from_disk(
+    timeline_store: &Arc<Mutex<TimelineStore>>,
+    workspace_root: &Path,
+    pid: u64,
+    snapshot: Option<&WorkspaceSnapshot>,
+) -> Result<bool, String> {
+    let Some(mut session) = load_persisted_session(workspace_root, pid)? else {
+        return Ok(false);
+    };
+
+    if let Some(snapshot) = snapshot {
+        sync_persisted_session_with_workspace_snapshot(&mut session, snapshot);
+    }
+
+    let mut store = timeline_store
+        .lock()
+        .map_err(|_| "Timeline store lock poisoned".to_string())?;
+    store.insert_persisted_session(session);
+    Ok(true)
 }
 
 pub fn synthesize_fallback_timeline(snapshot: WorkspaceSnapshot) -> TimelineSnapshot {
@@ -257,6 +384,7 @@ pub fn start_exec_session(
             started.workload.clone()
         };
         store.insert_started_session(started.pid, prompt, started_workload);
+        let _ = persist_session_snapshot(&workspace_root, &store, started.pid);
     }
 
     Ok(StartSessionResult {
@@ -267,18 +395,20 @@ pub fn start_exec_session(
 
 fn build_live_timeline_items(session: &TimelineSessionState) -> Vec<TimelineItem> {
     let mut items = Vec::new();
-    items.push(TimelineItem {
-        id: format!("{}-user-1", session.session_id),
-        kind: TimelineItemKind::UserMessage,
-        text: session.prompt.clone(),
-        status: "complete".to_string(),
-    });
-
-    items.extend(parse_stream_segments(
-        &session.session_id,
-        &session.assistant_stream,
-        session.running,
-    ));
+    for (turn_index, turn) in session.turns.iter().enumerate() {
+        let turn_id = format!("{}-turn-{}", session.session_id, turn_index + 1);
+        items.push(TimelineItem {
+            id: format!("{turn_id}-user"),
+            kind: TimelineItemKind::UserMessage,
+            text: turn.prompt.clone(),
+            status: "complete".to_string(),
+        });
+        items.extend(parse_stream_segments(
+            &turn_id,
+            &turn.assistant_stream,
+            turn.running,
+        ));
+    }
 
     for (index, (text, status)) in session.system_events.iter().enumerate() {
         items.push(TimelineItem {
@@ -292,7 +422,7 @@ fn build_live_timeline_items(session: &TimelineSessionState) -> Vec<TimelineItem
     items
 }
 
-fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<TimelineItem> {
+fn parse_stream_segments(item_prefix: &str, stream: &str, running: bool) -> Vec<TimelineItem> {
     let mut items = Vec::new();
     let mut cursor = 0usize;
     let mut item_index = 1usize;
@@ -303,13 +433,13 @@ fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<T
 
         match next_marker {
             None => {
-                push_timeline_text_item(
-                    &mut items,
-                    session_id,
-                    &mut item_index,
-                    TimelineItemKind::AssistantMessage,
-                    remaining,
-                    if running { "streaming" } else { "complete" },
+                    push_timeline_text_item(
+                        &mut items,
+                        item_prefix,
+                        &mut item_index,
+                        TimelineItemKind::AssistantMessage,
+                        remaining,
+                        if running { "streaming" } else { "complete" },
                 );
                 break;
             }
@@ -317,7 +447,7 @@ fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<T
                 if offset > 0 {
                     push_timeline_text_item(
                         &mut items,
-                        session_id,
+                        item_prefix,
                         &mut item_index,
                         TimelineItemKind::AssistantMessage,
                         &remaining[..offset],
@@ -330,7 +460,7 @@ fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<T
                 if let Some(end_offset) = think_rest.find("</think>") {
                     push_timeline_text_item(
                         &mut items,
-                        session_id,
+                        item_prefix,
                         &mut item_index,
                         TimelineItemKind::Thinking,
                         &think_rest[..end_offset],
@@ -340,7 +470,7 @@ fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<T
                 } else {
                     push_timeline_text_item(
                         &mut items,
-                        session_id,
+                        item_prefix,
                         &mut item_index,
                         TimelineItemKind::Thinking,
                         think_rest,
@@ -353,7 +483,7 @@ fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<T
                 if offset > 0 {
                     push_timeline_text_item(
                         &mut items,
-                        session_id,
+                        item_prefix,
                         &mut item_index,
                         TimelineItemKind::AssistantMessage,
                         &remaining[..offset],
@@ -366,7 +496,7 @@ fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<T
                 if let Some(end_offset) = tool_rest.find("]]") {
                     push_timeline_text_item(
                         &mut items,
-                        session_id,
+                        item_prefix,
                         &mut item_index,
                         TimelineItemKind::ToolCall,
                         &tool_rest[..end_offset],
@@ -376,7 +506,7 @@ fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<T
                 } else {
                     push_timeline_text_item(
                         &mut items,
-                        session_id,
+                        item_prefix,
                         &mut item_index,
                         TimelineItemKind::ToolCall,
                         tool_rest,
@@ -389,7 +519,7 @@ fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<T
                 if offset > 0 {
                     push_timeline_text_item(
                         &mut items,
-                        session_id,
+                        item_prefix,
                         &mut item_index,
                         TimelineItemKind::AssistantMessage,
                         &remaining[..offset],
@@ -402,7 +532,7 @@ fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<T
                 if let Some(line_end_offset) = tool_rest.find('\n') {
                     push_timeline_text_item(
                         &mut items,
-                        session_id,
+                        item_prefix,
                         &mut item_index,
                         TimelineItemKind::ToolCall,
                         &tool_rest[..line_end_offset],
@@ -412,7 +542,7 @@ fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<T
                 } else {
                     push_timeline_text_item(
                         &mut items,
-                        session_id,
+                        item_prefix,
                         &mut item_index,
                         TimelineItemKind::ToolCall,
                         tool_rest,
@@ -426,7 +556,7 @@ fn parse_stream_segments(session_id: &str, stream: &str, running: bool) -> Vec<T
 
     if items.is_empty() && running {
         items.push(TimelineItem {
-            id: format!("{}-assistant-waiting", session_id),
+            id: format!("{item_prefix}-assistant-waiting"),
             kind: TimelineItemKind::AssistantMessage,
             text: String::new(),
             status: "streaming".to_string(),
@@ -517,7 +647,7 @@ fn looks_like_syscall_invocation(content: &str) -> bool {
 
 fn push_timeline_text_item(
     items: &mut Vec<TimelineItem>,
-    session_id: &str,
+    item_prefix: &str,
     item_index: &mut usize,
     kind: TimelineItemKind,
     text: &str,
@@ -529,7 +659,7 @@ fn push_timeline_text_item(
     }
 
     items.push(TimelineItem {
-        id: format!("{}-segment-{}", session_id, *item_index),
+        id: format!("{item_prefix}-segment-{}", *item_index),
         kind,
         text: normalized.to_string(),
         status: status.to_string(),

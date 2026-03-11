@@ -1,7 +1,7 @@
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;
-use crate::process::ProcessState;
+use crate::process::{ProcessLifecyclePolicy, ProcessState};
 use crate::scheduler::ProcessPriority;
 use crate::scheduler::ProcessScheduler;
 use crate::services::process_runtime::{
@@ -117,14 +117,15 @@ pub(super) fn dispatch_process_syscall(
             engine,
             memory,
             scheduler,
-            ManagedProcessRequest {
-                prompt: prompt.to_string(),
-                owner_id,
-                workload,
-                priority,
-                context_policy: inherited_context_policy,
-            },
-        ) {
+                ManagedProcessRequest {
+                    prompt: prompt.to_string(),
+                    owner_id,
+                    workload,
+                    priority,
+                    lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+                    context_policy: inherited_context_policy,
+                },
+            ) {
             Ok(new_pid) => {
                 pending_events.push(KernelEvent::SessionStarted {
                     pid: new_pid.pid,

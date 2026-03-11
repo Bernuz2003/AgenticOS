@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use crate::backend::{DriverResolution, RuntimeModel};
 use crate::memory::ContextSlotId;
 use crate::model_catalog::{ModelMetadata, ResolvedModelTarget};
-use crate::process::{AgentProcess, ContextPolicy, InitialContextSeed, ProcessState};
+use crate::process::{
+    AgentProcess, ContextPolicy, InitialContextSeed, ProcessLifecyclePolicy, ProcessState,
+};
 use crate::prompting::{
     format_interprocess_user_message_with_metadata, format_system_injection_with_metadata,
     format_user_message_with_metadata, GenerationConfig,
@@ -91,6 +93,7 @@ impl LLMEngine {
         prompt: &str,
         _max_tokens: usize,
         owner_id: usize,
+        lifecycle_policy: ProcessLifecyclePolicy,
         context_policy: ContextPolicy,
     ) -> Result<u64> {
         let pid = self.next_pid;
@@ -145,6 +148,7 @@ impl LLMEngine {
         let process = AgentProcess::new(
             pid,
             owner_id,
+            lifecycle_policy,
             model_clone,
             self.tokenizer.clone(),
             tokens,
@@ -188,6 +192,73 @@ impl LLMEngine {
         process.tokens.extend(new_tokens);
         process.record_injected_context(&formatted_text, injected_len);
         process.state = ProcessState::Running;
+        Ok(())
+    }
+
+    pub fn send_user_input(&mut self, pid: u64, prompt: &str) -> Result<()> {
+        let formatted_prompt =
+            format_user_message_with_metadata(prompt, self.family, self.metadata.as_ref());
+
+        let process = self
+            .processes
+            .get_mut(&pid)
+            .ok_or(E::msg("PID not found"))?;
+
+        if process.state != ProcessState::WaitingForInput {
+            return Err(E::msg(format!(
+                "PID {} is not waiting for input (state={:?})",
+                pid, process.state
+            )));
+        }
+
+        let new_tokens = process
+            .tokenizer
+            .encode(formatted_prompt.as_str(), true)
+            .map_err(E::msg)?
+            .get_ids()
+            .to_vec();
+        let token_count = new_tokens.len();
+
+        process.tokens.extend(new_tokens);
+        process.record_user_input(&formatted_prompt, token_count);
+        process.begin_next_turn();
+        process.state = ProcessState::Ready;
+        Ok(())
+    }
+
+    pub fn continue_current_turn(&mut self, pid: u64) -> Result<()> {
+        let process = self
+            .processes
+            .get_mut(&pid)
+            .ok_or(E::msg("PID not found"))?;
+
+        if process.state != ProcessState::AwaitingTurnDecision {
+            return Err(E::msg(format!(
+                "PID {} is not awaiting a turn decision (state={:?})",
+                pid, process.state
+            )));
+        }
+
+        process.extend_current_turn_budget();
+        process.state = ProcessState::Ready;
+        Ok(())
+    }
+
+    pub fn stop_current_turn(&mut self, pid: u64) -> Result<()> {
+        let process = self
+            .processes
+            .get_mut(&pid)
+            .ok_or(E::msg("PID not found"))?;
+
+        if process.state != ProcessState::AwaitingTurnDecision {
+            return Err(E::msg(format!(
+                "PID {} is not awaiting a turn decision (state={:?})",
+                pid, process.state
+            )));
+        }
+
+        process.abandon_current_turn();
+        process.state = ProcessState::WaitingForInput;
         Ok(())
     }
 

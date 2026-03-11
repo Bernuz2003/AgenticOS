@@ -297,6 +297,14 @@ mod tests {
 
         let shutdown = CommandHeader::parse("SHUTDOWN 1 0").expect("SHUTDOWN should parse");
         assert!(matches!(shutdown.opcode, OpCode::Shutdown));
+
+        let continue_output =
+            CommandHeader::parse("CONTINUE_OUTPUT 1 9").expect("CONTINUE_OUTPUT should parse");
+        assert!(matches!(continue_output.opcode, OpCode::ContinueOutput));
+
+        let stop_output =
+            CommandHeader::parse("STOP_OUTPUT 1 9").expect("STOP_OUTPUT should parse");
+        assert!(matches!(stop_output.opcode, OpCode::StopOutput));
     }
 
     #[test]
@@ -318,6 +326,9 @@ mod tests {
 
         let get_gen = CommandHeader::parse("GET_GEN 1 0").expect("GET_GEN should parse");
         assert!(matches!(get_gen.opcode, OpCode::GetGen));
+
+        let send_input = CommandHeader::parse("SEND_INPUT 1 32").expect("SEND_INPUT should parse");
+        assert!(matches!(send_input.opcode, OpCode::SendInput));
     }
 
     #[test]

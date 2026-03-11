@@ -11,9 +11,24 @@ use crate::prompting::GenerationConfig;
 pub enum ProcessState {
     Ready,
     Running,
+    AwaitingTurnDecision,
+    WaitingForInput,
     WaitingForMemory,
     WaitingForSyscall,
     Finished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessLifecyclePolicy {
+    Ephemeral,
+    Interactive,
+}
+
+impl ProcessLifecyclePolicy {
+    pub fn is_interactive(self) -> bool {
+        matches!(self, Self::Interactive)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -172,12 +187,14 @@ pub struct AgentProcess {
     pub owner_id: usize,
     pub context_slot_id: Option<ContextSlotId>,
     pub state: ProcessState,
+    pub lifecycle_policy: ProcessLifecyclePolicy,
     pub model: RuntimeModel,
     pub tokenizer: Tokenizer,
     pub generation: GenerationConfig,
     pub logits_processor: LogitsProcessor,
     pub tokens: Vec<u32>,
     pub index_pos: usize,
+    pub turn_start_index: usize,
     pub max_tokens: usize,
     pub syscall_buffer: String,
     pub context_policy: ContextPolicy,
@@ -188,6 +205,7 @@ impl AgentProcess {
     pub fn new(
         id: u64,
         owner_id: usize,
+        lifecycle_policy: ProcessLifecyclePolicy,
         model: RuntimeModel,
         tokenizer: Tokenizer,
         prompt_tokens: Vec<u32>,
@@ -199,6 +217,7 @@ impl AgentProcess {
             owner_id,
             context_slot_id: None,
             state: ProcessState::Ready,
+            lifecycle_policy,
             model,
             tokenizer,
             generation,
@@ -209,6 +228,7 @@ impl AgentProcess {
             ),
             tokens: prompt_tokens,
             index_pos: 0,
+            turn_start_index: initial_token_count,
             max_tokens: generation.max_tokens,
             syscall_buffer: String::new(),
             context_policy: context_seed.policy,
@@ -232,6 +252,10 @@ impl AgentProcess {
         self.append_segment(ContextSegmentKind::AssistantTurn, text, token_count, true);
     }
 
+    pub fn record_user_input(&mut self, text: &str, token_count: usize) {
+        self.append_segment(ContextSegmentKind::UserTurn, text, token_count, false);
+    }
+
     pub fn record_injected_context(&mut self, text: &str, token_count: usize) {
         self.append_segment(
             ContextSegmentKind::InjectedContext,
@@ -243,6 +267,23 @@ impl AgentProcess {
 
     pub fn context_status_snapshot(&self) -> ContextStatusSnapshot {
         ContextStatusSnapshot::from_parts(&self.context_policy, &self.context_state)
+    }
+
+    pub fn generated_tokens_in_current_turn(&self) -> usize {
+        self.tokens.len().saturating_sub(self.turn_start_index)
+    }
+
+    pub fn begin_next_turn(&mut self) {
+        self.turn_start_index = self.tokens.len();
+        self.syscall_buffer.clear();
+    }
+
+    pub fn extend_current_turn_budget(&mut self) {
+        self.turn_start_index = self.tokens.len();
+    }
+
+    pub fn abandon_current_turn(&mut self) {
+        self.syscall_buffer.clear();
     }
 
     pub fn enforce_context_budget(&mut self) -> Option<ContextCompactionEvent> {
@@ -712,7 +753,7 @@ fn lexical_overlap_score(query_terms: &HashSet<String>, candidate_text: &str) ->
 mod tests {
     use super::{
         AgentProcess, ContextPolicy, ContextSegment, ContextSegmentKind, ContextStrategy,
-        InitialContextSeed,
+        InitialContextSeed, ProcessLifecyclePolicy,
     };
     use crate::backend::{
         ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult,
@@ -749,6 +790,7 @@ mod tests {
                 appended_tokens: Vec::new(),
                 emitted_text: String::new(),
                 finished: true,
+                finish_reason: None,
                 next_index_pos: 0,
             })
         }
@@ -804,6 +846,7 @@ mod tests {
         let process = AgentProcess::new(
             1,
             7,
+            ProcessLifecyclePolicy::Interactive,
             model,
             tokenizer,
             vec![1, 2, 1],

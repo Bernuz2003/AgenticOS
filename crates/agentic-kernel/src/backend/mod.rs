@@ -63,6 +63,7 @@ pub struct InferenceStepRequest<'a> {
     pub context_slot_id: Option<ContextSlotId>,
     pub tokens: &'a [u32],
     pub index_pos: usize,
+    pub remaining_generation_budget: usize,
     pub logits_processor: &'a mut LogitsProcessor,
     pub tokenizer: &'a Tokenizer,
     pub generation: GenerationConfig,
@@ -352,7 +353,14 @@ pub struct InferenceStepResult {
     pub appended_tokens: Vec<u32>,
     pub emitted_text: String,
     pub finished: bool,
+    pub finish_reason: Option<InferenceFinishReason>,
     pub next_index_pos: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferenceFinishReason {
+    ModelStop,
+    TurnBudgetExhausted,
 }
 
 #[allow(dead_code)]
@@ -815,6 +823,7 @@ mod tests {
                 context_slot_id: Some(7),
                 tokens: &[1],
                 index_pos: 0,
+                remaining_generation_budget: generation.max_tokens,
                 logits_processor: &mut logits_processor,
                 tokenizer: &tokenizer,
                 generation,
@@ -899,6 +908,7 @@ mod tests {
                 context_slot_id: Some(3),
                 tokens: &[1, 2, 3, 4, 5],
                 index_pos: 0,
+                remaining_generation_budget: generation.max_tokens,
                 logits_processor: &mut logits_processor,
                 tokenizer: &tokenizer,
                 generation,
@@ -930,6 +940,7 @@ mod tests {
     fn external_backend_uses_chunked_completion_requests() {
         let (endpoint, _paths, bodies, server_handle) = spawn_mock_llamacpp_server(1);
         let _endpoint = EndpointOverrideGuard::set(&endpoint);
+        let expected_chunk_tokens = crate::config::kernel_config().external_llamacpp.chunk_tokens;
 
         let mut backend = ExternalLlamaCppBackend::from_env(PromptFamily::Qwen)
             .expect("build external backend from endpoint override");
@@ -947,6 +958,7 @@ mod tests {
                 context_slot_id: Some(3),
                 tokens: &[1],
                 index_pos: 0,
+                remaining_generation_budget: generation.max_tokens,
                 logits_processor: &mut logits_processor,
                 tokenizer: &tokenizer,
                 generation,
@@ -965,9 +977,57 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert!(
-            body.contains("\"n_predict\":32"),
-            "external backend should request a larger completion chunk"
+            body.contains(&format!("\"n_predict\":{expected_chunk_tokens}")),
+            "external backend should request the configured completion chunk size"
         );
+    }
+
+    #[test]
+    fn external_backend_uses_remaining_turn_budget_not_total_context_len() {
+        let (endpoint, _paths, bodies, server_handle) = spawn_mock_llamacpp_server(1);
+        let _endpoint = EndpointOverrideGuard::set(&endpoint);
+
+        let mut backend = ExternalLlamaCppBackend::from_env(PromptFamily::Qwen)
+            .expect("build external backend from endpoint override");
+        let tokenizer = test_tokenizer();
+        let generation = GenerationConfig {
+            temperature: 0.7,
+            top_p: 0.9,
+            seed: 1,
+            max_tokens: 16,
+        };
+        let mut logits_processor = LogitsProcessor::new(1, Some(0.7), Some(0.9));
+        let long_context = vec![1_u32; 32];
+
+        let step = backend
+            .generate_step(InferenceStepRequest {
+                context_slot_id: Some(3),
+                tokens: &long_context,
+                index_pos: long_context.len(),
+                remaining_generation_budget: 1,
+                logits_processor: &mut logits_processor,
+                tokenizer: &tokenizer,
+                generation,
+                device: &Device::Cpu,
+                eos_token_id: 6,
+                eot_token_id: 7,
+            })
+            .expect("generate step should still perform one more token of work");
+
+        server_handle.join().expect("join mock server");
+
+        let body = bodies
+            .lock()
+            .expect("lock bodies")
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            body.contains("\"n_predict\":1"),
+            "external backend must honor the remaining turn budget"
+        );
+        assert_eq!(step.appended_tokens, vec![1]);
+        assert!(step.finished, "one-token remaining budget should end the turn");
     }
 
     #[test]

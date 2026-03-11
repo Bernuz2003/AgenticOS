@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type FormEvent } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Brain, CheckCircle2, LoaderCircle, Sparkles, TerminalSquare, Wrench, XCircle } from "lucide-react";
@@ -10,9 +10,36 @@ interface TimelinePaneProps {
   timeline: TimelineSnapshot | null;
   loading: boolean;
   error: string | null;
+  awaitingContinuation: boolean;
+  composerValue: string;
+  composerLoading: boolean;
+  composerError: string | null;
+  turnActionLoading: boolean;
+  turnActionError: string | null;
+  canSend: boolean;
+  onComposerChange: (value: string) => void;
+  onComposerSubmit: () => void | Promise<void>;
+  onContinueOutput: () => void | Promise<void>;
+  onStopOutput: () => void | Promise<void>;
 }
 
-export function TimelinePane({ session, timeline, loading, error }: TimelinePaneProps) {
+export function TimelinePane({
+  session,
+  timeline,
+  loading,
+  error,
+  awaitingContinuation,
+  composerValue,
+  composerLoading,
+  composerError,
+  turnActionLoading,
+  turnActionError,
+  canSend,
+  onComposerChange,
+  onComposerSubmit,
+  onContinueOutput,
+  onStopOutput,
+}: TimelinePaneProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const timelineSignature = useMemo(() => {
     if (!timeline) {
@@ -30,6 +57,14 @@ export function TimelinePane({ session, timeline, loading, error }: TimelinePane
       behavior: timeline?.running ? "smooth" : "auto",
     });
   }, [timeline?.running, timelineSignature]);
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSend || composerLoading || !composerValue.trim()) {
+      return;
+    }
+    void onComposerSubmit();
+  }
 
   return (
     <section className="panel-surface flex min-h-[680px] flex-col gap-6 p-6">
@@ -197,7 +232,79 @@ export function TimelinePane({ session, timeline, loading, error }: TimelinePane
             {timeline.source === "status_fallback" ? "Fallback STATUS" : "Stream live"} per PID {timeline.pid} · workload {timeline.workload || session.contextStrategy}
           </div>
         ) : null}
+
+        {awaitingContinuation ? (
+          <div className="max-w-[86%] rounded-[24px] border border-amber-200 bg-amber-50 px-5 py-5 text-sm text-amber-950 shadow-sm">
+            <div className="text-xs font-semibold uppercase tracking-[0.24em] text-amber-700">
+              Risposta interrotta
+            </div>
+            <p className="mt-2 leading-6">
+              Questo messaggio ha raggiunto il limite di token del turno. Continuare la risposta?
+            </p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => void onContinueOutput()}
+                disabled={turnActionLoading}
+                className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                {turnActionLoading ? "Attendere..." : "Si"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void onStopOutput()}
+                disabled={turnActionLoading}
+                className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:text-slate-950 disabled:cursor-not-allowed disabled:text-slate-400"
+              >
+                No
+              </button>
+            </div>
+            {turnActionError ? (
+              <div className="mt-3 rounded-[18px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                {turnActionError}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
+
+      <form onSubmit={handleSubmit} className="rounded-[28px] border border-slate-200 bg-white p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
+              Continuous Chat
+            </p>
+            <p className="mt-1 text-sm text-slate-600">
+              {awaitingContinuation
+                ? "Conferma prima se continuare o interrompere la risposta troncata."
+                : canSend
+                ? "Il PID e' residente in RAM/Swap e aspetta il prossimo input."
+                : "Il composer si abilita quando il processo entra in WaitingForInput."}
+            </p>
+          </div>
+          <button
+            type="submit"
+            disabled={!canSend || composerLoading || !composerValue.trim()}
+            className="rounded-full bg-slate-950 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            {composerLoading ? "Invio..." : "Send"}
+          </button>
+        </div>
+
+        <textarea
+          value={composerValue}
+          onChange={(event) => onComposerChange(event.target.value)}
+          placeholder="Invia il prossimo prompt allo stesso PID residente..."
+          disabled={!canSend || composerLoading || turnActionLoading}
+          className="mt-4 min-h-[112px] w-full resize-y rounded-[22px] border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white disabled:cursor-not-allowed disabled:bg-slate-100"
+        />
+
+        {composerError ? (
+          <div className="mt-3 rounded-[18px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+            {composerError}
+          </div>
+        ) : null}
+      </form>
     </section>
   );
 }

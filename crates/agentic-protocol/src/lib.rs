@@ -8,6 +8,7 @@ pub mod schema {
     pub const AUTH: &str = "agenticos.control.auth.v1";
     pub const BACKEND_DIAG: &str = "agenticos.control.backend_diag.v1";
     pub const CHECKPOINT: &str = "agenticos.control.checkpoint.v1";
+    pub const CONTINUE_OUTPUT: &str = "agenticos.control.continue_output.v1";
     pub const EXEC: &str = "agenticos.control.exec.v1";
     pub const ERROR: &str = "agenticos.control.error.v1";
     pub const GET_GEN: &str = "agenticos.control.get_gen.v1";
@@ -25,11 +26,13 @@ pub mod schema {
     pub const PING: &str = "agenticos.control.ping.v1";
     pub const REGISTER_TOOL: &str = "agenticos.control.register_tool.v1";
     pub const RESTORE: &str = "agenticos.control.restore.v1";
+    pub const SEND_INPUT: &str = "agenticos.control.send_input.v1";
     pub const SELECT_MODEL: &str = "agenticos.control.select_model.v1";
     pub const SET_GEN: &str = "agenticos.control.set_gen.v1";
     pub const SET_PRIORITY: &str = "agenticos.control.set_priority.v1";
     pub const SET_QUOTA: &str = "agenticos.control.set_quota.v1";
     pub const SHUTDOWN: &str = "agenticos.control.shutdown.v1";
+    pub const STOP_OUTPUT: &str = "agenticos.control.stop_output.v1";
     pub const STATUS: &str = "agenticos.control.status.v1";
     pub const SUBSCRIBE: &str = "agenticos.control.subscribe.v1";
     pub const TERM: &str = "agenticos.control.term.v1";
@@ -48,7 +51,9 @@ pub enum ControlErrorCode {
     Generic,
     GetQuotaInvalid,
     InFlight,
+    ContinueOutputInvalid,
     InvalidPid,
+    InvalidSessionState,
     InvalidToolName,
     InvalidToolRegistration,
     InvalidToolUnregistration,
@@ -58,6 +63,7 @@ pub enum ControlErrorCode {
     MemwInvalid,
     MissingModelId,
     MissingPid,
+    MissingPrompt,
     MissingToolName,
     ModelNotFound,
     ModelSelector,
@@ -72,11 +78,13 @@ pub enum ControlErrorCode {
     RestoreFailed,
     SchedulerLoadFailed,
     SchedulerTargetFailed,
+    SendInputInvalid,
     SetPriorityInvalid,
     SetQuotaInvalid,
     SetGenInvalid,
     SpawnFailed,
     StatusInvalid,
+    StopOutputInvalid,
     ToolNotFound,
     ToolRegistryMutationForbidden,
     UnregisterToolFailed,
@@ -94,7 +102,9 @@ impl ControlErrorCode {
             Self::Generic => "GENERIC",
             Self::GetQuotaInvalid => "GET_QUOTA_INVALID",
             Self::InFlight => "IN_FLIGHT",
+            Self::ContinueOutputInvalid => "CONTINUE_OUTPUT_INVALID",
             Self::InvalidPid => "INVALID_PID",
+            Self::InvalidSessionState => "INVALID_SESSION_STATE",
             Self::InvalidToolName => "INVALID_TOOL_NAME",
             Self::InvalidToolRegistration => "INVALID_TOOL_REGISTRATION",
             Self::InvalidToolUnregistration => "INVALID_TOOL_UNREGISTRATION",
@@ -104,6 +114,7 @@ impl ControlErrorCode {
             Self::MemwInvalid => "MEMW_INVALID",
             Self::MissingModelId => "MISSING_MODEL_ID",
             Self::MissingPid => "MISSING_PID",
+            Self::MissingPrompt => "MISSING_PROMPT",
             Self::MissingToolName => "MISSING_TOOL_NAME",
             Self::ModelNotFound => "MODEL_NOT_FOUND",
             Self::ModelSelector => "MODEL_SELECTOR",
@@ -118,11 +129,13 @@ impl ControlErrorCode {
             Self::RestoreFailed => "RESTORE_FAILED",
             Self::SchedulerLoadFailed => "SCHEDULER_LOAD_FAILED",
             Self::SchedulerTargetFailed => "SCHEDULER_TARGET_FAILED",
+            Self::SendInputInvalid => "SEND_INPUT_INVALID",
             Self::SetPriorityInvalid => "SET_PRIORITY_INVALID",
             Self::SetQuotaInvalid => "SET_QUOTA_INVALID",
             Self::SetGenInvalid => "SET_GEN_INVALID",
             Self::SpawnFailed => "SPAWN_FAILED",
             Self::StatusInvalid => "STATUS_INVALID",
+            Self::StopOutputInvalid => "STOP_OUTPUT_INVALID",
             Self::ToolNotFound => "TOOL_NOT_FOUND",
             Self::ToolRegistryMutationForbidden => "TOOL_REGISTRY_MUTATION_FORBIDDEN",
             Self::UnregisterToolFailed => "UNREGISTER_TOOL_FAILED",
@@ -192,6 +205,9 @@ pub enum OpCode {
     Ping,
     Load,
     Exec,
+    SendInput,
+    ContinueOutput,
+    StopOutput,
     Kill,
     Term,
     Status,
@@ -224,6 +240,9 @@ impl OpCode {
             "PING" => Some(Self::Ping),
             "LOAD" => Some(Self::Load),
             "EXEC" => Some(Self::Exec),
+            "SEND_INPUT" => Some(Self::SendInput),
+            "CONTINUE_OUTPUT" => Some(Self::ContinueOutput),
+            "STOP_OUTPUT" => Some(Self::StopOutput),
             "KILL" => Some(Self::Kill),
             "TERM" => Some(Self::Term),
             "STATUS" => Some(Self::Status),
@@ -257,6 +276,9 @@ impl OpCode {
             Self::Ping => "PING",
             Self::Load => "LOAD",
             Self::Exec => "EXEC",
+            Self::SendInput => "SEND_INPUT",
+            Self::ContinueOutput => "CONTINUE_OUTPUT",
+            Self::StopOutput => "STOP_OUTPUT",
             Self::Kill => "KILL",
             Self::Term => "TERM",
             Self::Status => "STATUS",
@@ -374,6 +396,10 @@ mod tests {
             "STATUS_INVALID"
         );
         assert_eq!(ControlErrorCode::NoModel.as_str(), "NO_MODEL");
+        assert_eq!(
+            ControlErrorCode::ContinueOutputInvalid.as_str(),
+            "CONTINUE_OUTPUT_INVALID"
+        );
     }
 
     #[test]

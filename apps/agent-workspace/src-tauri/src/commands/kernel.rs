@@ -1,9 +1,11 @@
 use agentic_control_models::{
-    LoadModelResult, ModelCatalogSnapshot, OrchestrateResult, SelectModelResult,
+    LoadModelResult, ModelCatalogSnapshot, OrchestrateResult, SelectModelResult, SendInputResult,
+    TurnControlResult,
 };
 use tauri::{async_runtime, State};
 
 use crate::app_state::AppState;
+use crate::kernel::error::KernelBridgeError;
 use crate::kernel::stream;
 use crate::kernel::{audit, auth, protocol};
 use crate::models::kernel::{
@@ -117,6 +119,19 @@ pub async fn fetch_timeline_snapshot(
         let snapshot = bridge
             .fetch_workspace_snapshot(pid)
             .map_err(|err| err.to_string())?;
+        if stream::hydrate_session_from_disk(&timeline_store, &workspace_root, pid, Some(&snapshot))?
+        {
+            if let Some(timeline) = timeline_store
+                .lock()
+                .map_err(|_| "Timeline store lock poisoned".to_string())?
+                .snapshot(pid)
+            {
+                return Ok(stream::augment_timeline_with_tool_results(
+                    timeline,
+                    &audit_entries,
+                ));
+            }
+        }
         Ok(stream::augment_timeline_with_tool_results(
             stream::synthesize_fallback_timeline(snapshot),
             &audit_entries,
@@ -197,13 +212,102 @@ pub async fn load_model(
 }
 
 #[tauri::command]
+pub async fn send_session_input(
+    pid: u64,
+    prompt: String,
+    state: State<'_, AppState>,
+) -> Result<SendInputResult, String> {
+    let bridge = state.bridge.clone();
+    let timeline_store = state.timeline_store.clone();
+    let workspace_root = state.workspace_root.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        let result = bridge.send_input(pid, &prompt).map_err(|err| err.to_string())?;
+
+        if let Ok(mut store) = timeline_store.lock() {
+            store.append_user_turn(pid, prompt);
+            let _ = stream::persist_session_snapshot(&workspace_root, &store, pid);
+        }
+
+        Ok(result)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn continue_session_output(
+    pid: u64,
+    state: State<'_, AppState>,
+) -> Result<TurnControlResult, String> {
+    let bridge = state.bridge.clone();
+    let timeline_store = state.timeline_store.clone();
+    let workspace_root = state.workspace_root.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        let result = bridge.continue_output(pid).map_err(|err| err.to_string())?;
+        if let Ok(mut store) = timeline_store.lock() {
+            store.resume_last_turn(pid);
+            let _ = stream::persist_session_snapshot(&workspace_root, &store, pid);
+        }
+        Ok(result)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn stop_session_output(
+    pid: u64,
+    state: State<'_, AppState>,
+) -> Result<TurnControlResult, String> {
+    let bridge = state.bridge.clone();
+    let timeline_store = state.timeline_store.clone();
+    let workspace_root = state.workspace_root.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        let result = bridge.stop_output(pid).map_err(|err| err.to_string())?;
+        if let Ok(store) = timeline_store.lock() {
+            let _ = stream::persist_session_snapshot(&workspace_root, &store, pid);
+        }
+        Ok(result)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn shutdown_kernel(state: State<'_, AppState>) -> Result<String, String> {
     let bridge = state.bridge.clone();
     run_blocking(move || {
         let mut bridge = bridge
             .lock()
             .map_err(|_| "Bridge state lock poisoned".to_string())?;
-        bridge.shutdown().map_err(|err| err.to_string())
+        match bridge.shutdown() {
+            Ok(message) => Ok(message),
+            Err(err) if is_expected_shutdown_disconnect(&err) => {
+                Ok("Kernel shutdown requested".to_string())
+            }
+            Err(err) => Err(err.to_string()),
+        }
     })
     .await
+}
+
+fn is_expected_shutdown_disconnect(err: &KernelBridgeError) -> bool {
+    match err {
+        KernelBridgeError::ConnectionClosed | KernelBridgeError::ConnectionUnavailable => true,
+        KernelBridgeError::Io(io_err) => matches!(
+            io_err.kind(),
+            std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::UnexpectedEof
+        ),
+        _ => false,
+    }
 }

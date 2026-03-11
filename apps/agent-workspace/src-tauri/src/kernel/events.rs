@@ -129,6 +129,7 @@ fn handle_kernel_event(
         } => {
             if let Ok(mut store) = timeline_store.lock() {
                 store.insert_started_session(pid, prompt, workload);
+                let _ = super::stream::persist_session_snapshot(workspace_root, &store, pid);
             }
             emit_timeline_snapshot(app, timeline_store, workspace_root, pid);
             maybe_emit_workspace_snapshot(app, bridge, pid, last_workspace_refresh, true);
@@ -137,6 +138,7 @@ fn handle_kernel_event(
         KernelEvent::TimelineChunk { pid, text } => {
             if let Ok(mut store) = timeline_store.lock() {
                 store.append_assistant_chunk(pid, &text);
+                let _ = super::stream::persist_session_snapshot(workspace_root, &store, pid);
             }
             emit_timeline_snapshot(app, timeline_store, workspace_root, pid);
             maybe_emit_workspace_snapshot(app, bridge, pid, last_workspace_refresh, false);
@@ -148,37 +150,45 @@ fn handle_kernel_event(
             reason,
         } => {
             if let Ok(mut store) = timeline_store.lock() {
-                store.finish_session_with_reason(
-                    pid,
-                    match (tokens_generated, elapsed_secs) {
-                        (Some(tokens_generated), Some(elapsed_secs)) => {
-                            Some(super::stream::ProcessFinishedMarker {
-                                pid,
-                                tokens_generated,
-                                elapsed_secs,
-                            })
-                        }
-                        _ => None,
-                    },
-                    if reason == "completed" {
-                        None
-                    } else {
-                        Some(reason.as_str())
-                    },
-                );
+                if reason == "turn_completed" || reason == "awaiting_turn_decision" {
+                    store.finish_session_with_reason(pid, None, None);
+                } else {
+                    store.finish_session_with_reason(
+                        pid,
+                        match (tokens_generated, elapsed_secs) {
+                            (Some(tokens_generated), Some(elapsed_secs)) => {
+                                Some(super::stream::ProcessFinishedMarker {
+                                    pid,
+                                    tokens_generated,
+                                    elapsed_secs,
+                                })
+                            }
+                            _ => None,
+                        },
+                        if reason == "completed" {
+                            None
+                        } else {
+                            Some(reason.as_str())
+                        },
+                    );
+                }
+                let _ = super::stream::persist_session_snapshot(workspace_root, &store, pid);
             }
             emit_timeline_snapshot(app, timeline_store, workspace_root, pid);
+            maybe_emit_workspace_snapshot(app, bridge, pid, last_workspace_refresh, true);
             maybe_emit_lobby_snapshot(app, bridge, last_lobby_refresh, true);
         }
         KernelEvent::SessionErrored { pid, message } => {
             if let Ok(mut store) = timeline_store.lock() {
                 store.set_error(pid, message);
+                let _ = super::stream::persist_session_snapshot(workspace_root, &store, pid);
             }
             emit_timeline_snapshot(app, timeline_store, workspace_root, pid);
+            maybe_emit_workspace_snapshot(app, bridge, pid, last_workspace_refresh, true);
             maybe_emit_lobby_snapshot(app, bridge, last_lobby_refresh, true);
         }
         KernelEvent::KernelShutdownRequested => {
-            emit_bridge_status(app, false, Some("Kernel shutdown requested".to_string()));
+            emit_bridge_status(app, false, None);
         }
     }
 }

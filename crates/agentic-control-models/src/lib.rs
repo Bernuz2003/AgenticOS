@@ -247,6 +247,21 @@ pub struct LoadModelResult {
     pub driver_source: String,
     pub driver_rationale: String,
     pub path: String,
+    pub architecture: Option<String>,
+    pub load_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendInputResult {
+    pub pid: u64,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnControlResult {
+    pub pid: u64,
+    pub state: String,
+    pub action: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

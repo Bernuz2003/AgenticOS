@@ -28,7 +28,7 @@ disabled = false
 [external_llamacpp]
 endpoint = "http://127.0.0.1:8080"
 timeout_ms = 120000
-chunk_tokens = 32
+chunk_tokens = 1
 
 [exec]
 auto_switch = false
@@ -57,7 +57,7 @@ max_tokens = 500
 temperature = 0.7
 top_p = 0.9
 seed = 299792458
-max_tokens = 500
+max_tokens = 20
 
 [generation.mistral]
 temperature = 0.7

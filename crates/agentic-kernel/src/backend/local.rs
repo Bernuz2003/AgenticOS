@@ -8,8 +8,8 @@ use crate::memory::ContextSlotId;
 use crate::prompting::PromptFamily;
 
 use super::{
-    ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult,
-    ModelBackend,
+    ContextSlotPersistence, InferenceBackend, InferenceFinishReason, InferenceStepRequest,
+    InferenceStepResult, ModelBackend,
 };
 
 pub(crate) struct QuantizedLlamaBackend {
@@ -37,13 +37,23 @@ where
         context_slot_id: _,
         tokens,
         index_pos,
+        remaining_generation_budget,
         logits_processor,
         tokenizer,
-        generation,
+        generation: _,
         device,
         eos_token_id,
         eot_token_id,
     } = request;
+    if remaining_generation_budget == 0 {
+        return Ok(InferenceStepResult {
+            appended_tokens: Vec::new(),
+            emitted_text: String::new(),
+            finished: true,
+            finish_reason: Some(InferenceFinishReason::TurnBudgetExhausted),
+            next_index_pos: index_pos.max(tokens.len()),
+        });
+    }
     let mut next_token: Option<u32> = None;
     let mut cursor = index_pos;
 
@@ -64,21 +74,29 @@ where
             appended_tokens: Vec::new(),
             emitted_text: String::new(),
             finished: true,
+            finish_reason: Some(InferenceFinishReason::TurnBudgetExhausted),
             next_index_pos: cursor,
         });
     };
 
     let emitted_text = tokenizer.decode(&[next_token], true).unwrap_or_default();
-    let total_tokens = tokens.len() + 1;
-    let finished = next_token == eos_token_id
-        || next_token == eot_token_id
-        || next_token == 2
-        || total_tokens >= generation.max_tokens;
+    let finished_due_to_model =
+        next_token == eos_token_id || next_token == eot_token_id || next_token == 2;
+    let finished_due_to_budget = !finished_due_to_model && remaining_generation_budget <= 1;
+    let finished = finished_due_to_model || finished_due_to_budget;
+    let finish_reason = if finished_due_to_model {
+        Some(InferenceFinishReason::ModelStop)
+    } else if finished_due_to_budget {
+        Some(InferenceFinishReason::TurnBudgetExhausted)
+    } else {
+        None
+    };
 
     Ok(InferenceStepResult {
         appended_tokens: vec![next_token],
         emitted_text,
         finished,
+        finish_reason,
         next_index_pos: cursor,
     })
 }

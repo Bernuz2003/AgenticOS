@@ -12,6 +12,7 @@ export function statusTone(status: SessionStatus): string {
   }
 }
 
-export function strategyLabel(strategy: string): string {
-  return strategy.replace("_", " ");
+export function strategyLabel(strategy?: string | null): string {
+  const normalized = strategy?.trim() || "sliding_window";
+  return normalized.split("_").join(" ");
 }

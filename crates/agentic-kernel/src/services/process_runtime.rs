@@ -1,7 +1,7 @@
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;
-use crate::process::ContextPolicy;
+use crate::process::{ContextPolicy, ProcessLifecyclePolicy};
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 
 pub struct ManagedProcessSpawn {
@@ -13,6 +13,7 @@ pub struct ManagedProcessRequest {
     pub owner_id: usize,
     pub workload: WorkloadClass,
     pub priority: ProcessPriority,
+    pub lifecycle_policy: ProcessLifecyclePolicy,
     pub context_policy: Option<ContextPolicy>,
 }
 
@@ -57,7 +58,13 @@ pub fn spawn_managed_process(
         .context_policy
         .unwrap_or_else(ContextPolicy::from_kernel_defaults);
     let pid = engine
-        .spawn_process(&request.prompt, 0, request.owner_id, context_policy)
+        .spawn_process(
+            &request.prompt,
+            0,
+            request.owner_id,
+            request.lifecycle_policy,
+            context_policy,
+        )
         .map_err(|e| e.to_string())?;
 
     if let Some(token_slots) = engine.process_max_tokens(pid) {

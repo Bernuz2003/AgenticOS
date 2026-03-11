@@ -78,7 +78,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
         status: normalizeStatus(session.status),
         uptimeLabel: session.uptimeLabel,
         tokensLabel: session.tokensLabel,
-        contextStrategy: session.contextStrategy,
+        contextStrategy: session.contextStrategy || "sliding_window",
         orchestrationId: session.orchestrationId,
         orchestrationTaskId: session.orchestrationTaskId,
       })),

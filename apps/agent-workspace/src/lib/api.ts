@@ -149,6 +149,19 @@ export interface LoadModelResult {
   driverSource: string;
   driverRationale: string;
   path: string;
+  architecture: string | null;
+  loadMode: string;
+}
+
+export interface SendInputResult {
+  pid: number;
+  state: string;
+}
+
+export interface TurnControlResult {
+  pid: number;
+  state: string;
+  action: string;
 }
 
 export type TimelineItemKind =
@@ -177,38 +190,99 @@ export interface TimelineSnapshot {
   items: TimelineItem[];
 }
 
-export async function fetchLobbySnapshot(): Promise<LobbySnapshot> {
-  const snapshot = await invoke<{
-    connected: boolean;
-    selected_model_id: string;
-    loaded_model_id: string;
-    orchestrations: Array<{
-      orchestration_id: number;
-      total: number;
-      completed: number;
-      running: number;
-      pending: number;
-      failed: number;
-      skipped: number;
-      finished: boolean;
-      elapsed_label: string;
-      policy: string;
-    }>;
-    sessions: Array<{
-      session_id: string;
-      pid: number;
-      title: string;
-      prompt_preview: string;
-      status: string;
-      uptime_label: string;
-      tokens_label: string;
-      context_strategy: string;
-      orchestration_id: number | null;
-      orchestration_task_id: string | null;
-    }>;
-    error: string | null;
-  }>("fetch_lobby_snapshot");
+export interface LobbySnapshotDto {
+  connected: boolean;
+  selected_model_id: string;
+  loaded_model_id: string;
+  orchestrations: Array<{
+    orchestration_id: number;
+    total: number;
+    completed: number;
+    running: number;
+    pending: number;
+    failed: number;
+    skipped: number;
+    finished: boolean;
+    elapsed_label: string;
+    policy: string;
+  }>;
+  sessions: Array<{
+    session_id: string;
+    pid: number;
+    title: string;
+    prompt_preview: string;
+    status: string;
+    uptime_label: string;
+    tokens_label: string;
+    context_strategy?: string | null;
+    orchestration_id: number | null;
+    orchestration_task_id: string | null;
+  }>;
+  error: string | null;
+}
 
+export interface WorkspaceSnapshotDto {
+  session_id: string;
+  pid: number;
+  state: string;
+  workload: string;
+  tokens_generated: number;
+  syscalls_used: number;
+  elapsed_secs: number;
+  tokens: number;
+  max_tokens: number;
+  orchestration: null | {
+    orchestration_id: number;
+    task_id: string;
+    total: number;
+    completed: number;
+    running: number;
+    pending: number;
+    failed: number;
+    skipped: number;
+    finished: boolean;
+    elapsed_secs: number;
+    policy: string;
+    tasks: Array<{
+      task: string;
+      status: string;
+      pid: number | null;
+    }>;
+  };
+  context: null | {
+    context_strategy: string;
+    context_tokens_used: number;
+    context_window_size: number;
+    context_compressions: number;
+    context_retrieval_hits: number;
+    last_compaction_reason: string | null;
+    last_summary_ts: string | null;
+    context_segments: number;
+  };
+  audit_events: Array<{
+    category: string;
+    title: string;
+    detail: string;
+  }>;
+}
+
+export interface TimelineSnapshotDto {
+  session_id: string;
+  pid: number;
+  running: boolean;
+  workload: string;
+  source: string;
+  fallback_notice: string | null;
+  error: string | null;
+  items: Array<{
+    id: string;
+    kind: TimelineItemKind;
+    text: string;
+    status: string;
+  }>;
+}
+
+export function normalizeLobbySnapshot(snapshot: LobbySnapshotDto): LobbySnapshot {
   return {
     connected: snapshot.connected,
     selectedModelId: snapshot.selected_model_id,
@@ -234,59 +308,14 @@ export async function fetchLobbySnapshot(): Promise<LobbySnapshot> {
       status: session.status,
       uptimeLabel: session.uptime_label,
       tokensLabel: session.tokens_label,
-      contextStrategy: session.context_strategy,
+      contextStrategy: session.context_strategy ?? "sliding_window",
       orchestrationId: session.orchestration_id,
       orchestrationTaskId: session.orchestration_task_id,
     })),
   };
 }
 
-export async function fetchWorkspaceSnapshot(pid: number): Promise<WorkspaceSnapshot> {
-  const snapshot = await invoke<{
-    session_id: string;
-    pid: number;
-    state: string;
-    workload: string;
-    tokens_generated: number;
-    syscalls_used: number;
-    elapsed_secs: number;
-    tokens: number;
-    max_tokens: number;
-    orchestration: null | {
-      orchestration_id: number;
-      task_id: string;
-      total: number;
-      completed: number;
-      running: number;
-      pending: number;
-      failed: number;
-      skipped: number;
-      finished: boolean;
-      elapsed_secs: number;
-      policy: string;
-      tasks: Array<{
-        task: string;
-        status: string;
-        pid: number | null;
-      }>;
-    };
-    context: null | {
-      context_strategy: string;
-      context_tokens_used: number;
-      context_window_size: number;
-      context_compressions: number;
-      context_retrieval_hits: number;
-      last_compaction_reason: string | null;
-      last_summary_ts: string | null;
-      context_segments: number;
-    };
-    audit_events: Array<{
-      category: string;
-      title: string;
-      detail: string;
-    }>;
-  }>("fetch_workspace_snapshot", { pid });
-
+export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): WorkspaceSnapshot {
   return {
     sessionId: snapshot.session_id,
     pid: snapshot.pid,
@@ -335,6 +364,29 @@ export async function fetchWorkspaceSnapshot(pid: number): Promise<WorkspaceSnap
       detail: event.detail,
     })),
   };
+}
+
+export function normalizeTimelineSnapshot(snapshot: TimelineSnapshotDto): TimelineSnapshot {
+  return {
+    sessionId: snapshot.session_id,
+    pid: snapshot.pid,
+    running: snapshot.running,
+    workload: snapshot.workload,
+    source: snapshot.source,
+    fallbackNotice: snapshot.fallback_notice,
+    error: snapshot.error,
+    items: snapshot.items,
+  };
+}
+
+export async function fetchLobbySnapshot(): Promise<LobbySnapshot> {
+  const snapshot = await invoke<LobbySnapshotDto>("fetch_lobby_snapshot");
+  return normalizeLobbySnapshot(snapshot);
+}
+
+export async function fetchWorkspaceSnapshot(pid: number): Promise<WorkspaceSnapshot> {
+  const snapshot = await invoke<WorkspaceSnapshotDto>("fetch_workspace_snapshot", { pid });
+  return normalizeWorkspaceSnapshot(snapshot);
 }
 
 export async function startSession(
@@ -465,6 +517,8 @@ export async function loadModel(selector = ""): Promise<LoadModelResult> {
     driver_source: string;
     driver_rationale: string;
     path: string;
+    architecture: string | null;
+    load_mode: string;
   }>("load_model", { selector });
 
   return {
@@ -473,6 +527,51 @@ export async function loadModel(selector = ""): Promise<LoadModelResult> {
     driverSource: result.driver_source,
     driverRationale: result.driver_rationale,
     path: result.path,
+    architecture: result.architecture,
+    loadMode: result.load_mode,
+  };
+}
+
+export async function sendSessionInput(
+  pid: number,
+  prompt: string,
+): Promise<SendInputResult> {
+  const result = await invoke<{
+    pid: number;
+    state: string;
+  }>("send_session_input", { pid, prompt });
+
+  return {
+    pid: result.pid,
+    state: result.state,
+  };
+}
+
+export async function continueSessionOutput(pid: number): Promise<TurnControlResult> {
+  const result = await invoke<{
+    pid: number;
+    state: string;
+    action: string;
+  }>("continue_session_output", { pid });
+
+  return {
+    pid: result.pid,
+    state: result.state,
+    action: result.action,
+  };
+}
+
+export async function stopSessionOutput(pid: number): Promise<TurnControlResult> {
+  const result = await invoke<{
+    pid: number;
+    state: string;
+    action: string;
+  }>("stop_session_output", { pid });
+
+  return {
+    pid: result.pid,
+    state: result.state,
+    action: result.action,
   };
 }
 
@@ -481,30 +580,6 @@ export async function shutdownKernel(): Promise<string> {
 }
 
 export async function fetchTimelineSnapshot(pid: number): Promise<TimelineSnapshot> {
-  const snapshot = await invoke<{
-    session_id: string;
-    pid: number;
-    running: boolean;
-    workload: string;
-    source: string;
-    fallback_notice: string | null;
-    error: string | null;
-    items: Array<{
-      id: string;
-      kind: TimelineItemKind;
-      text: string;
-      status: string;
-    }>;
-  }>("fetch_timeline_snapshot", { pid });
-
-  return {
-    sessionId: snapshot.session_id,
-    pid: snapshot.pid,
-    running: snapshot.running,
-    workload: snapshot.workload,
-    source: snapshot.source,
-    fallbackNotice: snapshot.fallback_notice,
-    error: snapshot.error,
-    items: snapshot.items,
-  };
+  const snapshot = await invoke<TimelineSnapshotDto>("fetch_timeline_snapshot", { pid });
+  return normalizeTimelineSnapshot(snapshot);
 }

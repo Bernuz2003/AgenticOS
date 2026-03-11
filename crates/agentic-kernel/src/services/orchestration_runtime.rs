@@ -5,6 +5,7 @@ use crate::engine::LLMEngine;
 use crate::errors::OrchestratorError;
 use crate::memory::NeuralMemory;
 use crate::orchestrator::{Orchestrator, TaskGraphDef};
+use crate::process::ProcessLifecyclePolicy;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 
 use super::process_runtime::{spawn_managed_process, ManagedProcessRequest};
@@ -51,6 +52,7 @@ pub fn start_orchestration(
                 owner_id: req.owner_id,
                 workload: req.workload,
                 priority: ProcessPriority::Normal,
+                lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
                 context_policy: Some(req.context_policy.clone()),
             },
         ) {

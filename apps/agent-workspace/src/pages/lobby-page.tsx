@@ -4,7 +4,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import {
   listModels,
   loadModel,
-  selectModel,
   shutdownKernel,
   type ModelCatalogSnapshot,
 } from "../lib/api";
@@ -23,13 +22,13 @@ export function LobbyPage() {
   const loading = useSessionsStore((state) => state.loading);
   const error = useSessionsStore((state) => state.error);
   const refresh = useSessionsStore((state) => state.refresh);
+  const applySnapshot = useSessionsStore((state) => state.applySnapshot);
+  const setBridgeStatus = useSessionsStore((state) => state.setBridgeStatus);
   const [catalog, setCatalog] = useState<ModelCatalogSnapshot | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectedDraft, setSelectedDraft] = useState("");
-  const [actionLoading, setActionLoading] = useState<
-    "select" | "load" | "shutdown" | null
-  >(null);
+  const [actionLoading, setActionLoading] = useState<"load" | "shutdown" | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -84,37 +83,23 @@ export function LobbyPage() {
     await Promise.all([refresh(), refreshCatalog()]);
   }
 
-  async function handleSelectModel() {
+  async function handleLoadModel() {
     if (!selectedDraft) {
       setActionError("Seleziona un modello dal catalogo.");
       return;
     }
 
-    setActionLoading("select");
-    setActionError(null);
-    setActionMessage(null);
-    try {
-      const result = await selectModel(selectedDraft);
-      setActionMessage(`Modello selezionato: ${result.selectedModel}`);
-      await syncLobbyAndCatalog();
-    } catch (selectError) {
-      setActionError(
-        selectError instanceof Error ? selectError.message : "Failed to select model",
-      );
-    } finally {
-      setActionLoading(null);
-    }
-  }
-
-  async function handleLoadModel() {
     setActionLoading("load");
     setActionError(null);
     setActionMessage(null);
     try {
       const result = await loadModel(selectedDraft);
-      setActionMessage(`Modello caricato: ${result.family} via ${result.backend}`);
+      setActionMessage(
+        `Modello caricato: ${result.family} (${result.architecture || "arch n/a"}) via ${result.backend} [${result.loadMode}]`,
+      );
       await syncLobbyAndCatalog();
     } catch (loadError) {
+      setActionMessage(null);
       setActionError(
         loadError instanceof Error ? loadError.message : "Failed to load model",
       );
@@ -130,8 +115,18 @@ export function LobbyPage() {
     try {
       const message = await shutdownKernel();
       setActionMessage(message);
-      await refresh();
-      await refreshCatalog().catch(() => undefined);
+      applySnapshot({
+        connected: false,
+        selectedModelId: "",
+        loadedModelId: "",
+        orchestrations: [],
+        sessions: [],
+        error: null,
+      });
+      setBridgeStatus(false, null);
+      setCatalog(null);
+      setCatalogError(null);
+      setSelectedDraft("");
     } catch (shutdownError) {
       setActionError(
         shutdownError instanceof Error
@@ -205,7 +200,7 @@ export function LobbyPage() {
                 Catalogo e load control
               </h3>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                Il bridge Tauri espone ora `LIST_MODELS`, `SELECT_MODEL`, `LOAD` e `SHUTDOWN`.
+                La Lobby usa `LIST_MODELS`, `LOAD` e `SHUTDOWN`; la selezione resta locale al form e `LOAD` allinea automaticamente selected e loaded model.
               </p>
             </div>
             <span className="status-pill border-slate-900/10 bg-slate-100 text-slate-700">
@@ -241,15 +236,8 @@ export function LobbyPage() {
 
             <div className="flex flex-wrap items-end gap-3">
               <button
-                onClick={() => void handleSelectModel()}
-                disabled={actionLoading !== null || !selectedDraft}
-                className="rounded-full border border-slate-900/10 bg-white px-4 py-2 text-sm font-semibold text-slate-800 transition hover:border-slate-900/20 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {actionLoading === "select" ? "Selecting..." : "Select"}
-              </button>
-              <button
                 onClick={() => void handleLoadModel()}
-                disabled={actionLoading !== null || (!selectedDraft && !selectedModelId)}
+                disabled={actionLoading !== null || !selectedDraft}
                 className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {actionLoading === "load" ? "Loading..." : "Load"}
@@ -268,6 +256,11 @@ export function LobbyPage() {
           {actionMessage ? (
             <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
               {actionMessage}
+            </div>
+          ) : null}
+          {actionLoading === "load" ? (
+            <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+              Loading model... il kernel continua a lavorare finche' non arriva la risposta reale.
             </div>
           ) : null}
           {actionError ? (
@@ -301,7 +294,7 @@ export function LobbyPage() {
                   ) : null}
                 </div>
                 <div className="mt-3 text-sm text-slate-600">
-                  backend {model.resolvedBackend || "n/a"} · source {model.driverResolutionSource}
+                  arch {model.architecture || "n/a"} · backend {model.resolvedBackend || "n/a"} · source {model.driverResolutionSource}
                 </div>
                 <div className="mt-2 text-xs leading-5 text-slate-500">
                   {model.driverResolutionRationale}

@@ -10,6 +10,8 @@ pub struct LoadedModelSummary {
     pub driver_source: String,
     pub driver_rationale: String,
     pub path: PathBuf,
+    pub architecture: Option<String>,
+    pub load_mode: String,
 }
 
 pub fn activate_model_target(
@@ -24,6 +26,15 @@ pub fn activate_model_target(
         driver_source: new_engine.driver_resolution_source().to_string(),
         driver_rationale: new_engine.driver_resolution_rationale().to_string(),
         path: target.path.clone(),
+        architecture: target
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.architecture.clone()),
+        load_mode: if target.driver_resolution.resolved_backend_id == "external-llamacpp" {
+            "remote_adapter".to_string()
+        } else {
+            "in_process".to_string()
+        },
     };
 
     *engine_state = Some(new_engine);

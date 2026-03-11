@@ -145,6 +145,9 @@ pub fn execute_command(
                 return;
             }
         }
+        OpCode::SendInput => process_cmd::handle_send_input(ctx.process_view(), &payload),
+        OpCode::ContinueOutput => process_cmd::handle_continue_output(ctx.process_view(), &payload),
+        OpCode::StopOutput => process_cmd::handle_stop_output(ctx.process_view(), &payload),
         OpCode::Status => status::handle_status(ctx.status_view(), &payload),
         OpCode::Term => process_cmd::handle_term(ctx.process_view(), &payload),
         OpCode::Kill => process_cmd::handle_kill(ctx.process_view(), &payload),

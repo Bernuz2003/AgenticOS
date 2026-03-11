@@ -8,8 +8,8 @@ use crate::prompting::PromptFamily;
 use super::http::{HttpEndpoint, HttpJsonResponse};
 use super::remote_adapter::{build_completion_request, decode_completion_response};
 use super::{
-    ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult,
-    ModelBackend,
+    ContextSlotPersistence, InferenceBackend, InferenceFinishReason, InferenceStepRequest,
+    InferenceStepResult, ModelBackend,
 };
 
 #[derive(Clone)]
@@ -133,6 +133,7 @@ impl InferenceBackend for ExternalLlamaCppBackend {
             context_slot_id,
             tokens,
             index_pos,
+            remaining_generation_budget,
             logits_processor: _,
             tokenizer,
             generation,
@@ -140,19 +141,17 @@ impl InferenceBackend for ExternalLlamaCppBackend {
             eos_token_id: _,
             eot_token_id: _,
         } = request;
-        if tokens.len() >= generation.max_tokens {
+        if remaining_generation_budget == 0 {
             return Ok(InferenceStepResult {
                 appended_tokens: Vec::new(),
                 emitted_text: String::new(),
                 finished: true,
+                finish_reason: Some(InferenceFinishReason::TurnBudgetExhausted),
                 next_index_pos: index_pos.max(tokens.len()),
             });
         }
 
-        let chunk_tokens = generation
-            .max_tokens
-            .saturating_sub(tokens.len())
-            .min(self.chunk_tokens);
+        let chunk_tokens = remaining_generation_budget.min(self.chunk_tokens);
         let prompt = tokenizer.decode(tokens, false).map_err(|e| {
             E::msg(format!(
                 "Failed to decode prompt tokens for RPC backend: {}",
@@ -165,11 +164,20 @@ impl InferenceBackend for ExternalLlamaCppBackend {
         )?;
         let decoded = decode_completion_response(raw, tokenizer)?;
 
+        let finished_due_to_budget =
+            !decoded.finished && decoded.appended_tokens.len() >= remaining_generation_budget;
+
         Ok(InferenceStepResult {
             next_index_pos: index_pos.max(tokens.len()),
             emitted_text: decoded.emitted_text,
-            finished: decoded.finished
-                || tokens.len() + decoded.appended_tokens.len() >= generation.max_tokens,
+            finished: decoded.finished || finished_due_to_budget,
+            finish_reason: if decoded.finished {
+                Some(InferenceFinishReason::ModelStop)
+            } else if finished_due_to_budget {
+                Some(InferenceFinishReason::TurnBudgetExhausted)
+            } else {
+                None
+            },
             appended_tokens: decoded.appended_tokens,
         })
     }

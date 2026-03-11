@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.continue_output.v1",
+  "title": "AgenticOS Continue Output Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"enum": ["agenticos.control.continue_output.v1"]},
+        "data": {
+          "type": "object",
+          "required": ["pid", "state", "action"],
+          "properties": {
+            "pid": {"type": "integer", "minimum": 0},
+            "state": {"type": "string"},
+            "action": {"type": "string", "enum": ["continue_output"]}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

@@ -72,6 +72,8 @@ pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u
                         driver_source: loaded.driver_source,
                         driver_rationale: loaded.driver_rationale,
                         path: loaded.path.display().to_string(),
+                        architecture: loaded.architecture,
+                        load_mode: loaded.load_mode,
                     },
                     Some(&message),
                 )

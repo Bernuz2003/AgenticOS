@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agentic_control_models::{
-    ControlMessage, LoadModelResult, ModelCatalogSnapshot, OrchStatusResponse, OrchSummaryResponse,
-    OrchestrateResult, PidStatusResponse, SelectModelResult, StatusResponse,
+    ControlMessage, LoadModelResult, ModelCatalogSnapshot, OrchStatusResponse,
+    OrchSummaryResponse, OrchestrateResult, PidStatusResponse, SelectModelResult,
+    SendInputResult, StatusResponse, TurnControlResult,
 };
 use agentic_protocol::OpCode;
 
@@ -224,6 +225,51 @@ impl KernelBridge {
         self.decode_response(&response.payload, &[agentic_protocol::schema::LOAD])
     }
 
+    pub fn send_input(&mut self, pid: u64, prompt: &str) -> KernelBridgeResult<SendInputResult> {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "pid": pid,
+            "prompt": prompt,
+        }))?;
+        let response = self.send_control_command(OpCode::SendInput, &payload)?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(&response.payload, &[agentic_protocol::schema::SEND_INPUT])
+    }
+
+    pub fn continue_output(&mut self, pid: u64) -> KernelBridgeResult<TurnControlResult> {
+        let payload = serde_json::to_vec(&serde_json::json!({ "pid": pid }))?;
+        let response = self.send_control_command(OpCode::ContinueOutput, &payload)?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(&response.payload, &[agentic_protocol::schema::CONTINUE_OUTPUT])
+    }
+
+    pub fn stop_output(&mut self, pid: u64) -> KernelBridgeResult<TurnControlResult> {
+        let payload = serde_json::to_vec(&serde_json::json!({ "pid": pid }))?;
+        let response = self.send_control_command(OpCode::StopOutput, &payload)?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(&response.payload, &[agentic_protocol::schema::STOP_OUTPUT])
+    }
+
     pub fn shutdown(&mut self) -> KernelBridgeResult<String> {
         let response = self.send_control_command(OpCode::Shutdown, &[])?;
         if response.kind != "+OK" {
@@ -263,10 +309,11 @@ impl KernelBridge {
         opcode: OpCode,
         payload: &[u8],
     ) -> KernelBridgeResult<protocol::ControlFrame> {
+        let timeout = command_timeout(opcode);
         let response = {
             let stream = self.ensure_connection()?;
             protocol::send_command(stream, opcode, "1", payload)
-                .and_then(|_| protocol::read_single_frame(stream, Duration::from_secs(5)))
+                .and_then(|_| protocol::read_single_frame(stream, timeout))
         };
         match response {
             Ok(frame) => Ok(frame),
@@ -311,6 +358,13 @@ impl KernelBridge {
 
     fn drop_connection(&mut self) {
         self.stream = None;
+    }
+}
+
+fn command_timeout(opcode: OpCode) -> Duration {
+    match opcode {
+        OpCode::Load => Duration::from_secs(15 * 60),
+        _ => Duration::from_secs(5),
     }
 }
 

@@ -1,0 +1,14 @@
+{
+  "session_id": "pid-1",
+  "pid": 1,
+  "workload": "General",
+  "turns": [
+    {
+      "prompt": "Dimmi la capitale Italiana",
+      "assistant_stream": "<think>\nThinking Process:\n\n1.  **Analyze the Request:**\n    *   Language: Italian (\"Dimmi la capitale Italiana\" - Tell me the Italian capital).\n    *   Question: What is the capital of Italy?\n    *   Intent: Factual information retrieval.\n\n2.  **Retrieve Knowledge:**\n    *   Country: Italy (Italia).\n    *   Capital: Rome (Roma).\n\n3.  **Formulate the Answer:**\n    *   Direct answer: Roma.\n    *   Complete sentence: La capitale dell'Italia è Roma.\n    *   Tone: Helpful, direct.\n\n4.  **Draft Response (Internal Monologue):**\n    *   Okay, the user asked in Italian. I should reply in",
+      "running": false
+    }
+  ],
+  "error": null,
+  "system_events": []
+}

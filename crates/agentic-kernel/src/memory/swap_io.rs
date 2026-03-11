@@ -8,10 +8,11 @@ pub(super) struct PreparedSwapTarget {
 }
 
 pub(super) fn resolve_valid_swap_dir(requested: Option<PathBuf>) -> Result<PathBuf, String> {
-    let cwd = std::env::current_dir().map_err(|e| format!("Cannot read current dir: {}", e))?;
-    let workspace_root = cwd.join("workspace");
-    fs::create_dir_all(&workspace_root)
-        .map_err(|e| format!("Cannot create workspace dir {:?}: {}", workspace_root, e))?;
+    let workspace_root = crate::config::ensure_workspace_root()?;
+    let base_dir = workspace_root
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| workspace_root.clone());
 
     let candidate = requested.unwrap_or_else(|| workspace_root.join("swap"));
 
@@ -32,18 +33,13 @@ pub(super) fn resolve_valid_swap_dir(requested: Option<PathBuf>) -> Result<PathB
     let candidate_abs = if candidate.is_absolute() {
         candidate
     } else {
-        cwd.join(candidate)
+        base_dir.join(candidate)
     };
 
     fs::create_dir_all(&candidate_abs)
         .map_err(|e| format!("Failed to create swap dir {:?}: {}", candidate_abs, e))?;
 
-    let workspace_canon = fs::canonicalize(&workspace_root).map_err(|e| {
-        format!(
-            "Failed to canonicalize workspace dir {:?}: {}",
-            workspace_root, e
-        )
-    })?;
+    let workspace_canon = workspace_root;
     let candidate_canon = fs::canonicalize(&candidate_abs)
         .map_err(|e| format!("Failed to canonicalize swap dir {:?}: {}", candidate_abs, e))?;
 

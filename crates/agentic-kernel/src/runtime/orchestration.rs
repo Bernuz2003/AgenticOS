@@ -8,7 +8,7 @@ use crate::engine::LLMEngine;
 use crate::inference_worker::InferenceCmd;
 use crate::memory::NeuralMemory;
 use crate::orchestrator::Orchestrator;
-use crate::process::ProcessState;
+use crate::process::{ProcessLifecyclePolicy, ProcessState};
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::services::process_runtime::{
     kill_managed_process, spawn_managed_process, ManagedProcessRequest,
@@ -136,6 +136,7 @@ pub(super) fn advance_orchestrator(
                 owner_id: req.owner_id,
                 workload: req.workload,
                 priority: ProcessPriority::Normal,
+                lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
                 context_policy: Some(req.context_policy.clone()),
             },
         ) {

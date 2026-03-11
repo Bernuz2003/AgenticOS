@@ -1,7 +1,12 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { MindPanel } from "../components/workspace/mind-panel";
 import { TimelinePane } from "../components/workspace/timeline-pane";
+import {
+  continueSessionOutput,
+  sendSessionInput,
+  stopSessionOutput,
+} from "../lib/api";
 import { useSessionsStore } from "../store/sessions-store";
 import { useWorkspaceStore } from "../store/workspace-store";
 
@@ -19,6 +24,11 @@ export function WorkspacePage() {
   const refresh = useWorkspaceStore((state) => state.refresh);
   const refreshTimeline = useWorkspaceStore((state) => state.refreshTimeline);
   const clear = useWorkspaceStore((state) => state.clear);
+  const [composerValue, setComposerValue] = useState("");
+  const [composerLoading, setComposerLoading] = useState(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
+  const [turnActionLoading, setTurnActionLoading] = useState(false);
+  const [turnActionError, setTurnActionError] = useState<string | null>(null);
 
   const routePid =
     sessionId && sessionId.startsWith("pid-") ? Number(sessionId.slice(4)) : Number.NaN;
@@ -64,6 +74,89 @@ export function WorkspacePage() {
     void refreshTimeline(pid);
   }, [clear, refresh, refreshTimeline, session?.pid]);
 
+  useEffect(() => {
+    setComposerValue("");
+    setComposerError(null);
+    setComposerLoading(false);
+    setTurnActionLoading(false);
+    setTurnActionError(null);
+  }, [session?.pid]);
+
+  const awaitingContinuation = snapshot?.state === "AwaitingTurnDecision";
+  const canSendInput =
+    !!session?.pid &&
+    snapshot?.state === "WaitingForInput" &&
+    !timeline?.running &&
+    !composerLoading &&
+    !turnActionLoading;
+
+  async function handleComposerSubmit() {
+    if (!session?.pid) {
+      return;
+    }
+
+    const prompt = composerValue.trim();
+    if (!prompt) {
+      return;
+    }
+
+    setComposerLoading(true);
+    setComposerError(null);
+    setTurnActionError(null);
+    try {
+      await sendSessionInput(session.pid, prompt);
+      setComposerValue("");
+      await Promise.all([refreshTimeline(session.pid), refresh(session.pid)]);
+    } catch (error) {
+      setComposerError(
+        error instanceof Error ? error.message : "Failed to send input to resident PID",
+      );
+    } finally {
+      setComposerLoading(false);
+    }
+  }
+
+  async function handleContinueOutput() {
+    if (!session?.pid) {
+      return;
+    }
+
+    setTurnActionLoading(true);
+    setTurnActionError(null);
+    setComposerError(null);
+    try {
+      await continueSessionOutput(session.pid);
+      await Promise.all([refreshTimeline(session.pid), refresh(session.pid)]);
+    } catch (error) {
+      setTurnActionError(
+        error instanceof Error
+          ? error.message
+          : "Failed to continue truncated assistant output",
+      );
+    } finally {
+      setTurnActionLoading(false);
+    }
+  }
+
+  async function handleStopOutput() {
+    if (!session?.pid) {
+      return;
+    }
+
+    setTurnActionLoading(true);
+    setTurnActionError(null);
+    try {
+      await stopSessionOutput(session.pid);
+      await Promise.all([refreshTimeline(session.pid), refresh(session.pid)]);
+    } catch (error) {
+      setTurnActionError(
+        error instanceof Error ? error.message : "Failed to stop truncated assistant output",
+      );
+    } finally {
+      setTurnActionLoading(false);
+    }
+  }
+
   if (!session) {
     return (
       <div className="panel-surface px-6 py-10 text-center">
@@ -82,14 +175,35 @@ export function WorkspacePage() {
   }
 
   return (
-    <section className="grid gap-5 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,0.9fr)]">
-      <TimelinePane
-        session={session}
-        timeline={timeline}
-        loading={timelineLoading}
-        error={timelineError}
-      />
-      <MindPanel session={session} snapshot={snapshot} loading={loading} error={error} />
+    <section className="space-y-4">
+      <div className="flex justify-end">
+        <Link
+          to="/"
+          className="rounded-full border border-slate-900/10 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-900/20 hover:text-slate-950"
+        >
+          Torna alla Lobby
+        </Link>
+      </div>
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,0.9fr)]">
+        <TimelinePane
+          session={session}
+          timeline={timeline}
+          loading={timelineLoading}
+          error={timelineError}
+          awaitingContinuation={awaitingContinuation}
+          composerValue={composerValue}
+          composerLoading={composerLoading}
+          composerError={composerError}
+          turnActionLoading={turnActionLoading}
+          turnActionError={turnActionError}
+          canSend={canSendInput}
+          onComposerChange={setComposerValue}
+          onComposerSubmit={handleComposerSubmit}
+          onContinueOutput={handleContinueOutput}
+          onStopOutput={handleStopOutput}
+        />
+        <MindPanel session={session} snapshot={snapshot} loading={loading} error={error} />
+      </div>
     </section>
   );
 }

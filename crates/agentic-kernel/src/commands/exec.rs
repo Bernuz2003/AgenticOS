@@ -1,4 +1,5 @@
 use crate::policy::resolve_exec_policy;
+use crate::process::ProcessLifecyclePolicy;
 use crate::protocol;
 use crate::scheduler::ProcessPriority;
 use crate::services::model_runtime::activate_model_target;
@@ -126,6 +127,7 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                 owner_id: client_id,
                 workload,
                 priority: ProcessPriority::Normal,
+                lifecycle_policy: ProcessLifecyclePolicy::Interactive,
                 context_policy: Some(resolved.context_policy.clone()),
             },
         ) {

@@ -57,7 +57,11 @@ pub(super) fn drain_worker_results(
                         engine.model_metadata(),
                     )
                 {
-                    process.state = ProcessState::Finished;
+                    process.state = if process.lifecycle_policy.is_interactive() {
+                        ProcessState::WaitingForInput
+                    } else {
+                        ProcessState::Finished
+                    };
                 }
 
                 engine.processes.insert(pid, process);
@@ -129,6 +133,32 @@ pub(super) fn drain_worker_results(
                     if let Some(proc) = engine.processes.get_mut(&pid) {
                         proc.state = ProcessState::Finished;
                     }
+                }
+
+                let turn_state = engine.processes.get(&pid).map(|proc| proc.state.clone());
+                if matches!(
+                    turn_state,
+                    Some(ProcessState::WaitingForInput | ProcessState::AwaitingTurnDecision)
+                ) {
+                    let sched = scheduler.snapshot(pid);
+                    let reason = if matches!(turn_state, Some(ProcessState::AwaitingTurnDecision)) {
+                        "awaiting_turn_decision"
+                    } else {
+                        "turn_completed"
+                    };
+                    pending_events.push(KernelEvent::SessionFinished {
+                        pid,
+                        tokens_generated: sched.as_ref().map(|s| s.tokens_generated as u64),
+                        elapsed_secs: sched.as_ref().map(|s| s.elapsed_secs),
+                        reason: reason.to_string(),
+                    });
+                    pending_events.push(KernelEvent::WorkspaceChanged {
+                        pid,
+                        reason: reason.to_string(),
+                    });
+                    pending_events.push(KernelEvent::LobbyChanged {
+                        reason: reason.to_string(),
+                    });
                 }
             }
             InferenceResult::Error { pid, error } => {

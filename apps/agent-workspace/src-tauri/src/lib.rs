@@ -32,8 +32,11 @@ pub fn run() {
             commands::kernel::orchestrate,
             commands::kernel::ping_kernel,
             commands::kernel::protocol_preview,
+            commands::kernel::continue_session_output,
+            commands::kernel::send_session_input,
             commands::kernel::select_model,
             commands::kernel::start_session,
+            commands::kernel::stop_session_output,
             commands::kernel::shutdown_kernel,
         ])
         .run(tauri::generate_context!())

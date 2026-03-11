@@ -170,7 +170,7 @@ impl Default for ExternalLlamaCppConfig {
         Self {
             endpoint: String::new(),
             timeout_ms: 120_000,
-            chunk_tokens: 32,
+            chunk_tokens: 1,
         }
     }
 }
@@ -402,6 +402,20 @@ pub fn repository_root() -> PathBuf {
 
 pub fn repository_path(relative: impl AsRef<Path>) -> PathBuf {
     repository_root().join(relative)
+}
+
+pub fn ensure_workspace_root() -> Result<PathBuf, String> {
+    let workspace_dir = &kernel_config().paths.workspace_dir;
+    fs::create_dir_all(workspace_dir)
+        .map_err(|e| format!("Failed to create workspace root '{}': {}", workspace_dir.display(), e))?;
+
+    fs::canonicalize(workspace_dir).map_err(|e| {
+        format!(
+            "Failed to resolve workspace root '{}': {}",
+            workspace_dir.display(),
+            e
+        )
+    })
 }
 
 fn normalize_config_paths(config: &mut KernelConfig, config_path: &Path) {

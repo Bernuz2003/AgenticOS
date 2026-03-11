@@ -1,15 +1,10 @@
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use crate::config::kernel_config;
+use crate::config::ensure_workspace_root;
 
 pub(crate) fn workspace_root() -> Result<PathBuf, String> {
-    let workspace_dir = &kernel_config().paths.workspace_dir;
-    fs::create_dir_all(workspace_dir)
-        .map_err(|e| format!("SysCall Error: Failed to create workspace: {}", e))?;
-
-    fs::canonicalize(workspace_dir)
-        .map_err(|e| format!("SysCall Error: Failed to resolve workspace root: {}", e))
+    ensure_workspace_root()
+        .map_err(|e| format!("SysCall Error: {}", e))
 }
 
 pub(crate) fn normalize_relative_path(root: &Path, input: &str) -> Result<PathBuf, String> {
