@@ -3,7 +3,17 @@ name = "agentic_os_kernel"
 version = "0.5.0"
 edition = "2021"
 
+[workspace]
+members = [
+    "crates/agentic-control-models",
+    "crates/agentic-protocol",
+    "apps/agent-workspace/src-tauri",
+]
+resolver = "2"
+
 [dependencies]
+agentic-control-models = { path = "crates/agentic-control-models" }
+agentic-protocol = { path = "crates/agentic-protocol" }
 mio = { version = "1.0", features = ["os-poll", "net"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -68,14 +68,25 @@ fn run_host_python(script_path: &Path, timeout_s: u64) -> Result<String, String>
         if stderr.trim().is_empty() {
             Ok(truncate_output(&stdout))
         } else {
-            Ok(truncate_output(&format!("Output:\n{}\nErrors:\n{}", stdout, stderr)))
+            Ok(truncate_output(&format!(
+                "Output:\n{}\nErrors:\n{}",
+                stdout, stderr
+            )))
         }
     } else {
         Err(truncate_output(&format!(
             "SysCall Error: Python failed (status={:?}).\n{}{}",
             output.status.code(),
-            if stdout.is_empty() { "" } else { &format!("stdout:\n{}\n", stdout) },
-            if stderr.is_empty() { "" } else { &format!("stderr:\n{}", stderr) }
+            if stdout.is_empty() {
+                ""
+            } else {
+                &format!("stdout:\n{}\n", stdout)
+            },
+            if stderr.is_empty() {
+                ""
+            } else {
+                &format!("stderr:\n{}", stderr)
+            }
         )))
     }
 }
@@ -124,8 +135,16 @@ fn run_container_python(script_path: &Path, timeout_s: u64) -> Result<String, St
         Err(truncate_output(&format!(
             "SysCall Error: Container runner failed (status={:?}).\n{}{}",
             output.status.code(),
-            if stdout.is_empty() { "" } else { &format!("stdout:\n{}\n", stdout) },
-            if stderr.is_empty() { "" } else { &format!("stderr:\n{}", stderr) }
+            if stdout.is_empty() {
+                ""
+            } else {
+                &format!("stdout:\n{}\n", stdout)
+            },
+            if stderr.is_empty() {
+                ""
+            } else {
+                &format!("stderr:\n{}", stderr)
+            }
         )))
     }
 }

@@ -3,6 +3,8 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use agentic_control_models::KernelEvent;
+
 use crate::commands::execute_command;
 use crate::commands::MetricsState;
 use crate::engine::LLMEngine;
@@ -32,6 +34,7 @@ pub fn handle_read(
     auth_token: &str,
 ) -> bool {
     let mut tool_registry = ToolRegistry::with_builtins();
+    let mut pending_events = Vec::new();
     handle_read_with_registry(
         client,
         memory,
@@ -43,6 +46,7 @@ pub fn handle_read(
         shutdown_requested,
         in_flight,
         pending_kills,
+        &mut pending_events,
         metrics,
         &mut tool_registry,
         auth_token,
@@ -61,6 +65,7 @@ pub fn handle_read_with_registry(
     shutdown_requested: &Arc<AtomicBool>,
     in_flight: &HashSet<u64>,
     pending_kills: &mut Vec<u64>,
+    pending_events: &mut Vec<KernelEvent>,
     metrics: &mut MetricsState,
     tool_registry: &mut ToolRegistry,
     auth_token: &str,
@@ -101,20 +106,19 @@ pub fn handle_read_with_registry(
                 shutdown_requested,
                 in_flight,
                 pending_kills,
+                pending_events,
                 metrics,
                 auth_token,
             ),
             ParsedCommand::Err(e) => {
                 let request_id = client.allocate_request_id("transport");
-                client
-                    .output_buffer
-                    .extend(protocol::response_protocol_err(
-                        client,
-                        &request_id,
-                        "BAD_HEADER",
-                        protocol::schema::ERROR,
-                        &e,
-                    ));
+                client.output_buffer.extend(protocol::response_protocol_err(
+                    client,
+                    &request_id,
+                    "BAD_HEADER",
+                    protocol::schema::ERROR,
+                    &e,
+                ));
             }
         }
     }

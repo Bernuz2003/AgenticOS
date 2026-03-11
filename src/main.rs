@@ -1,9 +1,10 @@
 mod backend;
 mod checkpoint;
-mod config;
 mod commands;
+mod config;
 mod engine;
 mod errors;
+mod events;
 mod inference_worker;
 mod kernel;
 mod memory;
@@ -20,8 +21,8 @@ mod tool_registry;
 mod tools;
 mod transport;
 
-use std::io;
 use kernel::server::Kernel;
+use std::io;
 
 fn main() -> io::Result<()> {
     tracing_subscriber::fmt()

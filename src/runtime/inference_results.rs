@@ -2,6 +2,8 @@ use mio::{Interest, Poll, Token};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
+use agentic_control_models::KernelEvent;
+
 use crate::engine::LLMEngine;
 use crate::inference_worker::InferenceResult;
 use crate::memory::NeuralMemory;
@@ -9,12 +11,11 @@ use crate::orchestrator::Orchestrator;
 use crate::process::ProcessState;
 use crate::protocol;
 use crate::scheduler::ProcessScheduler;
-use crate::tool_registry::ToolRegistry;
 use crate::services::process_runtime::kill_managed_process;
-use crate::tools::SyscallRateMap;
+use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
-use super::syscalls::{dispatch_process_syscall, scan_syscall_buffer};
+use super::syscalls::{dispatch_process_syscall, scan_syscall_buffer, SyscallCmd};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn drain_worker_results(
@@ -25,9 +26,10 @@ pub(super) fn drain_worker_results(
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
     result_rx: &mpsc::Receiver<InferenceResult>,
+    syscall_cmd_tx: &mpsc::Sender<SyscallCmd>,
     in_flight: &mut HashSet<u64>,
     pending_kills: &mut Vec<u64>,
-    rate_map: &mut SyscallRateMap,
+    pending_events: &mut Vec<KernelEvent>,
     tool_registry: &ToolRegistry,
 ) {
     while let Ok(result) = result_rx.try_recv() {
@@ -41,6 +43,7 @@ pub(super) fn drain_worker_results(
             } => {
                 let mut process = *process;
                 in_flight.remove(&pid);
+                scheduler.clear_checked_out_process(pid);
 
                 if generated_tokens > 0 || !text_output.is_empty() {
                     process.record_model_output(&text_output, generated_tokens);
@@ -66,7 +69,8 @@ pub(super) fn drain_worker_results(
                 }
 
                 let owner_id = engine.process_owner_id(pid).unwrap_or(0);
-                let token_quota_exceeded = (0..generated_tokens).any(|_| scheduler.record_token(pid));
+                let token_quota_exceeded =
+                    (0..generated_tokens).any(|_| scheduler.record_token(pid));
 
                 if !text_output.is_empty() && orchestrator.is_orchestrated(pid) {
                     orchestrator.append_output(pid, &text_output);
@@ -83,7 +87,16 @@ pub(super) fn drain_worker_results(
                 if let Some(full_command) = pending_syscall {
                     let content = full_command[2..full_command.len() - 2].trim().to_string();
                     tracing::info!(pid, owner_id, command = %full_command, "OS: SysCall intercepted");
-                    dispatch_process_syscall(engine, memory, scheduler, pid, &content, rate_map, tool_registry);
+                    dispatch_process_syscall(
+                        engine,
+                        memory,
+                        scheduler,
+                        pid,
+                        &content,
+                        syscall_cmd_tx,
+                        pending_events,
+                        tool_registry,
+                    );
                 }
 
                 if !text_output.is_empty() && owner_id > 0 {
@@ -100,6 +113,17 @@ pub(super) fn drain_worker_results(
                     }
                 }
 
+                if !text_output.is_empty() {
+                    pending_events.push(KernelEvent::TimelineChunk {
+                        pid,
+                        text: text_output.clone(),
+                    });
+                    pending_events.push(KernelEvent::WorkspaceChanged {
+                        pid,
+                        reason: "model_output".to_string(),
+                    });
+                }
+
                 if token_quota_exceeded {
                     tracing::warn!(pid, "SCHEDULER: token quota exceeded — terminating process");
                     if let Some(proc) = engine.processes.get_mut(&pid) {
@@ -109,12 +133,26 @@ pub(super) fn drain_worker_results(
             }
             InferenceResult::Error { pid, error } => {
                 in_flight.remove(&pid);
+                scheduler.clear_checked_out_process(pid);
                 tracing::error!(pid, %error, "Process error from worker, killing");
                 if orchestrator.is_orchestrated(pid) {
                     orchestrator.mark_failed(pid, &error);
                 }
-                crate::services::process_runtime::release_process_resources(engine, memory, scheduler, pid);
+                crate::services::process_runtime::release_process_resources(
+                    engine, memory, scheduler, pid,
+                );
                 engine.processes.remove(&pid);
+                pending_events.push(KernelEvent::SessionErrored {
+                    pid,
+                    message: error,
+                });
+                pending_events.push(KernelEvent::WorkspaceChanged {
+                    pid,
+                    reason: "worker_error".to_string(),
+                });
+                pending_events.push(KernelEvent::LobbyChanged {
+                    reason: "worker_error".to_string(),
+                });
             }
         }
     }

@@ -1,4 +1,8 @@
-use serde::{Deserialize, Serialize};
+pub use agentic_protocol::{
+    schema, validate_content_length, CommandHeader, ControlErrorCode, HelloRequest, HelloResponse,
+    OpCode, ProtocolEnvelope, ProtocolEnvelopeError, PROTOCOL_VERSION_V1,
+};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::str;
@@ -6,181 +10,6 @@ use std::str;
 use crate::config::kernel_config;
 use crate::errors::ProtocolError;
 use crate::transport::Client;
-
-pub const MAX_CONTENT_LENGTH: usize = 8 * 1024 * 1024;
-pub const PROTOCOL_VERSION_V1: &str = "v1";
-
-pub mod schema {
-    pub const AUTH: &str = "agenticos.control.auth.v1";
-    pub const BACKEND_DIAG: &str = "agenticos.control.backend_diag.v1";
-    pub const CHECKPOINT: &str = "agenticos.control.checkpoint.v1";
-    pub const EXEC: &str = "agenticos.control.exec.v1";
-    pub const ERROR: &str = "agenticos.control.error.v1";
-    pub const HELLO: &str = "agenticos.control.hello.v1";
-    pub const KILL: &str = "agenticos.control.kill.v1";
-    pub const LIST_MODELS: &str = "agenticos.control.list_models.v1";
-    pub const LOAD: &str = "agenticos.control.load.v1";
-    pub const LIST_TOOLS: &str = "agenticos.control.list_tools.v1";
-    pub const MEMORY_WRITE: &str = "agenticos.control.memw.v1";
-    pub const MODEL_INFO: &str = "agenticos.control.model_info.v1";
-    pub const ORCHESTRATE: &str = "agenticos.control.orchestrate.v1";
-    pub const ORCH_STATUS: &str = "agenticos.control.orch_status.v1";
-    pub const PID_STATUS: &str = "agenticos.control.pid_status.v1";
-    pub const PING: &str = "agenticos.control.ping.v1";
-    pub const REGISTER_TOOL: &str = "agenticos.control.register_tool.v1";
-    pub const RESTORE: &str = "agenticos.control.restore.v1";
-    pub const SELECT_MODEL: &str = "agenticos.control.select_model.v1";
-    pub const SET_GEN: &str = "agenticos.control.set_gen.v1";
-    pub const GET_GEN: &str = "agenticos.control.get_gen.v1";
-    pub const SET_PRIORITY: &str = "agenticos.control.set_priority.v1";
-    pub const GET_QUOTA: &str = "agenticos.control.get_quota.v1";
-    pub const SET_QUOTA: &str = "agenticos.control.set_quota.v1";
-    pub const SHUTDOWN: &str = "agenticos.control.shutdown.v1";
-    pub const STATUS: &str = "agenticos.control.status.v1";
-    pub const TERM: &str = "agenticos.control.term.v1";
-    pub const TOOL_INFO: &str = "agenticos.control.tool_info.v1";
-    pub const UNREGISTER_TOOL: &str = "agenticos.control.unregister_tool.v1";
-}
-
-#[derive(Debug, Serialize)]
-pub struct ProtocolEnvelope<T> {
-    pub protocol_version: String,
-    pub schema_id: String,
-    pub request_id: String,
-    pub ok: bool,
-    pub code: String,
-    pub data: Option<T>,
-    pub error: Option<ProtocolEnvelopeError>,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ProtocolEnvelopeError {
-    pub message: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct HelloRequest {
-    #[serde(default)]
-    pub supported_versions: Vec<String>,
-    #[serde(default)]
-    pub required_capabilities: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct HelloResponse {
-    pub negotiated_version: String,
-    pub enabled_capabilities: Vec<String>,
-    pub legacy_fallback_allowed: bool,
-}
-
-#[derive(Debug, Clone)]
-pub enum OpCode {
-    Hello,          // Negozia versione/capacita protocollo
-    Ping,           // Ping-Pong
-    Load,           // Carica modello
-    Exec,           // Esegui inferenza
-    Kill,           // Termina processo immediatamente
-    Term,           // Richiede terminazione graceful
-    Status,         // Stato kernel/processo
-    Shutdown,       // Shutdown kernel
-    MemoryWrite,    // Scrivi tensore in VRAM
-    ListModels,     // Lista modelli disponibili
-    SelectModel,    // Seleziona modello di default
-    ModelInfo,      // Mostra info modello
-    BackendDiag,    // Diagnostica backend esterno
-    SetGen,         // Configura generation params
-    GetGen,         // Legge generation params
-    SetPriority,    // Imposta priorità processo
-    GetQuota,       // Legge quota/accounting processo
-    SetQuota,       // Imposta quota processo
-    Checkpoint,     // Salva snapshot kernel su disco
-    Restore,        // Ripristina stato kernel da disco
-    Orchestrate,    // Registra ed esegue un DAG di task
-    ListTools,      // Elenca tool registrati
-    RegisterTool,   // Registra un nuovo tool runtime
-    ToolInfo,       // Descrive tool/syscall disponibili e policy
-    UnregisterTool, // Rimuove un tool runtime
-    Auth,           // Autenticazione client con token
-}
-
-#[derive(Debug)]
-pub struct CommandHeader {
-    pub opcode: OpCode,
-    pub agent_id: String,
-    pub content_length: usize,
-}
-
-impl CommandHeader {
-    /// Parsa la riga di intestazione: "VERB AgentID Length"
-    /// Esempio: "EXEC coder_01 500"
-    pub fn parse(line: &str) -> Result<Self, ProtocolError> {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-
-        if parts.is_empty() {
-            return Err(ProtocolError::EmptyHeader);
-        }
-
-        if parts.len() != 3 {
-            return Err(ProtocolError::InvalidHeaderFormat);
-        }
-
-        let opcode = match parts[0].to_uppercase().as_str() {
-            "HELLO" => OpCode::Hello,
-            "PING" => OpCode::Ping,
-            "LOAD" => OpCode::Load,
-            "EXEC" => OpCode::Exec,
-            "KILL" => OpCode::Kill,
-            "TERM" => OpCode::Term,
-            "STATUS" => OpCode::Status,
-            "SHUTDOWN" => OpCode::Shutdown,
-            "MEMW" => OpCode::MemoryWrite,
-            "LIST_MODELS" => OpCode::ListModels,
-            "SELECT_MODEL" => OpCode::SelectModel,
-            "MODEL_INFO" => OpCode::ModelInfo,
-            "BACKEND_DIAG" => OpCode::BackendDiag,
-            "SET_GEN" => OpCode::SetGen,
-            "GET_GEN" => OpCode::GetGen,
-            "SET_PRIORITY" => OpCode::SetPriority,
-            "GET_QUOTA" => OpCode::GetQuota,
-            "SET_QUOTA" => OpCode::SetQuota,
-            "CHECKPOINT" => OpCode::Checkpoint,
-            "RESTORE" => OpCode::Restore,
-            "ORCHESTRATE" => OpCode::Orchestrate,
-            "LIST_TOOLS" => OpCode::ListTools,
-            "REGISTER_TOOL" => OpCode::RegisterTool,
-            "TOOL_INFO" => OpCode::ToolInfo,
-            "UNREGISTER_TOOL" => OpCode::UnregisterTool,
-            "AUTH" => OpCode::Auth,
-            _ => return Err(ProtocolError::UnknownOpcode(parts[0].to_string())),
-        };
-
-        let agent_id = parts[1].to_string();
-
-        let content_length = parts[2]
-            .parse::<usize>()
-            .map_err(|_| ProtocolError::InvalidContentLength)?;
-
-        validate_content_length(content_length)?;
-
-        Ok(CommandHeader {
-            opcode,
-            agent_id,
-            content_length,
-        })
-    }
-}
-
-pub fn validate_content_length(content_length: usize) -> Result<(), ProtocolError> {
-    if content_length > MAX_CONTENT_LENGTH {
-        Err(ProtocolError::ContentLengthTooLarge {
-            requested: content_length,
-            max: MAX_CONTENT_LENGTH,
-        })
-    } else {
-        Ok(())
-    }
-}
 
 pub fn response_ok_code(code: &str, msg: &str) -> Vec<u8> {
     let payload = msg.as_bytes();
@@ -194,6 +23,10 @@ pub fn response_err_code(code: &str, msg: &str) -> Vec<u8> {
     let mut out = format!("-ERR {} {}\r\n", code, payload.len()).into_bytes();
     out.extend_from_slice(payload);
     out
+}
+
+pub fn response_err_code_typed(code: ControlErrorCode, msg: &str) -> Vec<u8> {
+    response_err_code(code.as_str(), msg)
 }
 
 pub fn response_protocol_ok<T: Serialize>(
@@ -217,14 +50,18 @@ pub fn response_protocol_ok<T: Serialize>(
         };
         match serde_json::to_string(&payload) {
             Ok(json) => response_ok_code(code, &json),
-            Err(err) => response_err_code("PROTOCOL_SERIALIZE", &err.to_string()),
+            Err(err) => {
+                response_err_code_typed(ControlErrorCode::ProtocolSerialize, &err.to_string())
+            }
         }
     } else if let Some(legacy_payload) = legacy_payload {
         response_ok_code(code, legacy_payload)
     } else {
         match serde_json::to_string(data) {
             Ok(json) => response_ok_code(code, &json),
-            Err(err) => response_err_code("PROTOCOL_SERIALIZE", &err.to_string()),
+            Err(err) => {
+                response_err_code_typed(ControlErrorCode::ProtocolSerialize, &err.to_string())
+            }
         }
     }
 }
@@ -251,11 +88,23 @@ pub fn response_protocol_err(
         };
         match serde_json::to_string(&payload) {
             Ok(json) => response_err_code(code, &json),
-            Err(err) => response_err_code("PROTOCOL_SERIALIZE", &err.to_string()),
+            Err(err) => {
+                response_err_code_typed(ControlErrorCode::ProtocolSerialize, &err.to_string())
+            }
         }
     } else {
         response_err_code(code, message)
     }
+}
+
+pub fn response_protocol_err_typed(
+    client: &Client,
+    request_id: &str,
+    code: ControlErrorCode,
+    schema_id: &str,
+    message: &str,
+) -> Vec<u8> {
+    response_protocol_err(client, request_id, code.as_str(), schema_id, message)
 }
 
 pub fn response_protocol_message(
@@ -301,7 +150,10 @@ pub fn handle_hello(client: &mut Client, payload: &[u8], request_id: &str) -> Ve
     } else {
         hello.supported_versions
     };
-    if !supported_versions.iter().any(|version| version == PROTOCOL_VERSION_V1) {
+    if !supported_versions
+        .iter()
+        .any(|version| version == PROTOCOL_VERSION_V1)
+    {
         return hello_error_response(
             ProtocolError::UnsupportedProtocolVersion(supported_versions.join(",")),
             request_id,
@@ -382,7 +234,11 @@ pub fn stable_capabilities() -> Vec<String> {
 
 // Quando risponderemo con Tensori, useremo un Header simile a quello di richiesta
 pub fn response_data(data: &[u8]) -> Vec<u8> {
-    let header = format!("DATA raw {}\r\n", data.len());
+    response_data_with_code("raw", data)
+}
+
+pub fn response_data_with_code(code: &str, data: &[u8]) -> Vec<u8> {
+    let header = format!("DATA {} {}\r\n", code, data.len());
     let mut vec = header.into_bytes();
     vec.extend_from_slice(data);
     vec
@@ -390,9 +246,11 @@ pub fn response_data(data: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use agentic_protocol::MAX_CONTENT_LENGTH;
+
     use super::{
         handle_hello, response_err_code, response_ok_code, stable_capabilities, CommandHeader,
-        OpCode, MAX_CONTENT_LENGTH,
+        OpCode,
     };
     use crate::transport::Client;
 
@@ -423,7 +281,8 @@ mod tests {
         let status = CommandHeader::parse("STATUS 1 0").expect("STATUS should parse");
         assert!(matches!(status.opcode, OpCode::Status));
 
-        let register_tool = CommandHeader::parse("REGISTER_TOOL 1 2").expect("REGISTER_TOOL should parse");
+        let register_tool =
+            CommandHeader::parse("REGISTER_TOOL 1 2").expect("REGISTER_TOOL should parse");
         assert!(matches!(register_tool.opcode, OpCode::RegisterTool));
 
         let unregister_tool =
@@ -436,8 +295,7 @@ mod tests {
         let kill = CommandHeader::parse("KILL 1 1").expect("KILL should parse");
         assert!(matches!(kill.opcode, OpCode::Kill));
 
-        let shutdown =
-            CommandHeader::parse("SHUTDOWN 1 0").expect("SHUTDOWN should parse");
+        let shutdown = CommandHeader::parse("SHUTDOWN 1 0").expect("SHUTDOWN should parse");
         assert!(matches!(shutdown.opcode, OpCode::Shutdown));
     }
 
@@ -446,8 +304,7 @@ mod tests {
         let list = CommandHeader::parse("LIST_MODELS 1 0").expect("LIST_MODELS should parse");
         assert!(matches!(list.opcode, OpCode::ListModels));
 
-        let select =
-            CommandHeader::parse("SELECT_MODEL 1 7").expect("SELECT_MODEL should parse");
+        let select = CommandHeader::parse("SELECT_MODEL 1 7").expect("SELECT_MODEL should parse");
         assert!(matches!(select.opcode, OpCode::SelectModel));
 
         let info = CommandHeader::parse("MODEL_INFO 1 0").expect("MODEL_INFO should parse");

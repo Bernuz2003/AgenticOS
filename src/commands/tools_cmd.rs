@@ -1,11 +1,13 @@
 use serde::Deserialize;
 use serde_json::json;
 
+use agentic_protocol::ControlErrorCode;
+
 use crate::config::kernel_config;
 use crate::protocol;
 use crate::tool_registry::{ToolRegistryEntry, ToolSource};
 
-use super::context::CommandContext;
+use super::context::ToolsCommandContext;
 
 #[derive(Debug, Deserialize)]
 struct RegisterToolRequest {
@@ -18,9 +20,13 @@ struct UnregisterToolRequest {
     name: String,
 }
 
-pub(crate) fn handle_list_tools(ctx: &mut CommandContext<'_>) -> Vec<u8> {
-    let tools: Vec<serde_json::Value> = ctx
-        .tool_registry
+pub(crate) fn handle_list_tools(ctx: ToolsCommandContext<'_>) -> Vec<u8> {
+    let ToolsCommandContext {
+        client,
+        request_id,
+        tool_registry,
+    } = ctx;
+    let tools: Vec<serde_json::Value> = tool_registry
         .list()
         .into_iter()
         .map(|tool| serde_json::to_value(tool).expect("tool descriptor serializable"))
@@ -32,8 +38,8 @@ pub(crate) fn handle_list_tools(ctx: &mut CommandContext<'_>) -> Vec<u8> {
     });
 
     protocol::response_protocol_ok(
-        ctx.client,
-        &ctx.request_id,
+        client,
+        request_id,
         "LIST_TOOLS",
         protocol::schema::LIST_TOOLS,
         &payload,
@@ -41,23 +47,28 @@ pub(crate) fn handle_list_tools(ctx: &mut CommandContext<'_>) -> Vec<u8> {
     )
 }
 
-pub(crate) fn handle_tool_info(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_tool_info(ctx: ToolsCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+    let ToolsCommandContext {
+        client,
+        request_id,
+        tool_registry,
+    } = ctx;
     let tool_name = String::from_utf8_lossy(payload).trim().to_string();
     if tool_name.is_empty() {
-        return protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "MISSING_TOOL_NAME",
+        return protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::MissingToolName,
             protocol::schema::ERROR,
             "TOOL_INFO requires a tool name payload",
         );
     }
 
-    let Some(tool) = ctx.tool_registry.get(&tool_name) else {
-        return protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "TOOL_NOT_FOUND",
+    let Some(tool) = tool_registry.get(&tool_name) else {
+        return protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::ToolNotFound,
             protocol::schema::ERROR,
             &format!("Tool '{}' is not registered.", tool_name),
         );
@@ -76,8 +87,8 @@ pub(crate) fn handle_tool_info(ctx: &mut CommandContext<'_>, payload: &[u8]) -> 
         }
     });
     protocol::response_protocol_ok(
-        ctx.client,
-        &ctx.request_id,
+        client,
+        request_id,
         "TOOL_INFO",
         protocol::schema::TOOL_INFO,
         &payload,
@@ -85,19 +96,24 @@ pub(crate) fn handle_tool_info(ctx: &mut CommandContext<'_>, payload: &[u8]) -> 
     )
 }
 
-pub(crate) fn handle_register_tool(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
-    if let Some(response) = ensure_registry_mutation_allowed(ctx, "REGISTER_TOOL") {
+pub(crate) fn handle_register_tool(mut ctx: ToolsCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+    if let Some(response) = ensure_registry_mutation_allowed(&mut ctx, "REGISTER_TOOL") {
         return response;
     }
 
+    let ToolsCommandContext {
+        client,
+        request_id,
+        tool_registry,
+    } = ctx;
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     let mut request = match serde_json::from_str::<RegisterToolRequest>(&payload_text) {
         Ok(request) => request,
         Err(err) => {
-            return protocol::response_protocol_err(
-                ctx.client,
-                &ctx.request_id,
-                "INVALID_TOOL_REGISTRATION",
+            return protocol::response_protocol_err_typed(
+                client,
+                request_id,
+                ControlErrorCode::InvalidToolRegistration,
                 protocol::schema::ERROR,
                 &format!("REGISTER_TOOL payload must be valid JSON: {}", err),
             );
@@ -111,104 +127,117 @@ pub(crate) fn handle_register_tool(ctx: &mut CommandContext<'_>, payload: &[u8])
         backend: request.backend,
     };
     if entry.descriptor.name.trim().is_empty() {
-        return protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "INVALID_TOOL_NAME",
+        return protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::InvalidToolName,
             protocol::schema::ERROR,
             "REGISTER_TOOL requires a non-empty descriptor.name",
         );
     }
 
-    match ctx.tool_registry.register(entry) {
+    match tool_registry.register(entry) {
         Ok(()) => {
-            let registered = ctx
-                .tool_registry
+            let registered = tool_registry
                 .get(&requested_name)
                 .expect("registered tool must be retrievable");
             let payload = json!({
                 "tool": registered,
             });
             protocol::response_protocol_ok(
-                ctx.client,
-                &ctx.request_id,
+                client,
+                request_id,
                 "REGISTER_TOOL",
                 protocol::schema::REGISTER_TOOL,
                 &payload,
                 Some(&payload.to_string()),
             )
         }
-        Err(err) => protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "REGISTER_TOOL_FAILED",
+        Err(err) => protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::RegisterToolFailed,
             protocol::schema::ERROR,
             &err,
         ),
     }
 }
 
-pub(crate) fn handle_unregister_tool(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
-    if let Some(response) = ensure_registry_mutation_allowed(ctx, "UNREGISTER_TOOL") {
+pub(crate) fn handle_unregister_tool(mut ctx: ToolsCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+    if let Some(response) = ensure_registry_mutation_allowed(&mut ctx, "UNREGISTER_TOOL") {
         return response;
     }
 
+    let ToolsCommandContext {
+        client,
+        request_id,
+        tool_registry,
+    } = ctx;
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     let request = match serde_json::from_str::<UnregisterToolRequest>(&payload_text) {
         Ok(request) => request,
         Err(err) => {
-            return protocol::response_protocol_err(
-                ctx.client,
-                &ctx.request_id,
-                "INVALID_TOOL_UNREGISTRATION",
+            return protocol::response_protocol_err_typed(
+                client,
+                request_id,
+                ControlErrorCode::InvalidToolUnregistration,
                 protocol::schema::ERROR,
                 &format!("UNREGISTER_TOOL payload must be valid JSON: {}", err),
             );
         }
     };
 
-    match ctx.tool_registry.unregister(&request.name) {
+    match tool_registry.unregister(&request.name) {
         Ok(removed) => {
             let payload = json!({
                 "tool": removed,
             });
             protocol::response_protocol_ok(
-                ctx.client,
-                &ctx.request_id,
+                client,
+                request_id,
                 "UNREGISTER_TOOL",
                 protocol::schema::UNREGISTER_TOOL,
                 &payload,
                 Some(&payload.to_string()),
             )
         }
-        Err(err) => protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "UNREGISTER_TOOL_FAILED",
+        Err(err) => protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::UnregisterToolFailed,
             protocol::schema::ERROR,
             &err,
         ),
     }
 }
 
-fn ensure_registry_mutation_allowed(ctx: &mut CommandContext<'_>, opcode: &str) -> Option<Vec<u8>> {
+fn ensure_registry_mutation_allowed(
+    ctx: &mut ToolsCommandContext<'_>,
+    opcode: &str,
+) -> Option<Vec<u8>> {
     if kernel_config().auth.disabled {
-        return Some(protocol::response_protocol_err(
+        return Some(protocol::response_protocol_err_typed(
             ctx.client,
-            &ctx.request_id,
-            "TOOL_REGISTRY_MUTATION_FORBIDDEN",
+            ctx.request_id,
+            ControlErrorCode::ToolRegistryMutationForbidden,
             protocol::schema::ERROR,
-            &format!("{} requires auth.enabled so the kernel can establish a privileged session.", opcode),
+            &format!(
+                "{} requires auth.enabled so the kernel can establish a privileged session.",
+                opcode
+            ),
         ));
     }
 
     if !ctx.client.enabled_capabilities.contains("tool_registry_v1") {
-        return Some(protocol::response_protocol_err(
+        return Some(protocol::response_protocol_err_typed(
             ctx.client,
-            &ctx.request_id,
-            "CAPABILITY_REQUIRED",
+            ctx.request_id,
+            ControlErrorCode::CapabilityRequired,
             protocol::schema::ERROR,
-            &format!("{} requires HELLO negotiation with capability 'tool_registry_v1'.", opcode),
+            &format!(
+                "{} requires HELLO negotiation with capability 'tool_registry_v1'.",
+                opcode
+            ),
         ));
     }
 

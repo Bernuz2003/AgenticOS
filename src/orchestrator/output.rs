@@ -49,10 +49,8 @@ pub(crate) fn append_with_cap(
         return;
     }
 
-    let keep = truncate_to_char_boundary(
-        incoming,
-        remaining.saturating_sub(TRUNCATION_MARKER.len()),
-    );
+    let keep =
+        truncate_to_char_boundary(incoming, remaining.saturating_sub(TRUNCATION_MARKER.len()));
     if keep > 0 {
         target.push_str(&incoming[..keep]);
     }

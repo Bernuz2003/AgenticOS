@@ -17,8 +17,6 @@ pub fn activate_model_target(
     model_catalog: &mut ModelCatalog,
     target: &ResolvedModelTarget,
 ) -> Result<LoadedModelSummary, String> {
-    *engine_state = None;
-
     let new_engine = LLMEngine::load_target(target).map_err(|e| e.to_string())?;
     let summary = LoadedModelSummary {
         family: new_engine.loaded_family(),

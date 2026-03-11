@@ -9,10 +9,10 @@ use tokenizers::Tokenizer;
 use crate::memory::ContextSlotId;
 use crate::prompting::{GenerationConfig, PromptFamily};
 
+mod diagnostics;
 mod external_llamacpp;
 pub(crate) mod http;
 mod local;
-mod diagnostics;
 mod remote_adapter;
 
 pub(crate) use diagnostics::diagnose_external_backend;
@@ -20,9 +20,7 @@ use external_llamacpp::ExternalLlamaCppBackend;
 use local::{QuantizedLlamaBackend, QuantizedQwen2Backend};
 
 #[cfg(test)]
-use remote_adapter::{
-    combine_completion_text, completion_is_finished, CompletionResponse,
-};
+use remote_adapter::{combine_completion_text, completion_is_finished, CompletionResponse};
 
 pub struct DriverDescriptor {
     pub id: &'static str,
@@ -42,10 +40,9 @@ impl DriverDescriptor {
     fn supports_architecture(&self, architecture: Option<&str>) -> bool {
         architecture.is_none()
             || self.architectures.is_empty()
-            || self
-                .architectures
-                .iter()
-                .any(|candidate| architecture.is_some_and(|arch| candidate.eq_ignore_ascii_case(arch)))
+            || self.architectures.iter().any(|candidate| {
+                architecture.is_some_and(|arch| candidate.eq_ignore_ascii_case(arch))
+            })
     }
 
     fn supports_model(&self, family: PromptFamily, architecture: Option<&str>) -> bool {
@@ -76,7 +73,11 @@ pub struct InferenceStepRequest<'a> {
 
 const FAMILIES_LLAMA: [PromptFamily; 1] = [PromptFamily::Llama];
 const FAMILIES_QWEN: [PromptFamily; 1] = [PromptFamily::Qwen];
-const FAMILIES_COMMON: [PromptFamily; 3] = [PromptFamily::Llama, PromptFamily::Qwen, PromptFamily::Mistral];
+const FAMILIES_COMMON: [PromptFamily; 3] = [
+    PromptFamily::Llama,
+    PromptFamily::Qwen,
+    PromptFamily::Mistral,
+];
 const ARCH_LLAMA: [&str; 1] = ["llama"];
 const ARCH_QWEN2: [&str; 1] = ["qwen2"];
 const ARCH_ANY: [&str; 0] = [];
@@ -241,9 +242,9 @@ pub fn resolve_driver_for_model(
         return Err("Cannot resolve driver for unknown model family.".to_string());
     }
 
-    let fallback = DRIVER_REGISTRY
-        .iter()
-        .find(|driver| driver.supports_model(family, architecture) && is_driver_runtime_loadable(driver));
+    let fallback = DRIVER_REGISTRY.iter().find(|driver| {
+        driver.supports_model(family, architecture) && is_driver_runtime_loadable(driver)
+    });
 
     let architecture_label = architecture
         .map(|value| format!(" architecture '{}'", value))
@@ -415,7 +416,9 @@ impl RuntimeModel {
             )));
         }
 
-        if backend_id != "external-llamacpp" && (!descriptor.available || !descriptor.load_supported) {
+        if backend_id != "external-llamacpp"
+            && (!descriptor.available || !descriptor.load_supported)
+        {
             return Err(E::msg(format!(
                 "Backend '{}' is registered as '{}' but is not loadable in-process yet: {}",
                 backend_id, descriptor.kind, descriptor.note
@@ -445,7 +448,10 @@ impl RuntimeModel {
         self.inner.family()
     }
 
-    pub fn generate_step(&mut self, request: InferenceStepRequest<'_>) -> Result<InferenceStepResult> {
+    pub fn generate_step(
+        &mut self,
+        request: InferenceStepRequest<'_>,
+    ) -> Result<InferenceStepResult> {
         self.inner.generate_step(request)
     }
 
@@ -469,9 +475,7 @@ impl RuntimeModel {
     /// Returns `None` for non-cloneable backends. The caller must enforce any
     /// single-process guard required by the selected backend.
     pub fn duplicate_if_supported(&self) -> Option<Self> {
-        self.inner
-            .duplicate_boxed()
-            .map(|inner| Self { inner })
+        self.inner.duplicate_boxed().map(|inner| Self { inner })
     }
 }
 
@@ -481,8 +485,8 @@ mod tests {
         combine_completion_text, completion_is_finished, diagnose_external_backend,
         resolve_driver_for_family, resolve_driver_for_model, test_external_endpoint_override_get,
         test_external_endpoint_override_set, CompletionResponse, ContextSlotPersistence,
-        ExternalLlamaCppBackend,
-        InferenceBackend, InferenceStepRequest, InferenceStepResult, PromptFamily, RuntimeModel,
+        ExternalLlamaCppBackend, InferenceBackend, InferenceStepRequest, InferenceStepResult,
+        PromptFamily, RuntimeModel,
     };
     use crate::memory::ContextSlotId;
     use crate::prompting::GenerationConfig;
@@ -519,12 +523,9 @@ mod tests {
     }
 
     fn test_tokenizer() -> Tokenizer {
-        let vocab = [
-            ("<unk>".to_string(), 0),
-            ("hello".to_string(), 1),
-        ]
-        .into_iter()
-        .collect();
+        let vocab = [("<unk>".to_string(), 0), ("hello".to_string(), 1)]
+            .into_iter()
+            .collect();
 
         let model = WordLevel::builder()
             .vocab(vocab)
@@ -562,12 +563,17 @@ mod tests {
                     .nth(1)
                     .unwrap_or_default()
                     .to_string();
-                paths_for_thread.lock().expect("lock paths").push(path.clone());
+                paths_for_thread
+                    .lock()
+                    .expect("lock paths")
+                    .push(path.clone());
                 bodies_for_thread.lock().expect("lock bodies").push(body);
 
                 let body = match path.as_str() {
                     "/completion" => r#"{"content":"hello","tokens":[1]}"#,
-                    "/slots/7?action=save" | "/slots/7?action=restore" | "/slots/7?action=erase" => r#"{"ok":true}"#,
+                    "/slots/7?action=save"
+                    | "/slots/7?action=restore"
+                    | "/slots/7?action=erase" => r#"{"ok":true}"#,
                     _ => r#"{"error":"unexpected path"}"#,
                 };
                 let response = format!(
@@ -602,11 +608,17 @@ mod tests {
                     .and_then(|line| line.split_whitespace().nth(1))
                     .unwrap_or("/")
                     .to_string();
-                paths_for_thread.lock().expect("lock diag paths").push(path.clone());
+                paths_for_thread
+                    .lock()
+                    .expect("lock diag paths")
+                    .push(path.clone());
 
                 let (status, body) = match path.as_str() {
                     "/health" => ("HTTP/1.1 200 OK", r#"{"status":"ok"}"#),
-                    "/props" => ("HTTP/1.1 200 OK", r#"{"model_path":"/models/qwen3.5.gguf","total_slots":4}"#),
+                    "/props" => (
+                        "HTTP/1.1 200 OK",
+                        r#"{"model_path":"/models/qwen3.5.gguf","total_slots":4}"#,
+                    ),
                     "/slots" => ("HTTP/1.1 200 OK", r#"[{"id":0},{"id":1}]"#),
                     _ => ("HTTP/1.1 404 Not Found", r#"{"error":"unexpected path"}"#),
                 };
@@ -635,11 +647,8 @@ mod tests {
 
     #[test]
     fn preferred_external_driver_falls_back_when_stub_only() {
-        let resolution = resolve_driver_for_family(
-            PromptFamily::Qwen,
-            Some("external-llamacpp"),
-        )
-        .expect("resolve qwen fallback driver");
+        let resolution = resolve_driver_for_family(PromptFamily::Qwen, Some("external-llamacpp"))
+            .expect("resolve qwen fallback driver");
         assert_eq!(resolution.resolved_backend_id, "candle.quantized_qwen2");
         assert_eq!(resolution.resolution_source, "metadata-preference-fallback");
     }
@@ -682,7 +691,10 @@ mod tests {
             PromptFamily::Unknown
         }
 
-        fn generate_step(&mut self, _request: InferenceStepRequest<'_>) -> Result<InferenceStepResult> {
+        fn generate_step(
+            &mut self,
+            _request: InferenceStepRequest<'_>,
+        ) -> Result<InferenceStepResult> {
             panic!("generate_step should not be called in this test");
         }
 
@@ -691,26 +703,37 @@ mod tests {
         }
     }
 
-    impl ContextSlotPersistence for DummyBackend {
-    }
+    impl ContextSlotPersistence for DummyBackend {}
 
     #[test]
     fn runtime_model_exposes_context_slot_boundary_with_unsupported_default() {
         let mut model = RuntimeModel::from_boxed_backend(Box::new(DummyBackend));
 
         let save_err = model
-            .save_context_slot(ContextSlotId::from(7_u64), Path::new("workspace/swap/pid_7.swap"))
+            .save_context_slot(
+                ContextSlotId::from(7_u64),
+                Path::new("workspace/swap/pid_7.swap"),
+            )
             .expect_err("default context slot persistence should be unsupported");
         let load_err = model
-            .load_context_slot(ContextSlotId::from(7_u64), Path::new("workspace/swap/pid_7.swap"))
+            .load_context_slot(
+                ContextSlotId::from(7_u64),
+                Path::new("workspace/swap/pid_7.swap"),
+            )
             .expect_err("default context slot load should be unsupported");
         let free_err = model
             .free_context_slot(ContextSlotId::from(7_u64))
             .expect_err("default context slot free should be unsupported");
 
-        assert!(save_err.to_string().contains("does not yet support saving context slot 7"));
-        assert!(load_err.to_string().contains("does not yet support loading context slot 7"));
-        assert!(free_err.to_string().contains("does not yet support freeing context slot 7"));
+        assert!(save_err
+            .to_string()
+            .contains("does not yet support saving context slot 7"));
+        assert!(load_err
+            .to_string()
+            .contains("does not yet support loading context slot 7"));
+        assert!(free_err
+            .to_string()
+            .contains("does not yet support freeing context slot 7"));
     }
 
     struct RecordingBackend {
@@ -726,7 +749,10 @@ mod tests {
             PromptFamily::Llama
         }
 
-        fn generate_step(&mut self, _request: InferenceStepRequest<'_>) -> Result<InferenceStepResult> {
+        fn generate_step(
+            &mut self,
+            _request: InferenceStepRequest<'_>,
+        ) -> Result<InferenceStepResult> {
             panic!("generate_step should not be called in this test");
         }
 
@@ -737,7 +763,10 @@ mod tests {
 
     impl ContextSlotPersistence for RecordingBackend {
         fn free_context_slot(&mut self, slot_id: ContextSlotId) -> Result<()> {
-            self.freed_slots.lock().expect("lock freed slots").push(slot_id);
+            self.freed_slots
+                .lock()
+                .expect("lock freed slots")
+                .push(slot_id);
             Ok(())
         }
     }
@@ -887,8 +916,14 @@ mod tests {
             .first()
             .cloned()
             .unwrap_or_default();
-        assert!(body.contains("<|im_start|>"), "special chat tokens must survive prompt decode");
-        assert!(body.contains("<|im_end|>"), "end markers must survive prompt decode");
+        assert!(
+            body.contains("<|im_start|>"),
+            "special chat tokens must survive prompt decode"
+        );
+        assert!(
+            body.contains("<|im_end|>"),
+            "end markers must survive prompt decode"
+        );
     }
 
     #[test]
@@ -929,7 +964,10 @@ mod tests {
             .first()
             .cloned()
             .unwrap_or_default();
-        assert!(body.contains("\"n_predict\":32"), "external backend should request a larger completion chunk");
+        assert!(
+            body.contains("\"n_predict\":32"),
+            "external backend should request a larger completion chunk"
+        );
     }
 
     #[test]
@@ -956,10 +994,7 @@ mod tests {
             None,
         );
 
-        assert_eq!(
-            emitted_text,
-            "<think>\nStep 1: add 2 and 2.\n</think>\n4"
-        );
+        assert_eq!(emitted_text, "<think>\nStep 1: add 2 and 2.\n</think>\n4");
     }
 
     #[test]

@@ -85,7 +85,10 @@ pub(super) fn compute_catalog_fingerprint(models_dir: &Path) -> Result<u64, Cata
     Ok(hasher.finish())
 }
 
-fn resolve_entry_family(stem: &str, metadata: Option<&ModelMetadata>) -> crate::prompting::PromptFamily {
+fn resolve_entry_family(
+    stem: &str,
+    metadata: Option<&ModelMetadata>,
+) -> crate::prompting::PromptFamily {
     metadata
         .and_then(ModelMetadata::declared_family)
         .unwrap_or_else(|| infer_family_from_filename(stem))
@@ -152,8 +155,14 @@ fn collect_gguf_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), CatalogE
 }
 
 fn is_catalog_relevant_file(path: &Path) -> bool {
-    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-    let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
 
     extension.eq_ignore_ascii_case("gguf")
         || file_name.eq_ignore_ascii_case("tokenizer.json")

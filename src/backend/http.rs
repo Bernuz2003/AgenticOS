@@ -1,6 +1,6 @@
 use anyhow::{Error as E, Result};
-use std::io::{Read, Write};
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
@@ -28,9 +28,9 @@ pub(crate) struct HttpEndpoint {
 
 impl HttpEndpoint {
     pub(crate) fn parse(url: &str) -> Result<Self> {
-        let stripped = url
-            .strip_prefix("http://")
-            .ok_or_else(|| E::msg("Only http:// endpoints are currently supported for external llama.cpp RPC."))?;
+        let stripped = url.strip_prefix("http://").ok_or_else(|| {
+            E::msg("Only http:// endpoints are currently supported for external llama.cpp RPC.")
+        })?;
 
         let (host_port, path) = match stripped.split_once('/') {
             Some((host_port, rest)) => (host_port, format!("/{}", rest.trim_start_matches('/'))),
@@ -48,7 +48,10 @@ impl HttpEndpoint {
         };
 
         if host.is_empty() {
-            return Err(E::msg(format!("Invalid external endpoint '{}': host is empty.", url)));
+            return Err(E::msg(format!(
+                "Invalid external endpoint '{}': host is empty.",
+                url
+            )));
         }
 
         Ok(Self {
@@ -90,15 +93,25 @@ impl HttpEndpoint {
         options: HttpRequestOptions<'_>,
     ) -> Result<HttpJsonResponse> {
         let addr = format!("{}:{}", self.host, self.port);
-        let mut addrs = addr
-            .to_socket_addrs()
-            .map_err(|e| E::msg(format!("Failed to resolve external RPC endpoint '{}': {}", addr, e)))?;
-        let socket_addr = addrs
-            .next()
-            .ok_or_else(|| E::msg(format!("No address resolved for external RPC endpoint '{}'.", addr)))?;
+        let mut addrs = addr.to_socket_addrs().map_err(|e| {
+            E::msg(format!(
+                "Failed to resolve external RPC endpoint '{}': {}",
+                addr, e
+            ))
+        })?;
+        let socket_addr = addrs.next().ok_or_else(|| {
+            E::msg(format!(
+                "No address resolved for external RPC endpoint '{}'.",
+                addr
+            ))
+        })?;
         let timeout = Duration::from_millis(options.timeout_ms);
-        let mut stream = TcpStream::connect_timeout(&socket_addr, timeout)
-            .map_err(|e| E::msg(format!("Failed to connect to external RPC endpoint '{}': {}", addr, e)))?;
+        let mut stream = TcpStream::connect_timeout(&socket_addr, timeout).map_err(|e| {
+            E::msg(format!(
+                "Failed to connect to external RPC endpoint '{}': {}",
+                addr, e
+            ))
+        })?;
         stream
             .set_read_timeout(Some(timeout))
             .map_err(|e| E::msg(format!("Failed to configure read timeout: {}", e)))?;
@@ -133,12 +146,7 @@ impl HttpEndpoint {
         }
         let request = format!(
             "{} {} HTTP/1.1\r\nHost: {}\r\n{}{}Connection: close\r\n\r\n{}",
-            method,
-            path,
-            self.host,
-            content_header,
-            extra_header_block,
-            request_body
+            method, path, self.host, content_header, extra_header_block, request_body
         );
         stream
             .write_all(request.as_bytes())

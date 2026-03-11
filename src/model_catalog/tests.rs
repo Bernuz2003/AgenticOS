@@ -1,5 +1,6 @@
 use super::metadata::{parse_gguf_metadata_map, parse_tokenizer_metadata_json};
 use super::*;
+use agentic_control_models::{ModelCatalogSnapshot, ModelInfoResponse};
 use candle_core::quantized::gguf_file;
 use std::collections::HashMap;
 use std::fs;
@@ -8,10 +9,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn family_inference_from_name() {
-    assert_eq!(metadata::infer_family_from_filename("Meta-Llama-3-8B"), PromptFamily::Llama);
-    assert_eq!(metadata::infer_family_from_filename("Qwen2.5-14B"), PromptFamily::Qwen);
-    assert_eq!(metadata::infer_family_from_filename("Mistral-7B"), PromptFamily::Mistral);
-    assert_eq!(metadata::infer_family_from_filename("unknown"), PromptFamily::Unknown);
+    assert_eq!(
+        metadata::infer_family_from_filename("Meta-Llama-3-8B"),
+        PromptFamily::Llama
+    );
+    assert_eq!(
+        metadata::infer_family_from_filename("Qwen2.5-14B"),
+        PromptFamily::Qwen
+    );
+    assert_eq!(
+        metadata::infer_family_from_filename("Mistral-7B"),
+        PromptFamily::Mistral
+    );
+    assert_eq!(
+        metadata::infer_family_from_filename("unknown"),
+        PromptFamily::Unknown
+    );
 }
 
 #[test]
@@ -38,7 +51,9 @@ fn discovers_models_recursively_in_family_subdirs() {
         .iter()
         .find(|entry| entry.family == PromptFamily::Llama)
         .expect("llama entry present");
-    assert!(llama.id.contains("llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M"));
+    assert!(llama
+        .id
+        .contains("llama3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M"));
     assert!(llama
         .tokenizer_path
         .as_ref()
@@ -71,7 +86,10 @@ fn metadata_sidecar_overrides_family_and_exposes_capabilities() {
     let entry = catalog.entries.first().expect("one entry");
     assert_eq!(entry.family, PromptFamily::Qwen);
     assert_eq!(
-        entry.metadata.as_ref().and_then(|meta| meta.backend_preference.as_deref()),
+        entry
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.backend_preference.as_deref()),
         Some("external-llamacpp")
     );
     assert!(entry
@@ -98,7 +116,10 @@ fn parse_gguf_metadata_extracts_architecture_and_template() {
     let parsed = parse_gguf_metadata_map(&metadata_map).expect("gguf metadata parsed");
     assert_eq!(parsed.family.as_deref(), Some("Qwen"));
     assert_eq!(parsed.architecture.as_deref(), Some("qwen2"));
-    assert_eq!(parsed.chat_template.as_deref(), Some("<{role}>{content}</{role}>"));
+    assert_eq!(
+        parsed.chat_template.as_deref(),
+        Some("<{role}>{content}</{role}>")
+    );
 }
 
 #[test]
@@ -115,8 +136,14 @@ fn parse_tokenizer_metadata_extracts_special_tokens() {
     .expect("tokenizer metadata parsed");
 
     let special_tokens = parsed.special_tokens.expect("special tokens present");
-    assert_eq!(special_tokens.get("eos").map(String::as_str), Some("<|endoftext|>"));
-    assert_eq!(special_tokens.get("im_end").map(String::as_str), Some("<|im_end|>"));
+    assert_eq!(
+        special_tokens.get("eos").map(String::as_str),
+        Some("<|endoftext|>")
+    );
+    assert_eq!(
+        special_tokens.get("im_end").map(String::as_str),
+        Some("<|im_end|>")
+    );
     assert!(parsed
         .stop_markers
         .as_ref()
@@ -220,12 +247,16 @@ fn resolve_load_target_prefers_model_id_even_if_contains_slash() {
 
 #[test]
 fn parse_and_infer_workload() {
-    let (hint, stripped) = super::workload::parse_workload_hint("capability=code; scrivi parser rust");
+    let (hint, stripped) =
+        super::workload::parse_workload_hint("capability=code; scrivi parser rust");
     assert_eq!(hint, Some(WorkloadClass::Code));
     assert_eq!(stripped, "scrivi parser rust");
 
     assert_eq!(infer_workload_class("rispondi breve"), WorkloadClass::Fast);
-    assert_eq!(infer_workload_class("ragiona su questo problema"), WorkloadClass::Reasoning);
+    assert_eq!(
+        infer_workload_class("ragiona su questo problema"),
+        WorkloadClass::Reasoning
+    );
 }
 
 #[test]
@@ -245,13 +276,11 @@ fn format_list_json_exposes_models_and_routing() {
     let first_id = catalog.entries[0].id.clone();
     catalog.set_selected(&first_id).expect("select first model");
 
-    let payload: serde_json::Value = serde_json::from_str(&catalog.format_list_json()).expect("json payload");
-    assert_eq!(payload["total_models"].as_u64(), Some(2));
-    assert!(payload["models"].as_array().map(|items| !items.is_empty()).unwrap_or(false));
-    assert!(payload["routing_recommendations"]
-        .as_array()
-        .map(|items| !items.is_empty())
-        .unwrap_or(false));
+    let payload: ModelCatalogSnapshot =
+        serde_json::from_str(&catalog.format_list_json()).expect("json payload");
+    assert_eq!(payload.total_models, 2);
+    assert!(!payload.models.is_empty());
+    assert!(!payload.routing_recommendations.is_empty());
 
     let _ = fs::remove_dir_all(base);
 }
@@ -275,22 +304,29 @@ fn format_list_json_exposes_routing_source_and_score() {
     .expect("write metadata");
 
     let catalog = ModelCatalog::discover(&models).expect("discover models");
-    let payload: serde_json::Value =
+    let payload: ModelCatalogSnapshot =
         serde_json::from_str(&catalog.format_list_json()).expect("json payload");
-    let code_route = payload["routing_recommendations"]
-        .as_array()
-        .and_then(|items| items.iter().find(|item| item["workload"].as_str() == Some("code")))
+    let code_route = payload
+        .routing_recommendations
+        .iter()
+        .find(|item| item.workload == "code")
         .expect("code route present");
 
-    assert_eq!(code_route["source"].as_str(), Some("metadata-capability"));
-    assert_eq!(code_route["capability_key"].as_str(), Some("code"));
-    assert_eq!(code_route["backend_preference"].as_str(), Some("external-llamacpp"));
-    assert_eq!(code_route["resolved_backend"].as_str(), Some("candle.quantized_qwen2"));
+    assert_eq!(code_route.source, "metadata-capability");
+    assert_eq!(code_route.capability_key.as_deref(), Some("code"));
     assert_eq!(
-        code_route["driver_resolution_source"].as_str(),
-        Some("metadata-preference-fallback")
+        code_route.backend_preference.as_deref(),
+        Some("external-llamacpp")
     );
-    assert_eq!(code_route["capability_score"].as_f64(), Some(0.93));
+    assert_eq!(
+        code_route.resolved_backend.as_deref(),
+        Some("candle.quantized_qwen2")
+    );
+    assert_eq!(
+        code_route.driver_resolution_source,
+        "metadata-preference-fallback"
+    );
+    assert_eq!(code_route.capability_score, Some(0.93));
 
     let _ = fs::remove_dir_all(base);
 }
@@ -303,22 +339,24 @@ fn format_info_json_exposes_unresolved_driver_when_no_loadable_backend_exists() 
 
     fs::create_dir_all(&mistral_dir).expect("create mistral dir");
     fs::write(mistral_dir.join("mistral.gguf"), b"stub").expect("write model");
-    fs::write(mistral_dir.join("metadata.json"), r#"{ "family": "Mistral" }"#)
-        .expect("write metadata");
+    fs::write(
+        mistral_dir.join("metadata.json"),
+        r#"{ "family": "Mistral" }"#,
+    )
+    .expect("write metadata");
 
     let catalog = ModelCatalog::discover(&models).expect("discover models");
-    let info: serde_json::Value = serde_json::from_str(
+    let info: ModelInfoResponse = serde_json::from_str(
         &catalog
             .format_info_json("mistral-7b/mistral")
             .expect("model info"),
     )
     .expect("json info");
 
-    assert_eq!(info["resolved_backend"], serde_json::Value::Null);
-    assert_eq!(info["driver_resolution_source"].as_str(), Some("unresolved"));
-    assert!(info["driver_resolution_rationale"]
-        .as_str()
-        .unwrap_or_default()
+    assert_eq!(info.resolved_backend, None);
+    assert_eq!(info.driver_resolution_source, "unresolved");
+    assert!(info
+        .driver_resolution_rationale
         .contains("No registered loadable driver"));
 
     let _ = fs::remove_dir_all(base);
@@ -339,20 +377,17 @@ fn format_info_json_exposes_unresolved_driver_for_unsupported_architecture() {
     .expect("write metadata");
 
     let catalog = ModelCatalog::discover(&models).expect("discover models");
-    let info: serde_json::Value = serde_json::from_str(
+    let info: ModelInfoResponse = serde_json::from_str(
         &catalog
             .format_info_json("qwen3.5-9b/model")
             .expect("model info"),
     )
     .expect("json info");
 
-    assert_eq!(info["architecture"].as_str(), Some("qwen35"));
-    assert_eq!(info["resolved_backend"], serde_json::Value::Null);
-    assert_eq!(info["driver_resolution_source"].as_str(), Some("unresolved"));
-    assert!(info["driver_resolution_rationale"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("qwen35"));
+    assert_eq!(info.architecture.as_deref(), Some("qwen35"));
+    assert_eq!(info.resolved_backend, None);
+    assert_eq!(info.driver_resolution_source, "unresolved");
+    assert!(info.driver_resolution_rationale.contains("qwen35"));
 
     let _ = fs::remove_dir_all(base);
 }

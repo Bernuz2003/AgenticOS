@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #1a2a2a;
+  background:
+    radial-gradient(circle at top left, rgba(255, 196, 127, 0.22), transparent 28%),
+    radial-gradient(circle at top right, rgba(127, 210, 255, 0.18), transparent 24%),
+    linear-gradient(180deg, #f5efe2 0%, #f2f6f4 46%, #e9f0f4 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+@layer components {
+  .panel-surface {
+    @apply rounded-[28px] border border-slate-950/5 bg-white/70 shadow-halo backdrop-blur-xl;
+  }
+
+  .status-pill {
+    @apply inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em];
+  }
+
+  .markdown-body {
+    @apply text-sm leading-7 text-slate-700;
+  }
+
+  .markdown-body p {
+    @apply my-3;
+  }
+
+  .markdown-body ul {
+    @apply my-3 list-disc pl-6;
+  }
+
+  .markdown-body ol {
+    @apply my-3 list-decimal pl-6;
+  }
+
+  .markdown-body li {
+    @apply my-1;
+  }
+
+  .markdown-body pre {
+    @apply my-4 overflow-x-auto rounded-2xl bg-slate-950 p-4 text-slate-100;
+  }
+
+  .markdown-body code {
+    @apply rounded bg-slate-100 px-1.5 py-0.5 text-[0.92em] text-slate-900;
+  }
+
+  .markdown-body pre code {
+    @apply bg-transparent p-0 text-slate-100;
+  }
+
+  .markdown-body a {
+    @apply text-cyan-700 underline underline-offset-2;
+  }
+}

@@ -145,11 +145,10 @@ pub fn save_checkpoint(snapshot: &KernelSnapshot, path: &Path) -> Result<String,
     fs::write(&tmp_path, json.as_bytes())
         .map_err(|e| format!("write tmp checkpoint failed: {}", e))?;
 
-    fs::rename(&tmp_path, path)
-        .map_err(|e| {
-            let _ = fs::remove_file(&tmp_path);
-            format!("atomic rename failed: {}", e)
-        })?;
+    fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("atomic rename failed: {}", e)
+    })?;
 
     Ok(format!(
         "checkpoint saved: {} ({} bytes)",
@@ -163,8 +162,7 @@ pub fn load_checkpoint(path: &Path) -> Result<KernelSnapshot, String> {
     let data = fs::read_to_string(path)
         .map_err(|e| format!("cannot read checkpoint {:?}: {}", path, e))?;
 
-    serde_json::from_str(&data)
-        .map_err(|e| format!("corrupt checkpoint {:?}: {}", path, e))
+    serde_json::from_str(&data).map_err(|e| format!("corrupt checkpoint {:?}: {}", path, e))
 }
 
 /// Generate an ISO-8601-ish UTC timestamp string.
@@ -180,7 +178,9 @@ pub fn now_timestamp() -> String {
 // ── Snapshot builders (called from commands) ────────────────────────────
 
 /// Build a `SchedulerStateSnapshot` from the live `ProcessScheduler`.
-pub fn snapshot_scheduler(scheduler: &crate::scheduler::ProcessScheduler) -> SchedulerStateSnapshot {
+pub fn snapshot_scheduler(
+    scheduler: &crate::scheduler::ProcessScheduler,
+) -> SchedulerStateSnapshot {
     let entries = scheduler
         .registered_pids()
         .into_iter()
@@ -250,15 +250,17 @@ pub fn build_kernel_snapshot(
                 .into_iter()
                 .filter(|pid| !live_pids.contains(pid))
                 .filter_map(|pid| {
-                    scheduler.restored_process(pid).map(|metadata| ProcessSnapshot {
-                        pid,
-                        owner_id: metadata.owner_id,
-                        state: metadata.state.clone(),
-                        token_count: metadata.token_count,
-                        max_tokens: metadata.max_tokens,
-                        context_policy: metadata.context_policy.clone(),
-                        context_state: metadata.context_state.clone(),
-                    })
+                    scheduler
+                        .restored_process(pid)
+                        .map(|metadata| ProcessSnapshot {
+                            pid,
+                            owner_id: metadata.owner_id,
+                            state: metadata.state.clone(),
+                            token_count: metadata.token_count,
+                            max_tokens: metadata.max_tokens,
+                            context_policy: metadata.context_policy.clone(),
+                            context_state: metadata.context_state.clone(),
+                        })
                 }),
         );
         let cfg = engine.generation_config();
@@ -275,15 +277,17 @@ pub fn build_kernel_snapshot(
                 .restored_pids()
                 .into_iter()
                 .filter_map(|pid| {
-                    scheduler.restored_process(pid).map(|metadata| ProcessSnapshot {
-                        pid,
-                        owner_id: metadata.owner_id,
-                        state: metadata.state.clone(),
-                        token_count: metadata.token_count,
-                        max_tokens: metadata.max_tokens,
-                        context_policy: metadata.context_policy.clone(),
-                        context_state: metadata.context_state.clone(),
-                    })
+                    scheduler
+                        .restored_process(pid)
+                        .map(|metadata| ProcessSnapshot {
+                            pid,
+                            owner_id: metadata.owner_id,
+                            state: metadata.state.clone(),
+                            token_count: metadata.token_count,
+                            max_tokens: metadata.max_tokens,
+                            context_policy: metadata.context_policy.clone(),
+                            context_state: metadata.context_state.clone(),
+                        })
                 })
                 .collect(),
             None,
@@ -394,10 +398,7 @@ mod tests {
         assert_eq!(restored.scheduler.entries[0].priority, "high");
         assert_eq!(restored.metrics.total_commands, 42);
         assert_eq!(restored.memory.total_blocks, 256);
-        assert_eq!(
-            restored.generation.as_ref().unwrap().temperature,
-            0.7
-        );
+        assert_eq!(restored.generation.as_ref().unwrap().temperature, 0.7);
     }
 
     #[test]

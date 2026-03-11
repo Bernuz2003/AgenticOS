@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::swap::SwapManager;
 use super::types::{ContextSlotId, MemoryConfig, MemorySnapshot, SwapEvent};
@@ -69,7 +69,9 @@ impl NeuralMemory {
             slot_table: HashMap::new(),
             pid_to_slot: HashMap::new(),
             pid_token_slots: HashMap::new(),
-            token_slot_quota_per_pid: crate::config::kernel_config().memory.token_slot_quota_per_pid,
+            token_slot_quota_per_pid: crate::config::kernel_config()
+                .memory
+                .token_slot_quota_per_pid,
             counters: MemoryCounters::default(),
             active: true,
             swap: SwapManager::new(),
@@ -99,7 +101,11 @@ impl NeuralMemory {
         self.token_slot_quota_per_pid = quota.max(1);
     }
 
-    pub fn register_process(&mut self, pid: u64, token_slots: usize) -> Result<ContextSlotId, MemoryError> {
+    pub fn register_process(
+        &mut self,
+        pid: u64,
+        token_slots: usize,
+    ) -> Result<ContextSlotId, MemoryError> {
         if !self.active {
             return Ok(0);
         }
@@ -134,7 +140,10 @@ impl NeuralMemory {
 
     pub fn release_process(&mut self, pid: u64) -> Result<String, MemoryError> {
         if !self.active {
-            return Ok(format!("NeuralMemory disabled: release skipped for PID {}", pid));
+            return Ok(format!(
+                "NeuralMemory disabled: release skipped for PID {}",
+                pid
+            ));
         }
 
         self.swap.remove_waiting(pid);
@@ -148,7 +157,11 @@ impl NeuralMemory {
     }
 
     #[allow(dead_code)]
-    pub fn write_for_pid_bytes(&mut self, pid: u64, raw_data: &[u8]) -> Result<String, MemoryError> {
+    pub fn write_for_pid_bytes(
+        &mut self,
+        pid: u64,
+        raw_data: &[u8],
+    ) -> Result<String, MemoryError> {
         self.write_for_pid_bytes_with_backend(pid, raw_data, None)
     }
 
@@ -230,6 +243,31 @@ impl NeuralMemory {
         events
     }
 
+    pub fn restore_swapped_pid(
+        &mut self,
+        pid: u64,
+        slot_id: ContextSlotId,
+        swap_path: Option<&Path>,
+    ) -> Result<String, MemoryError> {
+        let Some(path) = swap_path else {
+            return Ok(format!(
+                "swap completion for PID {} had no persisted payload",
+                pid
+            ));
+        };
+
+        let raw = std::fs::read(path).map_err(|err| {
+            MemoryError::Swap(format!(
+                "failed to read swap payload for PID {} from {:?}: {}",
+                pid, path, err
+            ))
+        })?;
+
+        let detail = self.write_slot_bytes(slot_id, &raw)?;
+        let _ = std::fs::remove_file(path);
+        Ok(format!("{} restored_from={}", detail, path.display()))
+    }
+
     pub fn alloc_slot(&mut self) -> ContextSlotId {
         let id = self.next_slot_id;
         self.next_slot_id += 1;
@@ -244,7 +282,11 @@ impl NeuralMemory {
         id
     }
 
-    pub fn write_slot_bytes(&mut self, slot_id: ContextSlotId, raw_data: &[u8]) -> Result<String, MemoryError> {
+    pub fn write_slot_bytes(
+        &mut self,
+        slot_id: ContextSlotId,
+        raw_data: &[u8],
+    ) -> Result<String, MemoryError> {
         if !self.active {
             return Ok(format!(
                 "NeuralMemory disabled: write skipped for slot {} ({} bytes)",
@@ -278,13 +320,17 @@ impl NeuralMemory {
             let recovered = self.evict_lru_until_fit(blocks_needed, Some(slot_id));
             if !recovered {
                 self.counters.oom_events += 1;
-                return Err(MemoryError::OutOfMemory { detail: "Not enough GPU blocks".into() });
+                return Err(MemoryError::OutOfMemory {
+                    detail: "Not enough GPU blocks".into(),
+                });
             }
         }
 
         if self.free_blocks.len() < blocks_needed {
             self.counters.oom_events += 1;
-            return Err(MemoryError::OutOfMemory { detail: "Not enough GPU blocks".into() });
+            return Err(MemoryError::OutOfMemory {
+                detail: "Not enough GPU blocks".into(),
+            });
         }
 
         for _ in 0..blocks_needed {
@@ -299,15 +345,16 @@ impl NeuralMemory {
 
         Ok(format!(
             "Written {} floats into slot {} across {} blocks",
-            element_count,
-            slot_id,
-            blocks_needed
+            element_count, slot_id, blocks_needed
         ))
     }
 
     pub fn release_slot(&mut self, slot_id: ContextSlotId) -> Result<String, MemoryError> {
         if !self.active {
-            return Ok(format!("NeuralMemory disabled: release skipped for slot {}", slot_id));
+            return Ok(format!(
+                "NeuralMemory disabled: release skipped for slot {}",
+                slot_id
+            ));
         }
 
         let slot = self
@@ -332,7 +379,10 @@ impl NeuralMemory {
 
         self.lru_order.retain(|&current| current != slot_id);
 
-        Ok(format!("Released slot {} ({} blocks)", slot_id, released_blocks))
+        Ok(format!(
+            "Released slot {} ({} blocks)",
+            slot_id, released_blocks
+        ))
     }
 
     #[allow(dead_code)]
@@ -341,7 +391,11 @@ impl NeuralMemory {
     }
 
     #[allow(dead_code)]
-    pub fn write_from_bytes(&mut self, id: ContextSlotId, raw_data: &[u8]) -> Result<String, MemoryError> {
+    pub fn write_from_bytes(
+        &mut self,
+        id: ContextSlotId,
+        raw_data: &[u8],
+    ) -> Result<String, MemoryError> {
         self.write_slot_bytes(id, raw_data)
     }
 
@@ -349,8 +403,6 @@ impl NeuralMemory {
     pub fn release_tensor(&mut self, id: ContextSlotId) -> Result<String, MemoryError> {
         self.release_slot(id)
     }
-
-
 }
 
 #[cfg(test)]
@@ -555,7 +607,10 @@ mod tests {
         let mut completed = false;
         for _ in 0..50 {
             let events = mem.poll_swap_events();
-            if events.iter().any(|ev| ev.pid == 1 && ev.slot_id != 0 && ev.success) {
+            if events
+                .iter()
+                .any(|ev| ev.pid == 1 && ev.slot_id != 0 && ev.success)
+            {
                 completed = true;
                 break;
             }
@@ -613,14 +668,9 @@ mod tests {
         let base = PathBuf::from(format!("workspace/test_swap_io_{}", now_ns));
         fs::create_dir_all(&base).expect("create base dir");
 
-        let final_path = SwapManager::persist_payload(
-            &base,
-            7,
-            11,
-            "candle.quantized_llama",
-            b"abc123",
-        )
-            .expect("persist payload");
+        let final_path =
+            SwapManager::persist_payload(&base, 7, 11, "candle.quantized_llama", b"abc123")
+                .expect("persist payload");
         assert!(final_path.exists());
 
         let tmp_path = final_path.with_extension("tmp");

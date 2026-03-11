@@ -2,12 +2,22 @@ use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::kernel_config;
+use serde::Serialize;
 
 use super::path_guard::workspace_root;
 use super::policy::SandboxMode;
 
-fn sanitize_log_value(value: &str) -> String {
-    value.replace('\n', "\\n").replace('\r', "")
+#[derive(Serialize)]
+struct AuditLogLine<'a> {
+    format: &'static str,
+    ts_ms: u128,
+    pid: u64,
+    mode: &'a str,
+    success: bool,
+    kill: bool,
+    duration_ms: u128,
+    cmd: &'a str,
+    detail: &'a str,
 }
 
 pub(crate) fn append_audit_log(
@@ -29,17 +39,24 @@ pub(crate) fn append_audit_log(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Duration::from_secs(0))
         .as_millis();
-    let line = format!(
-        "ts_ms={} pid={} mode={:?} success={} kill={} duration_ms={} cmd=\"{}\" detail=\"{}\"\n",
-        ts,
+    let mode_label = format!("{mode:?}");
+    let line = serde_json::to_string(&AuditLogLine {
+        format: "jsonl-v1",
+        ts_ms: ts,
         pid,
-        mode,
+        mode: &mode_label,
         success,
-        should_kill,
+        kill: should_kill,
         duration_ms,
-        sanitize_log_value(command),
-        sanitize_log_value(detail),
-    );
+        cmd: command,
+        detail,
+    })
+    .unwrap_or_else(|_| {
+        format!(
+            "{{\"format\":\"jsonl-v1\",\"ts_ms\":{},\"pid\":{},\"mode\":\"{:?}\",\"success\":{},\"kill\":{},\"duration_ms\":{},\"cmd\":{:?},\"detail\":{:?}}}",
+            ts, pid, mode, success, should_kill, duration_ms, command, detail
+        )
+    }) + "\n";
 
     let _ = fs::OpenOptions::new()
         .create(true)

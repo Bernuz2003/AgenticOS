@@ -79,10 +79,8 @@ impl ModelCatalog {
         }
 
         let selected = self.selected_id.clone();
-        let mut newer = ModelCatalog::discover_with_fingerprint(
-            self.models_dir.clone(),
-            latest_fingerprint,
-        )?;
+        let mut newer =
+            ModelCatalog::discover_with_fingerprint(self.models_dir.clone(), latest_fingerprint)?;
         if let Some(sel) = selected {
             if newer.entries.iter().any(|entry| entry.id == sel) {
                 newer.selected_id = Some(sel);

@@ -16,6 +16,9 @@ use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use agentic_control_models::KernelEvent;
+use agentic_protocol::ControlErrorCode;
+
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
@@ -45,19 +48,22 @@ pub fn execute_command(
     shutdown_requested: &Arc<AtomicBool>,
     in_flight: &HashSet<u64>,
     pending_kills: &mut Vec<u64>,
+    pending_events: &mut Vec<KernelEvent>,
     metrics: &mut MetricsState,
     auth_token: &str,
 ) {
     let request_id = client.allocate_request_id(&header.agent_id);
 
     // ── C3: Auth gate — only AUTH and PING allowed before authentication ──
-    if !client.authenticated && !matches!(header.opcode, OpCode::Auth | OpCode::Ping | OpCode::Hello) {
+    if !client.authenticated
+        && !matches!(header.opcode, OpCode::Auth | OpCode::Ping | OpCode::Hello)
+    {
         client
             .output_buffer
-            .extend(crate::protocol::response_protocol_err(
+            .extend(crate::protocol::response_protocol_err_typed(
                 client,
                 &request_id,
-                "AUTH_REQUIRED",
+                ControlErrorCode::AuthRequired,
                 crate::protocol::schema::ERROR,
                 "Authenticate first with AUTH <token>",
             ));
@@ -89,10 +95,10 @@ pub fn execute_command(
                 Some("OK"),
             )
         } else {
-            crate::protocol::response_protocol_err(
+            crate::protocol::response_protocol_err_typed(
                 client,
                 &request_id,
-                "AUTH_FAILED",
+                ControlErrorCode::AuthFailed,
                 crate::protocol::schema::ERROR,
                 "Invalid auth token",
             )
@@ -119,39 +125,51 @@ pub fn execute_command(
         shutdown_requested,
         in_flight,
         pending_kills,
+        pending_events,
         metrics,
     };
 
     // Handlers that may write directly to client.output_buffer and return None.
     let response = match header.opcode {
-        OpCode::Ping => misc::handle_ping(&mut ctx),
-        OpCode::Load => model::handle_load(&mut ctx, &payload),
-        OpCode::ListModels => model::handle_list_models(&mut ctx),
-        OpCode::SelectModel => model::handle_select_model(&mut ctx, &payload),
-        OpCode::ModelInfo => model::handle_model_info(&mut ctx, &payload),
-        OpCode::BackendDiag => model::handle_backend_diag(&mut ctx),
+        OpCode::Ping => misc::handle_ping(ctx.misc_view()),
+        OpCode::Subscribe => misc::handle_subscribe(ctx.misc_view()),
+        OpCode::Load => model::handle_load(ctx.model_view(), &payload),
+        OpCode::ListModels => model::handle_list_models(ctx.model_view()),
+        OpCode::SelectModel => model::handle_select_model(ctx.model_view(), &payload),
+        OpCode::ModelInfo => model::handle_model_info(ctx.model_view(), &payload),
+        OpCode::BackendDiag => model::handle_backend_diag(ctx.model_view()),
         OpCode::Exec => {
-            if let Some(r) = exec::handle_exec(&mut ctx, &payload) { r } else { return; }
+            if let Some(r) = exec::handle_exec(ctx.exec_view(), &payload) {
+                r
+            } else {
+                return;
+            }
         }
-        OpCode::Status => status::handle_status(&mut ctx, &payload),
-        OpCode::Term => process_cmd::handle_term(&mut ctx, &payload),
-        OpCode::Kill => process_cmd::handle_kill(&mut ctx, &payload),
-        OpCode::Shutdown => misc::handle_shutdown(&mut ctx),
-        OpCode::SetGen => misc::handle_set_gen(&mut ctx, &payload),
-        OpCode::GetGen => misc::handle_get_gen(&mut ctx),
-        OpCode::MemoryWrite => memory_cmd::handle_memory_write(&mut ctx, &payload),
-        OpCode::SetPriority => scheduler_cmd::handle_set_priority(&mut ctx, &payload),
-        OpCode::GetQuota => scheduler_cmd::handle_get_quota(&mut ctx, &payload),
-        OpCode::SetQuota => scheduler_cmd::handle_set_quota(&mut ctx, &payload),
-        OpCode::Checkpoint => checkpoint_cmd::handle_checkpoint(&mut ctx, &payload),
-        OpCode::Restore => checkpoint_cmd::handle_restore(&mut ctx, &payload),
+        OpCode::Status => status::handle_status(ctx.status_view(), &payload),
+        OpCode::Term => process_cmd::handle_term(ctx.process_view(), &payload),
+        OpCode::Kill => process_cmd::handle_kill(ctx.process_view(), &payload),
+        OpCode::Shutdown => misc::handle_shutdown(ctx.misc_view()),
+        OpCode::SetGen => misc::handle_set_gen(ctx.misc_view(), &payload),
+        OpCode::GetGen => misc::handle_get_gen(ctx.misc_view()),
+        OpCode::MemoryWrite => memory_cmd::handle_memory_write(ctx.memory_view(), &payload),
+        OpCode::SetPriority => scheduler_cmd::handle_set_priority(ctx.scheduler_view(), &payload),
+        OpCode::GetQuota => scheduler_cmd::handle_get_quota(ctx.scheduler_view(), &payload),
+        OpCode::SetQuota => scheduler_cmd::handle_set_quota(ctx.scheduler_view(), &payload),
+        OpCode::Checkpoint => checkpoint_cmd::handle_checkpoint(ctx.checkpoint_view(), &payload),
+        OpCode::Restore => checkpoint_cmd::handle_restore(ctx.checkpoint_view(), &payload),
         OpCode::Orchestrate => {
-            if let Some(r) = orchestration_cmd::handle_orchestrate(&mut ctx, &payload) { r } else { return; }
+            if let Some(r) =
+                orchestration_cmd::handle_orchestrate(ctx.orchestration_view(), &payload)
+            {
+                r
+            } else {
+                return;
+            }
         }
-        OpCode::ListTools => tools_cmd::handle_list_tools(&mut ctx),
-        OpCode::RegisterTool => tools_cmd::handle_register_tool(&mut ctx, &payload),
-        OpCode::ToolInfo => tools_cmd::handle_tool_info(&mut ctx, &payload),
-        OpCode::UnregisterTool => tools_cmd::handle_unregister_tool(&mut ctx, &payload),
+        OpCode::ListTools => tools_cmd::handle_list_tools(ctx.tools_view()),
+        OpCode::RegisterTool => tools_cmd::handle_register_tool(ctx.tools_view(), &payload),
+        OpCode::ToolInfo => tools_cmd::handle_tool_info(ctx.tools_view(), &payload),
+        OpCode::UnregisterTool => tools_cmd::handle_unregister_tool(ctx.tools_view(), &payload),
         OpCode::Hello => unreachable!("HELLO handled above"),
         OpCode::Auth => unreachable!("AUTH handled above"),
     };

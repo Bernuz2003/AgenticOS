@@ -232,7 +232,10 @@ fn best_effort_skips_dependents_of_failed() {
     let (ready, kill_pids) = orch.advance();
     assert!(kill_pids.is_empty());
     assert!(ready.is_empty());
-    assert!(matches!(orch.get(id).unwrap().status["D"], TaskStatus::Skipped));
+    assert!(matches!(
+        orch.get(id).unwrap().status["D"],
+        TaskStatus::Skipped
+    ));
     assert!(orch.get(id).unwrap().is_finished());
 }
 
@@ -282,7 +285,9 @@ fn unknown_dependency_rejected() {
         failure_policy: FailurePolicy::FailFast,
     };
     let mut orch = Orchestrator::new();
-    let err = orch.register(graph, 1).expect_err("unknown dep should fail");
+    let err = orch
+        .register(graph, 1)
+        .expect_err("unknown dep should fail");
     assert!(err.to_string().contains("unknown task"));
 }
 
@@ -345,11 +350,26 @@ fn json_default_policy_is_fail_fast() {
 
 #[test]
 fn workload_parsing() {
-    assert!(matches!(workload_from_label_or_default(Some("fast")), WorkloadClass::Fast));
-    assert!(matches!(workload_from_label_or_default(Some("CODE")), WorkloadClass::Code));
-    assert!(matches!(workload_from_label_or_default(Some("reasoning")), WorkloadClass::Reasoning));
-    assert!(matches!(workload_from_label_or_default(None), WorkloadClass::General));
-    assert!(matches!(workload_from_label_or_default(Some("unknown")), WorkloadClass::General));
+    assert!(matches!(
+        workload_from_label_or_default(Some("fast")),
+        WorkloadClass::Fast
+    ));
+    assert!(matches!(
+        workload_from_label_or_default(Some("CODE")),
+        WorkloadClass::Code
+    ));
+    assert!(matches!(
+        workload_from_label_or_default(Some("reasoning")),
+        WorkloadClass::Reasoning
+    ));
+    assert!(matches!(
+        workload_from_label_or_default(None),
+        WorkloadClass::General
+    ));
+    assert!(matches!(
+        workload_from_label_or_default(Some("unknown")),
+        WorkloadClass::General
+    ));
 }
 
 #[test]
@@ -382,7 +402,13 @@ fn append_output_truncates_and_marks_status() {
     orch.register_pid(pid_a, id, &spawns[0].task_id);
     orch.append_output(pid_a, "abcdefghijklmnopqrstuvwxyz");
 
-    let stored = orch.get(id).unwrap().output.get("A").cloned().unwrap_or_default();
+    let stored = orch
+        .get(id)
+        .unwrap()
+        .output
+        .get("A")
+        .cloned()
+        .unwrap_or_default();
     assert!(stored.contains("[TRUNCATED]"));
     assert!(orch.get(id).unwrap().truncated_outputs >= 1);
     assert!(orch.get(id).unwrap().output_chars_stored <= 24);

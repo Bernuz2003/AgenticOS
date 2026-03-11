@@ -22,8 +22,7 @@ use crate::policy::workload_from_label_or_default;
 
 use output::{append_with_cap, build_task_prompt};
 pub use types::{
-    FailurePolicy, Orchestration, Orchestrator, SpawnRequest, TaskGraphDef, TaskNodeDef,
-    TaskStatus,
+    FailurePolicy, Orchestration, Orchestrator, SpawnRequest, TaskGraphDef, TaskNodeDef, TaskStatus,
 };
 use validation::validate_and_sort;
 
@@ -175,7 +174,8 @@ impl Orchestrator {
                         *status = TaskStatus::Skipped;
                     }
                 }
-                self.pid_to_task.retain(|_, (existing_orch_id, _)| *existing_orch_id != orch_id);
+                self.pid_to_task
+                    .retain(|_, (existing_orch_id, _)| *existing_orch_id != orch_id);
                 continue;
             }
 
@@ -208,9 +208,10 @@ impl Orchestrator {
                 let Some(task) = orch.tasks.get(task_id) else {
                     continue;
                 };
-                let all_deps_done = task.deps.iter().all(|dep| {
-                    matches!(orch.status.get(dep), Some(TaskStatus::Completed))
-                });
+                let all_deps_done = task
+                    .deps
+                    .iter()
+                    .all(|dep| matches!(orch.status.get(dep), Some(TaskStatus::Completed)));
                 if !all_deps_done {
                     continue;
                 }
@@ -232,6 +233,20 @@ impl Orchestrator {
     /// Look up an orchestration by id.
     pub fn get(&self, orch_id: u64) -> Option<&Orchestration> {
         self.orchestrations.get(&orch_id)
+    }
+
+    pub fn task_binding(&self, pid: u64) -> Option<(u64, String)> {
+        self.pid_to_task.get(&pid).cloned()
+    }
+
+    pub fn active_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self
+            .orchestrations
+            .iter()
+            .filter_map(|(orch_id, orch)| (!orch.is_finished()).then_some(*orch_id))
+            .collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Format a human-readable status report for one orchestration.

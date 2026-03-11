@@ -2,15 +2,19 @@ use mio::{Interest, Poll, Token};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
+use agentic_control_models::KernelEvent;
+
 use crate::engine::LLMEngine;
 use crate::inference_worker::InferenceCmd;
 use crate::memory::NeuralMemory;
 use crate::orchestrator::Orchestrator;
 use crate::process::ProcessState;
-use crate::protocol;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
-use crate::services::process_runtime::{kill_managed_process, spawn_managed_process, ManagedProcessRequest};
+use crate::services::process_runtime::{
+    kill_managed_process, spawn_managed_process, ManagedProcessRequest,
+};
 use crate::transport::Client;
+use crate::{protocol, scheduler::CheckedOutProcessMetadata};
 
 pub(super) fn handle_finished_processes(
     engine: &mut LLMEngine,
@@ -19,6 +23,7 @@ pub(super) fn handle_finished_processes(
     poll: &Poll,
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
+    pending_events: &mut Vec<KernelEvent>,
 ) {
     let finished_pids = engine.list_finished_pids();
     for pid in finished_pids {
@@ -35,9 +40,7 @@ pub(super) fn handle_finished_processes(
                     let elapsed_secs = sched.as_ref().map(|s| s.elapsed_secs).unwrap_or(0.0);
                     let end_msg = format!(
                         "\n[PROCESS_FINISHED pid={} tokens_generated={} elapsed_secs={:.3}]\n",
-                        pid,
-                        tokens_generated,
-                        elapsed_secs,
+                        pid, tokens_generated, elapsed_secs,
                     );
                     client
                         .output_buffer
@@ -50,6 +53,21 @@ pub(super) fn handle_finished_processes(
                 }
             }
         }
+
+        let sched = scheduler.snapshot(pid);
+        pending_events.push(KernelEvent::SessionFinished {
+            pid,
+            tokens_generated: sched.as_ref().map(|s| s.tokens_generated as u64),
+            elapsed_secs: sched.as_ref().map(|s| s.elapsed_secs),
+            reason: "completed".to_string(),
+        });
+        pending_events.push(KernelEvent::WorkspaceChanged {
+            pid,
+            reason: "finished".to_string(),
+        });
+        pending_events.push(KernelEvent::LobbyChanged {
+            reason: "finished".to_string(),
+        });
 
         kill_managed_process(engine, memory, scheduler, pid);
     }
@@ -65,6 +83,7 @@ pub(super) fn advance_orchestrator(
     orchestrator: &mut Orchestrator,
     in_flight: &mut HashSet<u64>,
     pending_kills: &mut Vec<u64>,
+    pending_events: &mut Vec<KernelEvent>,
     _cmd_tx: &mpsc::Sender<InferenceCmd>,
 ) {
     let (spawn_requests, kill_pids) = orchestrator.advance();
@@ -80,7 +99,9 @@ pub(super) fn advance_orchestrator(
                 let token = Token(owner_id);
                 if let Some(client) = clients.get_mut(&token) {
                     let msg = format!("\n[ORCHESTRATOR_TASK_KILLED pid={}]\n", pid);
-                    client.output_buffer.extend(protocol::response_data(msg.as_bytes()));
+                    client
+                        .output_buffer
+                        .extend(protocol::response_data(msg.as_bytes()));
                     let _ = poll.registry().reregister(
                         &mut client.stream,
                         token,
@@ -89,6 +110,19 @@ pub(super) fn advance_orchestrator(
                 }
             }
         }
+        pending_events.push(KernelEvent::SessionFinished {
+            pid,
+            tokens_generated: None,
+            elapsed_secs: None,
+            reason: "orchestrator_killed".to_string(),
+        });
+        pending_events.push(KernelEvent::WorkspaceChanged {
+            pid,
+            reason: "orchestrator_killed".to_string(),
+        });
+        pending_events.push(KernelEvent::LobbyChanged {
+            reason: "orchestrator_killed".to_string(),
+        });
         kill_managed_process(engine, memory, scheduler, pid);
     }
 
@@ -108,6 +142,18 @@ pub(super) fn advance_orchestrator(
             Ok(spawned_process) => {
                 let pid = spawned_process.pid;
                 orchestrator.register_pid(pid, req.orch_id, &req.task_id);
+                pending_events.push(KernelEvent::SessionStarted {
+                    pid,
+                    workload: format!("{:?}", req.workload).to_lowercase(),
+                    prompt: req.prompt.clone(),
+                });
+                pending_events.push(KernelEvent::WorkspaceChanged {
+                    pid,
+                    reason: "orchestrator_spawned".to_string(),
+                });
+                pending_events.push(KernelEvent::LobbyChanged {
+                    reason: "orchestrator_spawned".to_string(),
+                });
                 tracing::info!(
                     pid,
                     orch_id = req.orch_id,
@@ -117,6 +163,9 @@ pub(super) fn advance_orchestrator(
             }
             Err(e) => {
                 orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, &e.to_string());
+                pending_events.push(KernelEvent::LobbyChanged {
+                    reason: "orchestrator_spawn_failed".to_string(),
+                });
                 tracing::error!(task_id = %req.task_id, %e, "ORCHESTRATOR: spawn failed");
             }
         }
@@ -154,6 +203,17 @@ pub(super) fn checkout_active_processes(
                     "CONTEXT: pre-step compaction applied"
                 );
             }
+            scheduler.record_checked_out_process(
+                pid,
+                CheckedOutProcessMetadata {
+                    owner_id: process.owner_id,
+                    state: "InFlight".to_string(),
+                    tokens: process.tokens.len(),
+                    index_pos: process.index_pos,
+                    max_tokens: process.max_tokens,
+                    context: process.context_status_snapshot(),
+                },
+            );
             in_flight.insert(pid);
             let _ = cmd_tx.send(InferenceCmd::Step {
                 pid,

@@ -7,10 +7,8 @@ use crate::memory::ContextSlotId;
 use crate::model_catalog::{ModelMetadata, ResolvedModelTarget};
 use crate::process::{AgentProcess, ContextPolicy, InitialContextSeed, ProcessState};
 use crate::prompting::{
-    format_interprocess_user_message_with_metadata,
-    format_system_injection_with_metadata,
-    format_user_message_with_metadata,
-    GenerationConfig,
+    format_interprocess_user_message_with_metadata, format_system_injection_with_metadata,
+    format_user_message_with_metadata, GenerationConfig,
 };
 
 use super::tokenizer::{resolve_special_tokens, resolve_tokenizer_path};
@@ -59,12 +57,9 @@ impl LLMEngine {
         tracing::info!(?tokenizer_path, "ENGINE: Using tokenizer");
         let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_path).map_err(E::msg)?;
 
-        let (eos_token_id, eot_token_id) = resolve_special_tokens(
-            &tokenizer,
-            resolved_family,
-            metadata.as_ref(),
-        )
-        .map_err(E::msg)?;
+        let (eos_token_id, eot_token_id) =
+            resolve_special_tokens(&tokenizer, resolved_family, metadata.as_ref())
+                .map_err(E::msg)?;
 
         tracing::info!(
             eos_token_id,
@@ -101,11 +96,7 @@ impl LLMEngine {
         let pid = self.next_pid;
         self.next_pid += 1;
 
-        tracing::info!(
-            pid,
-            owner_id,
-            "OS: Forking Agent Process (Zero-Copy)"
-        );
+        tracing::info!(pid, owner_id, "OS: Forking Agent Process (Zero-Copy)");
 
         let model_clone = {
             let master = self
@@ -141,11 +132,8 @@ impl LLMEngine {
             }
         };
 
-        let formatted_prompt = format_user_message_with_metadata(
-            prompt,
-            self.family,
-            self.metadata.as_ref(),
-        );
+        let formatted_prompt =
+            format_user_message_with_metadata(prompt, self.family, self.metadata.as_ref());
 
         let tokens = self
             .tokenizer
@@ -323,6 +311,18 @@ impl LLMEngine {
         model.free_context_slot(slot_id)
     }
 
+    pub fn load_context_slot(
+        &mut self,
+        slot_id: ContextSlotId,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let model = self
+            .master_model
+            .as_mut()
+            .ok_or_else(|| E::msg("Master model not loaded"))?;
+        model.load_context_slot(slot_id, path)
+    }
+
     pub fn format_system_message(&self, content: &str) -> String {
         format_system_injection_with_metadata(content, self.family, self.metadata.as_ref())
     }
@@ -355,13 +355,16 @@ mod tests {
             "qwen3.5 tokenizer must be discoverable"
         );
         assert_eq!(
-            entry.metadata.as_ref().and_then(|meta| meta.architecture.as_deref()),
+            entry
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.architecture.as_deref()),
             Some("qwen35")
         );
 
-        let err = catalog
-            .resolve_load_target(model_id)
-            .expect_err("qwen3.5 should fail generic driver resolution until a compatible backend exists");
+        let err = catalog.resolve_load_target(model_id).expect_err(
+            "qwen3.5 should fail generic driver resolution until a compatible backend exists",
+        );
         assert!(err.to_string().contains("qwen35"));
     }
 }

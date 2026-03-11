@@ -51,6 +51,7 @@ impl Default for ProtocolRuntimeConfig {
                 "tool_remote_v1".to_string(),
                 "tool_alias_compat_v1".to_string(),
                 "orchestrate_v1".to_string(),
+                "event_stream_v1".to_string(),
             ],
         }
     }
@@ -527,5 +528,7 @@ fn env_usize_opt(name: &str) -> Option<usize> {
 }
 
 fn env_string(name: &str) -> Option<String> {
-    std::env::var(name).ok().map(|value| value.trim().to_string())
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
 }

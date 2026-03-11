@@ -1,68 +1,95 @@
 use crate::protocol;
 use crate::scheduler::ProcessPriority;
+use agentic_control_models::KernelEvent;
+use agentic_protocol::ControlErrorCode;
 
-use super::context::CommandContext;
+use super::context::SchedulerCommandContext;
 use super::metrics::log_event;
 
 use serde_json::json;
 
-pub(crate) fn handle_set_priority(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_set_priority(ctx: SchedulerCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+    let SchedulerCommandContext {
+        client,
+        request_id,
+        scheduler,
+        pending_events,
+        client_id,
+    } = ctx;
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     let parts: Vec<&str> = payload_text.splitn(2, char::is_whitespace).collect();
     if parts.len() != 2 {
-        protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "SET_PRIORITY_INVALID",
+        protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::SetPriorityInvalid,
             protocol::schema::ERROR,
             "SET_PRIORITY requires: <PID> <low|normal|high|critical>",
         )
     } else if let Ok(pid) = parts[0].parse::<u64>() {
         if let Some(level) = ProcessPriority::from_str_loose(parts[1].trim()) {
-            if ctx.scheduler.set_priority(pid, level) {
-                log_event("set_priority", ctx.client_id, Some(pid), &format!("priority={}", level));
+            if scheduler.set_priority(pid, level) {
+                pending_events.push(KernelEvent::WorkspaceChanged {
+                    pid,
+                    reason: "priority_updated".to_string(),
+                });
+                log_event(
+                    "set_priority",
+                    client_id,
+                    Some(pid),
+                    &format!("priority={}", level),
+                );
                 let message = format!("PID {} priority set to {}", pid, level);
                 protocol::response_protocol_ok(
-                    ctx.client,
-                    &ctx.request_id,
+                    client,
+                    request_id,
                     "SET_PRIORITY",
                     protocol::schema::SET_PRIORITY,
                     &json!({"pid": pid, "priority": format!("{}", level)}),
                     Some(&message),
                 )
             } else {
-                protocol::response_protocol_err(
-                    ctx.client,
-                    &ctx.request_id,
-                    "PID_NOT_FOUND",
+                protocol::response_protocol_err_typed(
+                    client,
+                    request_id,
+                    ControlErrorCode::PidNotFound,
                     protocol::schema::ERROR,
                     &format!("PID {} not tracked by scheduler", pid),
                 )
             }
         } else {
-            protocol::response_protocol_err(
-                ctx.client,
-                &ctx.request_id,
-                "SET_PRIORITY_INVALID",
+            protocol::response_protocol_err_typed(
+                client,
+                request_id,
+                ControlErrorCode::SetPriorityInvalid,
                 protocol::schema::ERROR,
-                &format!("Unknown priority level '{}'. Use: low, normal, high, critical", parts[1]),
+                &format!(
+                    "Unknown priority level '{}'. Use: low, normal, high, critical",
+                    parts[1]
+                ),
             )
         }
     } else {
-        protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "SET_PRIORITY_INVALID",
+        protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::SetPriorityInvalid,
             protocol::schema::ERROR,
             "PID must be numeric",
         )
     }
 }
 
-pub(crate) fn handle_get_quota(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_get_quota(ctx: SchedulerCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+    let SchedulerCommandContext {
+        client,
+        request_id,
+        scheduler,
+        ..
+    } = ctx;
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     if let Ok(pid) = payload_text.parse::<u64>() {
-        if let Some(snap) = ctx.scheduler.snapshot(pid) {
+        if let Some(snap) = scheduler.snapshot(pid) {
             let json = json!({
                 "pid": pid,
                 "priority": format!("{}", snap.priority),
@@ -74,46 +101,53 @@ pub(crate) fn handle_get_quota(ctx: &mut CommandContext<'_>, payload: &[u8]) -> 
                 "elapsed_secs": format!("{:.2}", snap.elapsed_secs).parse::<f64>().unwrap_or(snap.elapsed_secs),
             });
             protocol::response_protocol_ok(
-                ctx.client,
-                &ctx.request_id,
+                client,
+                request_id,
                 "GET_QUOTA",
                 protocol::schema::GET_QUOTA,
                 &json,
                 Some(&json.to_string()),
             )
         } else {
-            protocol::response_protocol_err(
-                ctx.client,
-                &ctx.request_id,
-                "PID_NOT_FOUND",
+            protocol::response_protocol_err_typed(
+                client,
+                request_id,
+                ControlErrorCode::PidNotFound,
                 protocol::schema::ERROR,
                 &format!("PID {} not tracked by scheduler", pid),
             )
         }
     } else {
-        protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "GET_QUOTA_INVALID",
+        protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::GetQuotaInvalid,
             protocol::schema::ERROR,
             "GET_QUOTA requires numeric PID",
         )
     }
 }
 
-pub(crate) fn handle_set_quota(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_set_quota(ctx: SchedulerCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+    let SchedulerCommandContext {
+        client,
+        request_id,
+        scheduler,
+        pending_events,
+        client_id,
+    } = ctx;
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     let parts: Vec<&str> = payload_text.splitn(2, char::is_whitespace).collect();
     if parts.len() != 2 {
-        protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "SET_QUOTA_INVALID",
+        protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::SetQuotaInvalid,
             protocol::schema::ERROR,
             "SET_QUOTA requires: <PID> <max_tokens=N,max_syscalls=N>",
         )
     } else if let Ok(pid) = parts[0].parse::<u64>() {
-        if let Some(current) = ctx.scheduler.quota(pid).copied() {
+        if let Some(current) = scheduler.quota(pid).copied() {
             let mut new_quota = current;
             let mut parse_ok = true;
             for kv in parts[1].split(',') {
@@ -134,23 +168,36 @@ pub(crate) fn handle_set_quota(ctx: &mut CommandContext<'_>, payload: &[u8]) -> 
                                 parse_ok = false;
                             }
                         }
-                        _ => { parse_ok = false; }
+                        _ => {
+                            parse_ok = false;
+                        }
                     }
                 } else {
                     parse_ok = false;
                 }
             }
             if parse_ok {
-                ctx.scheduler.set_quota(pid, new_quota);
-                log_event("set_quota", ctx.client_id, Some(pid),
-                    &format!("max_tokens={} max_syscalls={}", new_quota.max_tokens, new_quota.max_syscalls));
+                scheduler.set_quota(pid, new_quota);
+                pending_events.push(KernelEvent::WorkspaceChanged {
+                    pid,
+                    reason: "quota_updated".to_string(),
+                });
+                log_event(
+                    "set_quota",
+                    client_id,
+                    Some(pid),
+                    &format!(
+                        "max_tokens={} max_syscalls={}",
+                        new_quota.max_tokens, new_quota.max_syscalls
+                    ),
+                );
                 let message = format!(
                     "PID {} quota updated: max_tokens={} max_syscalls={}",
                     pid, new_quota.max_tokens, new_quota.max_syscalls
                 );
                 protocol::response_protocol_ok(
-                    ctx.client,
-                    &ctx.request_id,
+                    client,
+                    request_id,
                     "SET_QUOTA",
                     protocol::schema::SET_QUOTA,
                     &json!({
@@ -161,28 +208,28 @@ pub(crate) fn handle_set_quota(ctx: &mut CommandContext<'_>, payload: &[u8]) -> 
                     Some(&message),
                 )
             } else {
-                protocol::response_protocol_err(
-                    ctx.client,
-                    &ctx.request_id,
-                    "SET_QUOTA_INVALID",
+                protocol::response_protocol_err_typed(
+                    client,
+                    request_id,
+                    ControlErrorCode::SetQuotaInvalid,
                     protocol::schema::ERROR,
                     "Invalid quota format. Use: max_tokens=N,max_syscalls=N",
                 )
             }
         } else {
-            protocol::response_protocol_err(
-                ctx.client,
-                &ctx.request_id,
-                "PID_NOT_FOUND",
+            protocol::response_protocol_err_typed(
+                client,
+                request_id,
+                ControlErrorCode::PidNotFound,
                 protocol::schema::ERROR,
                 &format!("PID {} not tracked by scheduler", pid),
             )
         }
     } else {
-        protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "SET_QUOTA_INVALID",
+        protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::SetQuotaInvalid,
             protocol::schema::ERROR,
             "PID must be numeric",
         )

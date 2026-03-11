@@ -20,7 +20,7 @@ Il dettaglio storico fine-grained vive nella git history e nei documenti di crit
 - Focus prodotto: AI workstation OS local-first, single-node
 - Test Rust: `cargo test` verde (`166 passed, 0 failed, 1 ignored`)
 - Qualita': clippy verde con `-D warnings` nell'ultima validazione M28/M29
-- GUI: PySide6 con control center per modelli/processi/memoria/orchestrazione/tooling
+- GUI: `Agent Workspace` (Tauri) come workspace primario; PySide6 in fallback diagnostico `deprecated`
 
 ---
 
@@ -87,6 +87,38 @@ Il dettaglio storico fine-grained vive nella git history e nei documenti di crit
 
 ## Prossimi task candidati (post M29)
 
+### M33) Agent Workspace (Tauri GUI Rewrite)
+**Status:** `DONE`
+
+**Perche'**
+- La GUI PySide6 attuale resta utile come fallback diagnostico, ma non e' piu' adeguata come workspace primario per osservabilita' agentica, sessioni e workflow inspection.
+
+**Target**
+- Nuova app desktop Tauri con frontend web moderno (`React + TypeScript + Tailwind`) e backend Rust come bridge TCP autenticato verso il kernel.
+- UX a due livelli: `Lobby` sessioni/agenti a card + `Workspace` con timeline interattiva e `Mind Panel` telemetrico.
+- Event model tipizzato nel bridge desktop, senza dipendere da parsing fragile del testo raw del kernel.
+- Deprecazione progressiva della GUI PySide6 solo dopo parita' minima verificata.
+
+**Slice completata**
+- Estratta la crate condivisa `crates/agentic-protocol` e primo riuso kernel-side di header/opcode/envelope/schema.
+- Scaffold iniziale creato in `apps/agent-workspace/` con shell Tauri, frontend `React + TypeScript + Tailwind`, routing `Lobby -> Workspace` e component skeleton non-demo.
+- Bridge Tauri evoluto da placeholder a client TCP persistente per `AUTH`/`HELLO`/`STATUS`, con primo snapshot Lobby agganciato ai dati reali del kernel (`active_processes`).
+- Workspace agganciata a `STATUS <pid>` per il `Mind Panel`, con polling live di budget contesto, strategy, compressions e retrieval hits.
+- CTA `Nuova sessione` collegata a `EXEC` reale via bridge Tauri, con apertura immediata della Workspace sul PID appena creato.
+- Timeline Workspace alimentata da stream `EXEC` reale per le sessioni avviate dalla nuova GUI, con buffer eventi per PID (`user_message`, chunk assistant, `PROCESS_FINISHED`).
+- Strategia di fallback introdotta per PID nati fuori dal bridge Tauri: la Workspace sintetizza una timeline degradata da `STATUS <pid>` e audit events, marcata esplicitamente come fallback.
+- Timeline assistant rifinita con renderer Markdown e autoscroll coerente; `Mind Panel` aggiornato con audit events strutturati/human-readable e feedback visuale per compaction.
+- Timeline live ora normalizza anche i marker runtime gia' esistenti per `thinking` (`<think>...</think>`) e `tool_call` (`[[...]]`), senza estendere ancora il protocollo del kernel.
+- Timeline arricchita con eventi `tool_result` di prima classe derivati dall'audit log per PID.
+- `STATUS` globale esteso con indice delle orchestration attive e payload per-PID estesi con metadata orchestration/task.
+- Lobby e Workspace rese orchestration-aware: aggregati live in Lobby e dettaglio task/policy in Workspace per PID orchestrati.
+- Validazione desktop Tauri completata con `npm exec tauri build -- --debug` dopo installazione librerie Linux richieste.
+
+**Chiusura milestone**
+- `Agent Workspace` e' ora la GUI desktop primaria del progetto.
+- PySide6 resta disponibile ma viene mantenuta come fallback diagnostico `deprecated` fino a un ulteriore ciclo operativo sul campo.
+- Resta fuori scope M33 una capability protocollo/kernel di attach o replay su stream `EXEC` gia' esistenti; il fallback `STATUS <pid>` resta il comportamento ufficiale per PID esterni al bridge.
+
 ### M30) Process-scoped Tool Permissions
 **Status:** `TODO`
 
@@ -139,6 +171,8 @@ Note: il dettaglio completo delle sub-task concluse e' mantenuto nella cronologi
 
 - Rust tests: verdi (`166 passed, 0 failed, 1 ignored`)
 - Clippy: verde (`-D warnings` su all-targets/all-features)
+- Frontend Tauri: `cd apps/agent-workspace && npm run build` verde
+- Desktop Tauri: `cd apps/agent-workspace && npm exec tauri build -- --debug` verde
 - GUI Python: `python3 -m compileall gui` verde nell'ultimo passaggio M29
 
 ---

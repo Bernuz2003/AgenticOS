@@ -11,11 +11,17 @@ pub(super) struct RoutingDecision<'a> {
     pub(super) capability_score: Option<f64>,
 }
 
-pub(super) fn select_for_workload(entries: &[ModelEntry], class: WorkloadClass) -> Option<&ModelEntry> {
+pub(super) fn select_for_workload(
+    entries: &[ModelEntry],
+    class: WorkloadClass,
+) -> Option<&ModelEntry> {
     recommend_for_workload(entries, class).entry
 }
 
-pub(super) fn recommend_for_workload(entries: &[ModelEntry], class: WorkloadClass) -> RoutingDecision<'_> {
+pub(super) fn recommend_for_workload(
+    entries: &[ModelEntry],
+    class: WorkloadClass,
+) -> RoutingDecision<'_> {
     if entries.is_empty() {
         return RoutingDecision {
             entry: None,
@@ -62,10 +68,26 @@ pub(super) fn recommend_for_workload(entries: &[ModelEntry], class: WorkloadClas
     }
 
     let family_order: &[PromptFamily] = match class {
-        WorkloadClass::Fast => &[PromptFamily::Llama, PromptFamily::Qwen, PromptFamily::Mistral],
-        WorkloadClass::Code => &[PromptFamily::Qwen, PromptFamily::Llama, PromptFamily::Mistral],
-        WorkloadClass::Reasoning => &[PromptFamily::Qwen, PromptFamily::Llama, PromptFamily::Mistral],
-        WorkloadClass::General => &[PromptFamily::Llama, PromptFamily::Qwen, PromptFamily::Mistral],
+        WorkloadClass::Fast => &[
+            PromptFamily::Llama,
+            PromptFamily::Qwen,
+            PromptFamily::Mistral,
+        ],
+        WorkloadClass::Code => &[
+            PromptFamily::Qwen,
+            PromptFamily::Llama,
+            PromptFamily::Mistral,
+        ],
+        WorkloadClass::Reasoning => &[
+            PromptFamily::Qwen,
+            PromptFamily::Llama,
+            PromptFamily::Mistral,
+        ],
+        WorkloadClass::General => &[
+            PromptFamily::Llama,
+            PromptFamily::Qwen,
+            PromptFamily::Mistral,
+        ],
     };
 
     for family in family_order {

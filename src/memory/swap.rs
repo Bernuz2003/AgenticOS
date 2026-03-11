@@ -31,6 +31,7 @@ struct SwapResult {
     slot_id: ContextSlotId,
     success: bool,
     detail: String,
+    final_path: PathBuf,
 }
 
 // ── Counters (owned by NeuralMemory, mutated via &mut references) ───────
@@ -91,8 +92,7 @@ impl SwapManager {
             return Ok(());
         }
 
-        let validated = swap_io::resolve_valid_swap_dir(swap_dir)
-            .map_err(MemoryError::Swap)?;
+        let validated = swap_io::resolve_valid_swap_dir(swap_dir).map_err(MemoryError::Swap)?;
         self.dir = validated;
         self.spawn_worker()
     }
@@ -112,16 +112,16 @@ impl SwapManager {
                         &job.target.final_path,
                         &job.payload,
                     )
-                            .map(|_| {
-                                format!(
-                                    "swap persisted pid={} slot={} backend={} bytes={} file={}",
-                                    job.pid,
-                                    job.slot_id,
-                                    job.backend_id,
-                                    job.payload.len(),
-                                    job.target.final_path.display()
-                                )
-                            });
+                    .map(|_| {
+                        format!(
+                            "swap persisted pid={} slot={} backend={} bytes={} file={}",
+                            job.pid,
+                            job.slot_id,
+                            job.backend_id,
+                            job.payload.len(),
+                            job.target.final_path.display()
+                        )
+                    });
 
                     let event = match result {
                         Ok(msg) => SwapResult {
@@ -129,12 +129,17 @@ impl SwapManager {
                             slot_id: job.slot_id,
                             success: true,
                             detail: msg,
+                            final_path: job.target.final_path.clone(),
                         },
                         Err(err) => SwapResult {
                             pid: job.pid,
                             slot_id: job.slot_id,
                             success: false,
-                            detail: format!("swap failed pid={} slot={}: {}", job.pid, job.slot_id, err),
+                            detail: format!(
+                                "swap failed pid={} slot={}: {}",
+                                job.pid, job.slot_id, err
+                            ),
+                            final_path: job.target.final_path.clone(),
                         },
                     };
 
@@ -190,8 +195,8 @@ impl SwapManager {
 
         self.waiting.insert(pid);
 
-        let target = swap_io::prepare_swap_target(&self.dir, pid, slot_id)
-            .map_err(MemoryError::Swap)?;
+        let target =
+            swap_io::prepare_swap_target(&self.dir, pid, slot_id).map_err(MemoryError::Swap)?;
         let payload_len = payload.len();
         tx.send(SwapJob {
             pid,
@@ -200,13 +205,10 @@ impl SwapManager {
             target,
             payload,
         })
-            .map_err(|e| {
-                self.waiting.remove(&pid);
-                MemoryError::Swap(format!(
-                    "Failed to enqueue swap job for PID {}: {}",
-                    pid, e
-                ))
-            })?;
+        .map_err(|e| {
+            self.waiting.remove(&pid);
+            MemoryError::Swap(format!("Failed to enqueue swap job for PID {}: {}", pid, e))
+        })?;
 
         Ok(format!(
             "OOM: PID {} slot {} queued for async swap ({} bytes)",
@@ -240,6 +242,7 @@ impl SwapManager {
                         slot_id: result.slot_id,
                         success: result.success,
                         detail: result.detail,
+                        swap_path: result.success.then_some(result.final_path),
                     });
                 }
                 Err(TryRecvError::Empty) => break,
@@ -258,6 +261,7 @@ impl SwapManager {
                             slot_id: 0,
                             success: false,
                             detail: format!("swap job lost: worker crash (pid={})", pid),
+                            swap_path: None,
                         });
                     }
                     // Attempt one re-spawn
@@ -269,7 +273,10 @@ impl SwapManager {
                             self.enabled = false;
                         }
                     } else {
-                        tracing::error!("Swap worker crashed {} times — disabling swap", self.worker_crashes);
+                        tracing::error!(
+                            "Swap worker crashed {} times — disabling swap",
+                            self.worker_crashes
+                        );
                         self.enabled = false;
                     }
                     break;

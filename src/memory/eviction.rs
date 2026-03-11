@@ -1,14 +1,18 @@
+use super::core::NeuralMemory;
 /// LRU eviction logic for NeuralMemory.
 ///
 /// Extracted from `core.rs` to keep the main allocator file focused on
 /// block allocation and process-level bookkeeping.
 use super::types::ContextSlotId;
-use super::core::NeuralMemory;
 
 impl NeuralMemory {
     /// Remove all pages of a context slot and return their blocks to the free list.
     /// Optionally counts the operation as an eviction in metrics.
-    pub(super) fn clear_slot_pages(&mut self, slot_id: ContextSlotId, count_as_eviction: bool) -> usize {
+    pub(super) fn clear_slot_pages(
+        &mut self,
+        slot_id: ContextSlotId,
+        count_as_eviction: bool,
+    ) -> usize {
         let Some(slot) = self.slot_table.get_mut(&slot_id) else {
             return 0;
         };
@@ -42,7 +46,10 @@ impl NeuralMemory {
 
     /// Pick the next LRU victim that has allocated pages,
     /// skipping `protected` (the slot we're currently writing to).
-    pub(super) fn next_lru_victim(&mut self, protected: Option<ContextSlotId>) -> Option<ContextSlotId> {
+    pub(super) fn next_lru_victim(
+        &mut self,
+        protected: Option<ContextSlotId>,
+    ) -> Option<ContextSlotId> {
         let attempts = self.lru_order.len();
         for _ in 0..attempts {
             let candidate = self.lru_order.pop_front()?;
@@ -67,7 +74,11 @@ impl NeuralMemory {
 
     /// Evict LRU context slots until at least `required_blocks` are free.
     /// Returns `true` if the space was reclaimed successfully.
-    pub(super) fn evict_lru_until_fit(&mut self, required_blocks: usize, protected: Option<ContextSlotId>) -> bool {
+    pub(super) fn evict_lru_until_fit(
+        &mut self,
+        required_blocks: usize,
+        protected: Option<ContextSlotId>,
+    ) -> bool {
         let mut guard = 0usize;
         let guard_limit = self.slot_table.len().saturating_add(1);
 

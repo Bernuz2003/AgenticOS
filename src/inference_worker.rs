@@ -31,10 +31,7 @@ pub enum InferenceResult {
         finished: bool,
     },
     /// Inference failed — the process has been dropped (model weights freed).
-    Error {
-        pid: u64,
-        error: String,
-    },
+    Error { pid: u64, error: String },
 }
 
 /// Run one inference step on a checked-out process.

@@ -30,7 +30,9 @@ pub(super) fn driver_view_for_entry(entry: &ModelEntry) -> DriverCatalogView {
     }
 }
 
-pub(crate) fn resolve_driver_for_entry(entry: &ModelEntry) -> Result<DriverResolution, CatalogError> {
+pub(crate) fn resolve_driver_for_entry(
+    entry: &ModelEntry,
+) -> Result<DriverResolution, CatalogError> {
     resolve_driver_for_model(
         entry.family,
         entry

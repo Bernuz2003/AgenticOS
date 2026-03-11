@@ -7,7 +7,10 @@ use crate::prompting::PromptFamily;
 
 use super::http::{HttpEndpoint, HttpJsonResponse};
 use super::remote_adapter::{build_completion_request, decode_completion_response};
-use super::{ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult, ModelBackend};
+use super::{
+    ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult,
+    ModelBackend,
+};
 
 #[derive(Clone)]
 pub(crate) struct ExternalLlamaCppBackend {
@@ -83,7 +86,12 @@ impl ExternalLlamaCppBackend {
         let filename = path
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| E::msg(format!("Invalid context-slot path '{}': missing valid filename.", path.display())))?;
+            .ok_or_else(|| {
+                E::msg(format!(
+                    "Invalid context-slot path '{}': missing valid filename.",
+                    path.display()
+                ))
+            })?;
 
         if filename.contains('/') || filename.contains("..") {
             return Err(E::msg(format!(
@@ -95,7 +103,12 @@ impl ExternalLlamaCppBackend {
         Ok(filename.to_string())
     }
 
-    fn slot_action(&self, slot_id: ContextSlotId, action: &str, payload: serde_json::Value) -> Result<()> {
+    fn slot_action(
+        &self,
+        slot_id: ContextSlotId,
+        action: &str,
+        payload: serde_json::Value,
+    ) -> Result<()> {
         self.post_json(
             &self
                 .endpoint
@@ -140,9 +153,12 @@ impl InferenceBackend for ExternalLlamaCppBackend {
             .max_tokens
             .saturating_sub(tokens.len())
             .min(self.chunk_tokens);
-        let prompt = tokenizer
-            .decode(tokens, false)
-            .map_err(|e| E::msg(format!("Failed to decode prompt tokens for RPC backend: {}", e)))?;
+        let prompt = tokenizer.decode(tokens, false).map_err(|e| {
+            E::msg(format!(
+                "Failed to decode prompt tokens for RPC backend: {}",
+                e
+            ))
+        })?;
         let raw = self.post_json(
             &self.endpoint.joined_path("/completion"),
             build_completion_request(&prompt, chunk_tokens, context_slot_id, generation),
@@ -152,7 +168,8 @@ impl InferenceBackend for ExternalLlamaCppBackend {
         Ok(InferenceStepResult {
             next_index_pos: index_pos.max(tokens.len()),
             emitted_text: decoded.emitted_text,
-            finished: decoded.finished || tokens.len() + decoded.appended_tokens.len() >= generation.max_tokens,
+            finished: decoded.finished
+                || tokens.len() + decoded.appended_tokens.len() >= generation.max_tokens,
             appended_tokens: decoded.appended_tokens,
         })
     }

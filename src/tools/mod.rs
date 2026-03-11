@@ -27,7 +27,9 @@ pub fn cleanup_stale_temp_scripts() {
         Err(_) => return,
     };
     let prefix = &kernel_config().tools.temp_script_prefix;
-    let Ok(entries) = fs::read_dir(&root) else { return };
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -192,11 +194,19 @@ fn execute_registered_tool(
 ) -> Result<String, String> {
     let entry = registry
         .resolve_invocation_name(&invocation.name)
-        .ok_or_else(|| format!("SysCall Error: Tool '{}' is not registered.", invocation.name))?;
+        .ok_or_else(|| {
+            format!(
+                "SysCall Error: Tool '{}' is not registered.",
+                invocation.name
+            )
+        })?;
     let descriptor = &entry.descriptor;
 
     if !descriptor.enabled {
-        return Err(format!("SysCall Error: Tool '{}' is disabled.", descriptor.name));
+        return Err(format!(
+            "SysCall Error: Tool '{}' is disabled.",
+            descriptor.name
+        ));
     }
 
     match descriptor.name.as_str() {
@@ -241,8 +251,12 @@ fn execute_remote_http_tool(
         ));
     };
 
-    let endpoint = HttpEndpoint::parse(url)
-        .map_err(|e| format!("SysCall Error: Remote tool '{}' has invalid endpoint: {}", tool_name, e))?;
+    let endpoint = HttpEndpoint::parse(url).map_err(|e| {
+        format!(
+            "SysCall Error: Remote tool '{}' has invalid endpoint: {}",
+            tool_name, e
+        )
+    })?;
 
     enforce_remote_http_policy(tool_name, &endpoint)?;
 
@@ -264,7 +278,12 @@ fn execute_remote_http_tool(
                 extra_headers: Some(headers),
             },
         )
-        .map_err(|e| format!("SysCall Error: Remote tool '{}' request failed: {}", tool_name, e))?;
+        .map_err(|e| {
+            format!(
+                "SysCall Error: Remote tool '{}' request failed: {}",
+                tool_name, e
+            )
+        })?;
 
     if !(200..300).contains(&response.status_code) {
         return Err(format!(
@@ -290,7 +309,10 @@ fn execute_remote_http_tool(
     }
 
     if response.body.trim().is_empty() {
-        Ok(format!("Remote tool '{}' completed with empty response.", tool_name))
+        Ok(format!(
+            "Remote tool '{}' completed with empty response.",
+            tool_name
+        ))
     } else {
         Ok(response.body)
     }
@@ -302,22 +324,25 @@ fn enforce_remote_http_policy(tool_name: &str, endpoint: &HttpEndpoint) -> Resul
     if !allowed_hosts.iter().any(|allowed| allowed == &host) {
         return Err(format!(
             "Remote tool '{}' endpoint host '{}' is not allowlisted.",
-            tool_name,
-            endpoint.host
+            tool_name, endpoint.host
         ));
     }
 
     let addr = format!("{}:{}", endpoint.host, endpoint.port);
     let resolved: Vec<_> = addr
         .to_socket_addrs()
-        .map_err(|e| format!("Remote tool '{}' failed to resolve '{}': {}", tool_name, addr, e))?
+        .map_err(|e| {
+            format!(
+                "Remote tool '{}' failed to resolve '{}': {}",
+                tool_name, addr, e
+            )
+        })?
         .collect();
 
     if resolved.is_empty() {
         return Err(format!(
             "Remote tool '{}' failed to resolve endpoint '{}'.",
-            tool_name,
-            addr
+            tool_name, addr
         ));
     }
 
@@ -422,7 +447,10 @@ mod tests {
     use std::thread;
 
     use super::{handle_syscall, parse_tool_invocation, SyscallRateMap};
-    use crate::tool_registry::{ToolBackendConfig, ToolBackendKind, ToolDescriptor, ToolRegistry, ToolRegistryEntry, ToolSource};
+    use crate::tool_registry::{
+        ToolBackendConfig, ToolBackendKind, ToolDescriptor, ToolRegistry, ToolRegistryEntry,
+        ToolSource,
+    };
     use serde_json::json;
     use std::sync::{Mutex, OnceLock};
 
@@ -479,7 +507,10 @@ mod tests {
                     url,
                     method: "POST".to_string(),
                     timeout_ms: 1_000,
-                    headers: HashMap::from([("X-AgenticOS-Tool".to_string(), "remote_echo".to_string())]),
+                    headers: HashMap::from([(
+                        "X-AgenticOS-Tool".to_string(),
+                        "remote_echo".to_string(),
+                    )]),
                 },
             })
             .expect("register remote tool");
@@ -544,7 +575,12 @@ mod tests {
         register_remote_tool(&mut registry, url);
 
         std::env::set_var("AGENTIC_REMOTE_TOOL_ALLOWED_HOSTS", "127.0.0.1");
-        let out = handle_syscall(r#"TOOL:remote_echo {"message":"hello"}"#, 44, &mut rate_map, &registry);
+        let out = handle_syscall(
+            r#"TOOL:remote_echo {"message":"hello"}"#,
+            44,
+            &mut rate_map,
+            &registry,
+        );
         std::env::remove_var("AGENTIC_REMOTE_TOOL_ALLOWED_HOSTS");
 
         assert_eq!(out.output, "remote ok");
@@ -564,7 +600,12 @@ mod tests {
         register_remote_tool(&mut registry, "http://127.0.0.1:18081/invoke".to_string());
 
         std::env::set_var("AGENTIC_REMOTE_TOOL_ALLOWED_HOSTS", "example.com");
-        let out = handle_syscall(r#"TOOL:remote_echo {"message":"hello"}"#, 45, &mut rate_map, &registry);
+        let out = handle_syscall(
+            r#"TOOL:remote_echo {"message":"hello"}"#,
+            45,
+            &mut rate_map,
+            &registry,
+        );
         std::env::remove_var("AGENTIC_REMOTE_TOOL_ALLOWED_HOSTS");
 
         assert!(out.output.contains("not allowlisted"));
@@ -579,7 +620,12 @@ mod tests {
         register_remote_tool(&mut registry, "http://localhost:18081/invoke".to_string());
 
         std::env::set_var("AGENTIC_REMOTE_TOOL_ALLOWED_HOSTS", "localhost");
-        let out = handle_syscall(r#"TOOL:remote_echo {"message":"hello"}"#, 47, &mut rate_map, &registry);
+        let out = handle_syscall(
+            r#"TOOL:remote_echo {"message":"hello"}"#,
+            47,
+            &mut rate_map,
+            &registry,
+        );
         std::env::remove_var("AGENTIC_REMOTE_TOOL_ALLOWED_HOSTS");
 
         assert!(out.output.contains("disallowed address"));
@@ -597,7 +643,12 @@ mod tests {
 
         std::env::set_var("AGENTIC_REMOTE_TOOL_ALLOWED_HOSTS", "127.0.0.1");
         std::env::set_var("AGENTIC_REMOTE_TOOL_MAX_RESPONSE_BYTES", "256");
-        let out = handle_syscall(r#"TOOL:remote_echo {"message":"hello"}"#, 46, &mut rate_map, &registry);
+        let out = handle_syscall(
+            r#"TOOL:remote_echo {"message":"hello"}"#,
+            46,
+            &mut rate_map,
+            &registry,
+        );
         std::env::remove_var("AGENTIC_REMOTE_TOOL_ALLOWED_HOSTS");
         std::env::remove_var("AGENTIC_REMOTE_TOOL_MAX_RESPONSE_BYTES");
 

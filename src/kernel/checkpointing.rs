@@ -34,13 +34,8 @@ pub(crate) fn run_auto_checkpoint(
     memory: &NeuralMemory,
 ) {
     let path = checkpoint::default_checkpoint_path();
-    let snap = checkpoint::build_kernel_snapshot(
-        engine_state,
-        model_catalog,
-        scheduler,
-        metrics,
-        memory,
-    );
+    let snap =
+        checkpoint::build_kernel_snapshot(engine_state, model_catalog, scheduler, metrics, memory);
 
     match checkpoint::save_checkpoint(&snap, &path) {
         Ok(msg) => tracing::debug!(msg, "auto-checkpoint"),

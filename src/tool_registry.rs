@@ -66,7 +66,7 @@ pub struct ToolRegistryEntry {
     pub backend: ToolBackendConfig,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ToolRegistry {
     entries: HashMap<String, ToolRegistryEntry>,
     aliases: HashMap<String, String>,
@@ -92,7 +92,10 @@ impl ToolRegistry {
 
         let canonical_name = normalize_name(&entry.descriptor.name)?;
         if self.entries.contains_key(&canonical_name) {
-            return Err(format!("Tool '{}' is already registered.", entry.descriptor.name));
+            return Err(format!(
+                "Tool '{}' is already registered.",
+                entry.descriptor.name
+            ));
         }
 
         let mut normalized_aliases = Vec::new();
@@ -104,7 +107,10 @@ impl ToolRegistry {
             if self.entries.contains_key(&normalized_alias)
                 || self.aliases.contains_key(&normalized_alias)
             {
-                return Err(format!("Tool alias '{}' collides with an existing registration.", alias));
+                return Err(format!(
+                    "Tool alias '{}' collides with an existing registration.",
+                    alias
+                ));
             }
             normalized_aliases.push(normalized_alias);
         }
@@ -126,7 +132,10 @@ impl ToolRegistry {
             return Err(format!("Tool '{}' is not registered.", name));
         };
         if existing.descriptor.source == ToolSource::BuiltIn {
-            return Err(format!("Tool '{}' is built-in and cannot be unregistered.", canonical));
+            return Err(format!(
+                "Tool '{}' is built-in and cannot be unregistered.",
+                canonical
+            ));
         }
         self.aliases.retain(|_, target| target != &canonical);
         self.entries
@@ -183,12 +192,18 @@ fn validate_entry(entry: &ToolRegistryEntry) -> Result<(), String> {
     match &entry.backend {
         ToolBackendConfig::Host { executor } => {
             if executor.trim().is_empty() {
-                return Err(format!("Tool '{}' host executor cannot be empty.", descriptor.name));
+                return Err(format!(
+                    "Tool '{}' host executor cannot be empty.",
+                    descriptor.name
+                ));
             }
         }
         ToolBackendConfig::Wasm { module, export } => {
             if module.trim().is_empty() || export.trim().is_empty() {
-                return Err(format!("Tool '{}' wasm backend must define module and export.", descriptor.name));
+                return Err(format!(
+                    "Tool '{}' wasm backend must define module and export.",
+                    descriptor.name
+                ));
             }
         }
         ToolBackendConfig::RemoteHttp {
@@ -198,10 +213,16 @@ fn validate_entry(entry: &ToolRegistryEntry) -> Result<(), String> {
             headers,
         } => {
             if url.trim().is_empty() {
-                return Err(format!("Tool '{}' remote_http backend URL cannot be empty.", descriptor.name));
+                return Err(format!(
+                    "Tool '{}' remote_http backend URL cannot be empty.",
+                    descriptor.name
+                ));
             }
             if method.trim().is_empty() {
-                return Err(format!("Tool '{}' remote_http backend method cannot be empty.", descriptor.name));
+                return Err(format!(
+                    "Tool '{}' remote_http backend method cannot be empty.",
+                    descriptor.name
+                ));
             }
             if !method.eq_ignore_ascii_case("POST") {
                 return Err(format!(
@@ -210,11 +231,17 @@ fn validate_entry(entry: &ToolRegistryEntry) -> Result<(), String> {
                 ));
             }
             if *timeout_ms == 0 {
-                return Err(format!("Tool '{}' remote_http backend timeout must be > 0.", descriptor.name));
+                return Err(format!(
+                    "Tool '{}' remote_http backend timeout must be > 0.",
+                    descriptor.name
+                ));
             }
             for (name, value) in headers {
                 if name.trim().is_empty() {
-                    return Err(format!("Tool '{}' remote_http header names cannot be empty.", descriptor.name));
+                    return Err(format!(
+                        "Tool '{}' remote_http header names cannot be empty.",
+                        descriptor.name
+                    ));
                 }
                 if name.contains(['\r', '\n']) || value.contains(['\r', '\n']) {
                     return Err(format!(
@@ -375,7 +402,8 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
             descriptor: ToolDescriptor {
                 name: "calc".to_string(),
                 aliases: vec!["CALC".to_string()],
-                description: "Evaluate a numeric expression through the Python sandbox.".to_string(),
+                description: "Evaluate a numeric expression through the Python sandbox."
+                    .to_string(),
                 input_schema: json!({
                     "type": "object",
                     "required": ["expression"],
@@ -411,7 +439,10 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{ToolBackendConfig, ToolBackendKind, ToolDescriptor, ToolRegistry, ToolRegistryEntry, ToolSource};
+    use super::{
+        ToolBackendConfig, ToolBackendKind, ToolDescriptor, ToolRegistry, ToolRegistryEntry,
+        ToolSource,
+    };
 
     #[test]
     fn builtins_are_registered_and_sorted() {
@@ -421,13 +452,18 @@ mod tests {
             .into_iter()
             .map(|item| item.descriptor.name.clone())
             .collect();
-        assert_eq!(names, vec!["calc", "list_files", "python", "read_file", "write_file"]);
+        assert_eq!(
+            names,
+            vec!["calc", "list_files", "python", "read_file", "write_file"]
+        );
     }
 
     #[test]
     fn resolves_legacy_alias_to_canonical_tool() {
         let registry = ToolRegistry::with_builtins();
-        let descriptor = registry.resolve_invocation_name("PYTHON").expect("python alias");
+        let descriptor = registry
+            .resolve_invocation_name("PYTHON")
+            .expect("python alias");
         assert_eq!(descriptor.descriptor.name, "python");
     }
 
@@ -487,7 +523,9 @@ mod tests {
         });
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not supported for dynamic execution yet"));
+        assert!(result
+            .unwrap_err()
+            .contains("not supported for dynamic execution yet"));
     }
 
     #[test]
@@ -513,6 +551,8 @@ mod tests {
         });
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not supported for dynamic execution yet"));
+        assert!(result
+            .unwrap_err()
+            .contains("not supported for dynamic execution yet"));
     }
 }

@@ -1,13 +1,26 @@
 use crate::checkpoint;
 use crate::protocol;
 use crate::scheduler::{ProcessPriority, ProcessQuota, RestoredProcessMetadata};
+use agentic_control_models::KernelEvent;
+use agentic_protocol::ControlErrorCode;
 
 use serde_json::json;
 
-use super::context::CommandContext;
+use super::context::CheckpointCommandContext;
 use super::metrics::log_event;
 
-pub(crate) fn handle_checkpoint(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_checkpoint(ctx: CheckpointCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+    let CheckpointCommandContext {
+        client,
+        request_id,
+        engine_state,
+        model_catalog,
+        scheduler,
+        metrics,
+        memory,
+        client_id,
+        ..
+    } = ctx;
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     let path = if payload_text.is_empty() {
         checkpoint::default_checkpoint_path()
@@ -16,36 +29,47 @@ pub(crate) fn handle_checkpoint(ctx: &mut CommandContext<'_>, payload: &[u8]) ->
     };
 
     let snapshot = checkpoint::build_kernel_snapshot(
-        ctx.engine_state.as_ref(),
-        ctx.model_catalog,
-        ctx.scheduler,
-        ctx.metrics,
-        ctx.memory,
+        engine_state.as_ref(),
+        model_catalog,
+        scheduler,
+        metrics,
+        memory,
     );
 
     match checkpoint::save_checkpoint(&snapshot, &path) {
         Ok(msg) => {
-            log_event("checkpoint_save", ctx.client_id, None, &msg);
+            log_event("checkpoint_save", client_id, None, &msg);
             protocol::response_protocol_ok(
-                ctx.client,
-                &ctx.request_id,
+                client,
+                request_id,
                 "CHECKPOINT",
                 protocol::schema::CHECKPOINT,
                 &json!({"message": msg}),
                 Some(&msg),
             )
         }
-        Err(e) => protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "CHECKPOINT_FAILED",
+        Err(e) => protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::CheckpointFailed,
             protocol::schema::ERROR,
             &e,
         ),
     }
 }
 
-pub(crate) fn handle_restore(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_restore(ctx: CheckpointCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+    let CheckpointCommandContext {
+        client,
+        request_id,
+        engine_state,
+        model_catalog,
+        scheduler,
+        in_flight,
+        pending_events,
+        client_id,
+        ..
+    } = ctx;
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     let path = if payload_text.is_empty() {
         checkpoint::default_checkpoint_path()
@@ -53,23 +77,23 @@ pub(crate) fn handle_restore(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Ve
         std::path::PathBuf::from(&payload_text)
     };
 
-    if !ctx.in_flight.is_empty() {
-        return protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "RESTORE_BUSY",
+    if !in_flight.is_empty() {
+        return protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::RestoreBusy,
             protocol::schema::ERROR,
             "RESTORE requires an idle kernel: in-flight inference is still running",
         );
     }
 
-    if let Some(engine) = ctx.engine_state.as_ref() {
+    if let Some(engine) = engine_state.as_ref() {
         let live_processes = engine.processes.len();
         if live_processes > 0 {
-            return protocol::response_protocol_err(
-                ctx.client,
-                &ctx.request_id,
-                "RESTORE_BUSY",
+            return protocol::response_protocol_err_typed(
+                client,
+                request_id,
+                ControlErrorCode::RestoreBusy,
                 protocol::schema::ERROR,
                 &format!(
                     "RESTORE requires an idle kernel: {} live process(es) still present",
@@ -81,9 +105,11 @@ pub(crate) fn handle_restore(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Ve
 
     match checkpoint::load_checkpoint(&path) {
         Ok(snap) => {
-            let cleared_scheduler_entries =
-                apply_restore_snapshot(&snap, ctx.scheduler, ctx.model_catalog);
-            *ctx.engine_state = None;
+            let cleared_scheduler_entries = apply_restore_snapshot(&snap, scheduler, model_catalog);
+            *engine_state = None;
+            pending_events.push(KernelEvent::LobbyChanged {
+                reason: "restore_applied".to_string(),
+            });
 
             let response = json!({
                 "version": snap.version,
@@ -103,7 +129,7 @@ pub(crate) fn handle_restore(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Ve
 
             log_event(
                 "checkpoint_restore",
-                ctx.client_id,
+                client_id,
                 None,
                 &format!(
                     "version={} cleared_sched={} restored_sched={} procs_metadata={} from={:?}",
@@ -115,18 +141,18 @@ pub(crate) fn handle_restore(ctx: &mut CommandContext<'_>, payload: &[u8]) -> Ve
                 ),
             );
             protocol::response_protocol_ok(
-                ctx.client,
-                &ctx.request_id,
+                client,
+                request_id,
                 "RESTORE",
                 protocol::schema::RESTORE,
                 &response,
                 Some(&response.to_string()),
             )
         }
-        Err(e) => protocol::response_protocol_err(
-            ctx.client,
-            &ctx.request_id,
-            "RESTORE_FAILED",
+        Err(e) => protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::RestoreFailed,
             protocol::schema::ERROR,
             &e,
         ),
@@ -148,8 +174,8 @@ fn apply_restore_snapshot(
     model_catalog.clear_selected();
 
     for entry in &snap.scheduler.entries {
-        let priority = ProcessPriority::from_str_loose(&entry.priority)
-            .unwrap_or(ProcessPriority::Normal);
+        let priority =
+            ProcessPriority::from_str_loose(&entry.priority).unwrap_or(ProcessPriority::Normal);
         let workload = crate::policy::workload_from_label_or_default(Some(&entry.workload));
         scheduler.register(entry.pid, workload, priority);
         let quota = ProcessQuota {
@@ -222,8 +248,16 @@ mod tests {
         let mut catalog = ModelCatalog::discover(&models).expect("discover models");
         let model_id = catalog.entries[0].id.clone();
         let mut scheduler = ProcessScheduler::new();
-        scheduler.register(1, crate::model_catalog::WorkloadClass::Fast, ProcessPriority::High);
-        scheduler.register(2, crate::model_catalog::WorkloadClass::General, ProcessPriority::Low);
+        scheduler.register(
+            1,
+            crate::model_catalog::WorkloadClass::Fast,
+            ProcessPriority::High,
+        );
+        scheduler.register(
+            2,
+            crate::model_catalog::WorkloadClass::General,
+            ProcessPriority::Low,
+        );
 
         let snapshot = KernelSnapshot {
             timestamp: "epoch_1".to_string(),
@@ -247,7 +281,9 @@ mod tests {
                     tokens_used: 12,
                     context_compressions: 1,
                     context_retrieval_hits: 0,
-                    last_compaction_reason: Some("summarize_compacted_segments=2 replaced_tokens=42".to_string()),
+                    last_compaction_reason: Some(
+                        "summarize_compacted_segments=2 replaced_tokens=42".to_string(),
+                    ),
                     last_summary_ts: Some("epoch_123".to_string()),
                     segments: Vec::new(),
                     episodic_segments: Vec::new(),
@@ -290,7 +326,9 @@ mod tests {
         assert_eq!(cleared, 2);
         assert_eq!(scheduler.registered_pids(), vec![7]);
         assert_eq!(catalog.selected_id.as_deref(), Some(model_id.as_str()));
-        let restored = scheduler.restored_process(7).expect("restored process exists");
+        let restored = scheduler
+            .restored_process(7)
+            .expect("restored process exists");
         assert_eq!(restored.context_policy.strategy, ContextStrategy::Summarize);
         assert_eq!(restored.context_state.tokens_used, 12);
 

@@ -42,7 +42,11 @@ pub enum MemoryError {
     OutOfMemory { detail: String },
 
     #[error("NeuralMemory: PID {pid} requested {requested} token slots > quota {quota}")]
-    QuotaExceeded { pid: u64, requested: usize, quota: usize },
+    QuotaExceeded {
+        pid: u64,
+        requested: usize,
+        quota: usize,
+    },
 
     #[error("NeuralMemory: token_slots must be > 0")]
     ZeroTokenSlots,
@@ -88,21 +92,6 @@ pub enum EngineError {
 
 #[derive(Debug, Error)]
 pub enum ProtocolError {
-    #[error("Empty header")]
-    EmptyHeader,
-
-    #[error("Invalid header format. Expected: <OPCODE> <AGENT_ID> <CONTENT_LENGTH>")]
-    InvalidHeaderFormat,
-
-    #[error("Unknown opcode: {0}")]
-    UnknownOpcode(String),
-
-    #[error("Invalid content length")]
-    InvalidContentLength,
-
-    #[error("Content length {requested} exceeds protocol limit {max}")]
-    ContentLengthTooLarge { requested: usize, max: usize },
-
     #[error("Unsupported protocol version(s): {0}")]
     UnsupportedProtocolVersion(String),
 

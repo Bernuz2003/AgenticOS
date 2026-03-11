@@ -6,7 +6,10 @@ use crate::errors::EngineError;
 use crate::model_catalog::ModelMetadata;
 use crate::prompting::PromptFamily;
 
-pub(super) fn resolve_tokenizer_path(model_path: &str, tokenizer_hint: Option<PathBuf>) -> Option<PathBuf> {
+pub(super) fn resolve_tokenizer_path(
+    model_path: &str,
+    tokenizer_hint: Option<PathBuf>,
+) -> Option<PathBuf> {
     if let Some(hint) = tokenizer_hint {
         if hint.exists() {
             return Some(hint);
@@ -65,14 +68,12 @@ pub(super) fn resolve_special_tokens(
                     )
                 })?;
 
-            let eot = tokenizer
-                .token_to_id("<|eot_id|>")
-                .ok_or_else(|| {
-                    EngineError::Backend(
-                        "Tokenizer/model incompatibility: Llama template requires <|eot_id|>."
-                            .to_string(),
-                    )
-                })?;
+            let eot = tokenizer.token_to_id("<|eot_id|>").ok_or_else(|| {
+                EngineError::Backend(
+                    "Tokenizer/model incompatibility: Llama template requires <|eot_id|>."
+                        .to_string(),
+                )
+            })?;
 
             let has_headers = tokenizer.token_to_id("<|start_header_id|>").is_some()
                 && tokenizer.token_to_id("<|end_header_id|>").is_some();
@@ -95,14 +96,12 @@ pub(super) fn resolve_special_tokens(
                     )
                 })?;
 
-            let eot = tokenizer
-                .token_to_id("<|im_end|>")
-                .ok_or_else(|| {
-                    EngineError::Backend(
-                        "Tokenizer/model incompatibility: Qwen template requires <|im_end|>."
-                            .to_string(),
-                    )
-                })?;
+            let eot = tokenizer.token_to_id("<|im_end|>").ok_or_else(|| {
+                EngineError::Backend(
+                    "Tokenizer/model incompatibility: Qwen template requires <|im_end|>."
+                        .to_string(),
+                )
+            })?;
 
             if tokenizer.token_to_id("<|im_start|>").is_none() {
                 return Err(EngineError::Backend(

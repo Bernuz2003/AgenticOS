@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 /// Shared types for the NeuralMemory subsystem.
 pub type ContextSlotId = u64;
 
@@ -30,6 +32,7 @@ pub struct SwapEvent {
     pub slot_id: ContextSlotId,
     pub success: bool,
     pub detail: String,
+    pub swap_path: Option<PathBuf>,
 }
 
 #[derive(Clone)]

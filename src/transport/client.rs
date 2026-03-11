@@ -22,6 +22,7 @@ pub struct Client {
     pub authenticated: bool,
     pub negotiated_protocol_version: Option<String>,
     pub enabled_capabilities: HashSet<String>,
+    pub subscribed_events: bool,
     request_sequence: u64,
 }
 
@@ -35,6 +36,7 @@ impl Client {
             authenticated: pre_authenticated,
             negotiated_protocol_version: None,
             enabled_capabilities: HashSet::new(),
+            subscribed_events: false,
             request_sequence: 0,
         }
     }

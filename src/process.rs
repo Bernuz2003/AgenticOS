@@ -12,6 +12,7 @@ pub enum ProcessState {
     Ready,
     Running,
     WaitingForMemory,
+    WaitingForSyscall,
     Finished,
 }
 
@@ -232,7 +233,12 @@ impl AgentProcess {
     }
 
     pub fn record_injected_context(&mut self, text: &str, token_count: usize) {
-        self.append_segment(ContextSegmentKind::InjectedContext, text, token_count, false);
+        self.append_segment(
+            ContextSegmentKind::InjectedContext,
+            text,
+            token_count,
+            false,
+        );
     }
 
     pub fn context_status_snapshot(&self) -> ContextStatusSnapshot {
@@ -276,7 +282,9 @@ impl AgentProcess {
 
         let mut archived_count = 0usize;
         let mut archived_tokens = 0usize;
-        while live_tokens.saturating_sub(archived_tokens) > self.context_policy.compaction_target_tokens {
+        while live_tokens.saturating_sub(archived_tokens)
+            > self.context_policy.compaction_target_tokens
+        {
             let Some(segment) = live_segments.get(archived_count) else {
                 break;
             };
@@ -292,9 +300,8 @@ impl AgentProcess {
             && self.context_state.episodic_segments.is_empty()
             && retrieved_prefix_segments == 0
         {
-            self.context_state.last_compaction_reason = Some(
-                "retrieve_no_complete_segment_fit".to_string(),
-            );
+            self.context_state.last_compaction_reason =
+                Some("retrieve_no_complete_segment_fit".to_string());
             return None;
         }
 
@@ -308,7 +315,8 @@ impl AgentProcess {
             .saturating_sub(base_tokens_after_archive);
         let retrieval_payload = self.build_retrieval_payload(&retrieval_corpus, remaining_budget);
 
-        let changed = retrieved_prefix_segments > 0 || archived_count > 0 || retrieval_payload.is_some();
+        let changed =
+            retrieved_prefix_segments > 0 || archived_count > 0 || retrieval_payload.is_some();
         if !changed {
             return None;
         }
@@ -316,7 +324,9 @@ impl AgentProcess {
         self.reset_backend_context_slot("retrieve")?;
 
         if retrieved_prefix_segments > 0 {
-            self.context_state.segments.drain(0..retrieved_prefix_segments);
+            self.context_state
+                .segments
+                .drain(0..retrieved_prefix_segments);
             self.tokens.drain(0..retrieved_prefix_tokens);
         }
 
@@ -326,7 +336,9 @@ impl AgentProcess {
                 .segments
                 .drain(0..archived_count)
                 .collect();
-            self.context_state.episodic_segments.extend(archived_segments);
+            self.context_state
+                .episodic_segments
+                .extend(archived_segments);
             self.tokens.drain(0..archived_tokens);
         }
 
@@ -367,7 +379,10 @@ impl AgentProcess {
         let mut dropped_tokens = 0usize;
         let total_segments = self.context_state.segments.len();
 
-        while self.context_state.tokens_used.saturating_sub(dropped_tokens)
+        while self
+            .context_state
+            .tokens_used
+            .saturating_sub(dropped_tokens)
             > self.context_policy.compaction_target_tokens
         {
             let Some(segment) = self.context_state.segments.get(dropped_segments) else {
@@ -381,9 +396,8 @@ impl AgentProcess {
         }
 
         if dropped_segments == 0 || dropped_tokens == 0 {
-            self.context_state.last_compaction_reason = Some(
-                "sliding_window_no_complete_segment_fit".to_string(),
-            );
+            self.context_state.last_compaction_reason =
+                Some("sliding_window_no_complete_segment_fit".to_string());
             return None;
         }
 
@@ -413,9 +427,8 @@ impl AgentProcess {
     fn enforce_summary_budget(&mut self) -> Option<ContextCompactionEvent> {
         let total_segments = self.context_state.segments.len();
         if total_segments < 2 {
-            self.context_state.last_compaction_reason = Some(
-                "summarize_no_complete_segment_fit".to_string(),
-            );
+            self.context_state.last_compaction_reason =
+                Some("summarize_no_complete_segment_fit".to_string());
             return None;
         }
 
@@ -423,7 +436,27 @@ impl AgentProcess {
         let mut dropped_tokens = self.context_state.segments[0].token_count;
         let (summary_text, summary_tokens) = loop {
             let source_segments = &self.context_state.segments[..dropped_segments];
-            let summary_text = build_summary_text(source_segments);
+            let preserved_tokens = self
+                .context_state
+                .tokens_used
+                .saturating_sub(dropped_tokens);
+            let available_summary_tokens = self
+                .context_policy
+                .compaction_target_tokens
+                .saturating_sub(preserved_tokens);
+            if available_summary_tokens == 0 {
+                if dropped_segments + 1 >= total_segments {
+                    self.context_state.last_compaction_reason =
+                        Some("summarize_no_complete_segment_fit".to_string());
+                    return None;
+                }
+
+                dropped_tokens += self.context_state.segments[dropped_segments].token_count;
+                dropped_segments += 1;
+                continue;
+            }
+
+            let summary_text = build_summary_text(source_segments, available_summary_tokens);
             let summary_tokens = self
                 .tokenizer
                 .encode(summary_text.as_str(), true)
@@ -431,19 +464,13 @@ impl AgentProcess {
                 .get_ids()
                 .to_vec();
 
-            let tokens_after = self
-                .context_state
-                .tokens_used
-                .saturating_sub(dropped_tokens)
-                .saturating_add(summary_tokens.len());
-            if tokens_after <= self.context_policy.compaction_target_tokens {
+            if !summary_tokens.is_empty() && summary_tokens.len() <= available_summary_tokens {
                 break (summary_text, summary_tokens);
             }
 
             if dropped_segments + 1 >= total_segments {
-                self.context_state.last_compaction_reason = Some(
-                    "summarize_no_complete_segment_fit".to_string(),
-                );
+                self.context_state.last_compaction_reason =
+                    Some("summarize_no_complete_segment_fit".to_string());
                 return None;
             }
 
@@ -484,16 +511,11 @@ impl AgentProcess {
         })
     }
 
-    fn reset_backend_context_slot(
-        &mut self,
-        strategy_label: &str,
-    ) -> Option<()> {
+    fn reset_backend_context_slot(&mut self, strategy_label: &str) -> Option<()> {
         if let Some(slot_id) = self.context_slot_id {
             if let Err(err) = self.model.free_context_slot(slot_id) {
-                self.context_state.last_compaction_reason = Some(format!(
-                    "{}_backend_reset_failed:{}",
-                    strategy_label, err
-                ));
+                self.context_state.last_compaction_reason =
+                    Some(format!("{}_backend_reset_failed:{}", strategy_label, err));
                 return None;
             }
         }
@@ -609,12 +631,64 @@ impl AgentProcess {
     }
 }
 
-fn build_summary_text(_segments: &[ContextSegment]) -> String {
-    if _segments.is_empty() {
+fn build_summary_text(segments: &[ContextSegment], max_summary_tokens: usize) -> String {
+    if segments.is_empty() || max_summary_tokens == 0 {
+        return "Summary of earlier context: no retained details.".to_string();
+    }
+
+    let include_labels = max_summary_tokens >= 4;
+    let mut terms = Vec::new();
+
+    'segments: for segment in segments {
+        if include_labels {
+            let label = match segment.kind {
+                ContextSegmentKind::UserTurn => "user",
+                ContextSegmentKind::AssistantTurn => "assistant",
+                ContextSegmentKind::InjectedContext => "system",
+                ContextSegmentKind::Summary => "summary",
+                ContextSegmentKind::RetrievedMemory => "memory",
+            };
+            if terms.last().map(|term: &String| term.as_str()) != Some(label) {
+                terms.push(label.to_string());
+            }
+            if terms.len() >= max_summary_tokens {
+                break;
+            }
+        }
+
+        for word in segment.text.split(|ch: char| !ch.is_alphanumeric()) {
+            let normalized = word.trim();
+            if normalized.is_empty() {
+                continue;
+            }
+            let normalized = normalized.to_ascii_lowercase();
+            if terms.last() == Some(&normalized) {
+                continue;
+            }
+            terms.push(normalized);
+            if terms.len() >= max_summary_tokens {
+                break 'segments;
+            }
+        }
+    }
+
+    if terms.is_empty() {
         return "summary".to_string();
     }
 
-    "summary".to_string()
+    if terms.len() == 1 {
+        return terms.pop().unwrap_or_else(|| "summary".to_string());
+    }
+
+    let mut summary = terms.join(" ");
+    if summary.is_empty() {
+        return "summary".to_string();
+    }
+
+    if include_labels && terms.len() < max_summary_tokens {
+        summary.insert_str(0, "summary ");
+    }
+    summary
 }
 
 fn lexical_terms(text: &str) -> HashSet<String> {
@@ -636,7 +710,10 @@ fn lexical_overlap_score(query_terms: &HashSet<String>, candidate_text: &str) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentProcess, ContextPolicy, ContextSegment, ContextSegmentKind, ContextStrategy, InitialContextSeed};
+    use super::{
+        AgentProcess, ContextPolicy, ContextSegment, ContextSegmentKind, ContextStrategy,
+        InitialContextSeed,
+    };
     use crate::backend::{
         ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult,
         RuntimeModel,
@@ -664,7 +741,10 @@ mod tests {
             crate::prompting::PromptFamily::Unknown
         }
 
-        fn generate_step(&mut self, _request: InferenceStepRequest<'_>) -> Result<InferenceStepResult> {
+        fn generate_step(
+            &mut self,
+            _request: InferenceStepRequest<'_>,
+        ) -> Result<InferenceStepResult> {
             Ok(InferenceStepResult {
                 appended_tokens: Vec::new(),
                 emitted_text: String::new(),
@@ -776,7 +856,10 @@ mod tests {
         assert_eq!(process.index_pos, 0);
         assert_eq!(process.context_state.context_compressions, 1);
         assert_eq!(process.context_state.segments.len(), 1);
-        assert_eq!(process.context_state.segments[0].kind, ContextSegmentKind::AssistantTurn);
+        assert_eq!(
+            process.context_state.segments[0].kind,
+            ContextSegmentKind::AssistantTurn
+        );
         assert_eq!(*frees.lock().expect("lock frees"), vec![11]);
     }
 
@@ -813,7 +896,10 @@ mod tests {
             .expect("summary compaction should run");
 
         assert_eq!(event.strategy, ContextStrategy::Summarize);
-        assert_eq!(process.context_state.segments[0].kind, ContextSegmentKind::Summary);
+        assert_eq!(
+            process.context_state.segments[0].kind,
+            ContextSegmentKind::Summary
+        );
         assert!(process.context_state.last_summary_ts.is_some());
         assert!(process.tokens.len() <= process.context_policy.compaction_target_tokens);
         assert_eq!(*frees.lock().expect("lock frees"), vec![9]);
@@ -835,8 +921,14 @@ mod tests {
 
         assert_eq!(event.strategy, ContextStrategy::Retrieve);
         assert_eq!(process.context_state.episodic_segments.len(), 2);
-        assert_eq!(process.context_state.segments[0].kind, ContextSegmentKind::RetrievedMemory);
-        assert_eq!(process.context_state.segments[1].kind, ContextSegmentKind::AssistantTurn);
+        assert_eq!(
+            process.context_state.segments[0].kind,
+            ContextSegmentKind::RetrievedMemory
+        );
+        assert_eq!(
+            process.context_state.segments[1].kind,
+            ContextSegmentKind::AssistantTurn
+        );
         assert_eq!(process.context_state.context_retrieval_hits, 1);
         assert!(process.tokens.len() <= process.context_policy.window_size_tokens);
         assert_eq!(*frees.lock().expect("lock frees"), vec![13]);
@@ -904,10 +996,13 @@ mod tests {
 
                 assert!(
                     process.tokens.len() <= process.context_policy.window_size_tokens,
-                    "strategy {} exceeded window", strategy.label()
+                    "strategy {} exceeded window",
+                    strategy.label()
                 );
                 assert!(!process.context_state.segments.is_empty());
-                assert!(process.context_state.tokens_used <= process.context_policy.window_size_tokens);
+                assert!(
+                    process.context_state.tokens_used <= process.context_policy.window_size_tokens
+                );
             }
 
             match strategy {
@@ -918,9 +1013,11 @@ mod tests {
                 ContextStrategy::Summarize => {
                     assert!(process.context_state.context_compressions > 0);
                     assert!(process.context_state.last_summary_ts.is_some());
-                    assert!(process.context_state.segments.iter().any(|segment| {
-                        segment.kind == ContextSegmentKind::Summary
-                    }));
+                    assert!(process
+                        .context_state
+                        .segments
+                        .iter()
+                        .any(|segment| { segment.kind == ContextSegmentKind::Summary }));
                 }
                 ContextStrategy::Retrieve => {
                     assert!(process.context_state.last_compaction_reason.is_some());

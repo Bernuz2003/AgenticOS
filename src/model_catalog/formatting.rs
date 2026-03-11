@@ -1,4 +1,6 @@
-use serde::Serialize;
+use agentic_control_models::{
+    ModelCatalogEntry, ModelCatalogSnapshot, ModelInfoResponse, ModelRoutingRecommendation,
+};
 
 use crate::errors::CatalogError;
 
@@ -6,77 +8,9 @@ use super::driver::driver_view_for_entry;
 use super::routing::recommend_for_workload;
 use super::{ModelCatalog, ModelEntry, WorkloadClass};
 
-#[derive(Serialize)]
-struct ModelListResponse {
-    selected_model_id: Option<String>,
-    total_models: usize,
-    models: Vec<ModelListEntry>,
-    routing_recommendations: Vec<RoutingRecommendation>,
-}
-
-#[derive(Serialize)]
-struct ModelListEntry {
-    id: String,
-    family: String,
-    architecture: Option<String>,
-    path: String,
-    tokenizer_path: Option<String>,
-    tokenizer_present: bool,
-    metadata_source: Option<String>,
-    backend_preference: Option<String>,
-    resolved_backend: Option<String>,
-    driver_resolution_source: String,
-    driver_resolution_rationale: String,
-    driver_available: Option<bool>,
-    driver_load_supported: Option<bool>,
-    capabilities: Option<std::collections::BTreeMap<String, f64>>,
-    selected: bool,
-}
-
-#[derive(Serialize)]
-struct RoutingRecommendation {
-    workload: String,
-    model_id: Option<String>,
-    family: Option<String>,
-    backend_preference: Option<String>,
-    resolved_backend: Option<String>,
-    driver_resolution_source: String,
-    driver_resolution_rationale: String,
-    driver_available: Option<bool>,
-    driver_load_supported: Option<bool>,
-    metadata_source: Option<String>,
-    source: String,
-    rationale: String,
-    capability_key: Option<String>,
-    capability_score: Option<f64>,
-}
-
-#[derive(Serialize)]
-struct ModelInfoResponse {
-    id: String,
-    family: String,
-    architecture: Option<String>,
-    path: String,
-    tokenizer_path: Option<String>,
-    tokenizer_present: bool,
-    metadata_source: Option<String>,
-    backend_preference: Option<String>,
-    resolved_backend: Option<String>,
-    driver_resolution_source: String,
-    driver_resolution_rationale: String,
-    driver_available: Option<bool>,
-    driver_load_supported: Option<bool>,
-    chat_template: Option<String>,
-    assistant_preamble: Option<String>,
-    special_tokens: Option<std::collections::BTreeMap<String, String>>,
-    stop_markers: Option<Vec<String>>,
-    capabilities: Option<std::collections::BTreeMap<String, f64>>,
-    selected: bool,
-}
-
 pub(super) fn format_list_json(catalog: &ModelCatalog) -> String {
     let selected = catalog.selected_id.as_deref();
-    let payload = ModelListResponse {
+    let payload = ModelCatalogSnapshot {
         selected_model_id: catalog.selected_id.clone(),
         total_models: catalog.entries.len(),
         models: catalog
@@ -94,7 +28,7 @@ pub(super) fn format_list_json(catalog: &ModelCatalog) -> String {
         .map(|(workload, class)| {
             let decision = recommend_for_workload(&catalog.entries, class);
             let picked = decision.entry;
-            RoutingRecommendation {
+            ModelRoutingRecommendation {
                 workload: workload.to_string(),
                 model_id: picked.map(|m| m.id.clone()),
                 family: picked.map(|m| format!("{:?}", m.family)),
@@ -128,7 +62,7 @@ pub(super) fn format_list_json(catalog: &ModelCatalog) -> String {
         .collect(),
     };
 
-    serde_json::to_string(&payload).expect("ModelListResponse is serializable")
+    serde_json::to_string(&payload).expect("ModelCatalogSnapshot is serializable")
 }
 
 pub(super) fn format_info_json(
@@ -189,9 +123,9 @@ pub(super) fn format_info_json(
     Ok(serde_json::to_string(&payload).expect("ModelInfoResponse is serializable"))
 }
 
-fn format_list_entry(entry: &ModelEntry, selected: Option<&str>) -> ModelListEntry {
+fn format_list_entry(entry: &ModelEntry, selected: Option<&str>) -> ModelCatalogEntry {
     let driver = driver_view_for_entry(entry);
-    ModelListEntry {
+    ModelCatalogEntry {
         id: entry.id.clone(),
         family: format!("{:?}", entry.family),
         architecture: entry

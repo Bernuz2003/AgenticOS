@@ -10,15 +10,18 @@ use std::time::Instant;
 use crate::commands::MetricsState;
 use crate::config;
 use crate::engine::LLMEngine;
+use crate::events::flush_pending_events;
 use crate::inference_worker::{InferenceCmd, InferenceResult};
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::runtime::run_engine_tick;
+use crate::runtime::syscalls::{SyscallCmd, SyscallCompletion};
 use crate::scheduler::ProcessScheduler;
 use crate::tool_registry::ToolRegistry;
-use crate::tools::SyscallRateMap;
-use crate::transport::{handle_read_with_registry, handle_write, needs_writable_interest, writable_interest, Client};
+use crate::transport::{
+    handle_read_with_registry, handle_write, needs_writable_interest, writable_interest, Client,
+};
 
 use super::{bootstrap, checkpointing};
 
@@ -53,11 +56,15 @@ pub(crate) struct Kernel {
     pub(crate) last_checkpoint: Instant,
     pub(crate) cmd_tx: mpsc::Sender<InferenceCmd>,
     pub(crate) result_rx: mpsc::Receiver<InferenceResult>,
+    pub(crate) syscall_cmd_tx: mpsc::Sender<SyscallCmd>,
+    pub(crate) syscall_result_rx: mpsc::Receiver<SyscallCompletion>,
     pub(crate) in_flight: HashSet<u64>,
     pub(crate) pending_kills: Vec<u64>,
+    pub(crate) pending_events: Vec<agentic_control_models::KernelEvent>,
+    pub(crate) next_event_sequence: u64,
     pub(crate) worker_handle: Option<JoinHandle<()>>,
+    pub(crate) syscall_worker_handle: Option<JoinHandle<()>>,
     pub(crate) metrics: MetricsState,
-    pub(crate) syscall_rates: SyscallRateMap,
     pub(crate) tool_registry: ToolRegistry,
     pub(crate) auth_token: String,
     pub(crate) auth_disabled: bool,
@@ -72,7 +79,12 @@ impl Kernel {
         loop {
             if self.shutdown_requested.load(Ordering::SeqCst) {
                 tracing::info!("Kernel graceful shutdown requested. Closing event loop.");
-                shutdown_worker(&self.cmd_tx, &mut self.worker_handle);
+                shutdown_workers(
+                    &self.cmd_tx,
+                    &self.syscall_cmd_tx,
+                    &mut self.worker_handle,
+                    &mut self.syscall_worker_handle,
+                );
                 break;
             }
 
@@ -103,10 +115,19 @@ impl Kernel {
                 &mut self.orchestrator,
                 &self.cmd_tx,
                 &self.result_rx,
+                &self.syscall_cmd_tx,
+                &self.syscall_result_rx,
                 &mut self.in_flight,
                 &mut self.pending_kills,
-                &mut self.syscall_rates,
+                &mut self.pending_events,
                 &self.tool_registry,
+            );
+
+            flush_pending_events(
+                &mut self.clients,
+                &self.poll,
+                &mut self.next_event_sequence,
+                &mut self.pending_events,
             );
 
             checkpointing::maybe_run_auto_checkpoint(
@@ -124,12 +145,18 @@ impl Kernel {
     }
 }
 
-fn shutdown_worker(
+fn shutdown_workers(
     cmd_tx: &mpsc::Sender<InferenceCmd>,
+    syscall_cmd_tx: &mpsc::Sender<SyscallCmd>,
     worker_handle: &mut Option<JoinHandle<()>>,
+    syscall_worker_handle: &mut Option<JoinHandle<()>>,
 ) {
     let _ = cmd_tx.send(InferenceCmd::Shutdown);
+    let _ = syscall_cmd_tx.send(SyscallCmd::Shutdown);
     if let Some(handle) = worker_handle.take() {
+        let _ = handle.join();
+    }
+    if let Some(handle) = syscall_worker_handle.take() {
         let _ = handle.join();
     }
 }
@@ -180,6 +207,7 @@ fn handle_client_event(
                 &kernel.shutdown_requested,
                 &kernel.in_flight,
                 &mut kernel.pending_kills,
+                &mut kernel.pending_events,
                 &mut kernel.metrics,
                 &mut kernel.tool_registry,
                 &kernel.auth_token,

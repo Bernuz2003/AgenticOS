@@ -1,327 +1,297 @@
 # Refactoring Plan
 
-## Phase A Execution Status
-
-- [x] Task 1. Extract shared kernel snapshot builder DONE
-- [x] Task 2. Rewire auto and manual checkpoint flows DONE
-- [x] Task 3. Validate checkpoint refactor DONE
-- [x] Task 4. Extract tools policy module DONE
-- [x] Task 5. Extract tools path module DONE
-- [x] Task 6. Extract tools runner and audit modules DONE
-- [x] Task 7. Validate tools facade refactor DONE
-- [x] Task 8. Create shared GUI response parser DONE
-- [x] Task 9. Wire models and processes widgets to parser DONE
-- [x] Task 10. Wire memory and chat parsing to shared parser where applicable DONE
-- [x] Task 11. Validate GUI parser refactor DONE
-- [x] Task 12. Create shared Python runtime config loader DONE
-- [x] Task 13. Migrate Python entrypoints to shared loader DONE
-- [x] Task 14. Run final validation and close Phase A DONE
-
-## Scope
-
-This document maps the current technical debt in AgenticOS after the Qwen3.5 integration stabilized. The goal is not to implement the refactors yet, but to identify where the codebase should be split, simplified, or reorganized, and why.
-
-The assessment covers the Rust kernel under `src/`, the PySide GUI under `gui/`, and the utility scripts currently shipped with the repository.
-
-## Highest Priority
-
-### 1. Split `src/backend.rs` DONE
-
-Current state:
-- `src/backend.rs` mixes backend registry, backend resolution, local Candle inference backends, external `llama.cpp` RPC transport, HTTP parsing, diagnostics, slot persistence, and backend tests.
-- The file is large enough that unrelated changes collide frequently.
-
-Why refactor:
-- It violates separation of concerns. Backend semantics and HTTP transport are different layers.
-- The external backend is now materially more complex because of stop semantics, chunking, prompt reconstruction, and reasoning handling.
-- Tests for local backends and remote RPC behavior are forced to live in the same file.
-
-Recommended split:
-- `src/backend/mod.rs`: traits, shared types, backend loader entry points.
-- `src/backend/local.rs`: `QuantizedLlamaBackend`, `QuantizedQwen2Backend`, local-step inference.
-- `src/backend/external_llamacpp.rs`: `ExternalLlamaCppBackend`, completion parsing, slot RPC.
-- `src/backend/http.rs`: low-level HTTP endpoint and JSON request/response utilities.
-- `src/backend/diagnostics.rs`: external backend diagnostics.
-
-Expected benefit:
-- Lower cognitive load for inference changes.
-- Better test targeting.
-- Cleaner future support for additional remote backends.
-
-### 2. Split `src/model_catalog.rs` DONE
-
-Current state:
-- `src/model_catalog.rs` owns model discovery, GGUF metadata parsing, tokenizer inference, metadata merge logic, routing decisions, family inference, workload inference, and JSON formatting for commands.
-
-Why refactor:
-- This is a classic accumulation file with multiple reasons to change.
-- Model discovery and model routing evolve at different speeds.
-- Metadata parsing is now important enough to deserve isolated tests and its own abstractions.
-
-Recommended split:
-- `src/model/catalog.rs`: discovery and refresh.
-- `src/model/metadata.rs`: GGUF and tokenizer metadata extraction, merge logic, normalization.
-- `src/model/routing.rs`: driver resolution, workload-aware routing, target selection.
-- `src/model/workload.rs`: workload parsing and inference helpers.
-- `src/model/formatting.rs`: JSON and status formatting for command responses.
+## Objective
 
-Expected benefit:
-- Smaller APIs per domain.
-- Easier addition of new metadata sources.
-- Reduced duplication between workload parsing call sites.
-
-### 3. Reduce `src/main.rs` to bootstrap only DONE
-
-Current state:
-- `src/main.rs` contains kernel bootstrap, TCP server setup, event loop, auth-token provisioning, checkpoint scheduling, model catalog initialization, worker setup, and shutdown handling.
+Questo documento definisce il piano operativo del refactor architetturale approvato per AgenticOS.
 
-Why refactor:
-- The file currently acts as both binary entry point and kernel runtime implementation.
-- Startup policy, event-loop orchestration, and operational concerns are tightly coupled.
-- Configuration centralization improved this, but the file is still doing too much.
+Obiettivo del refactor:
 
-Recommended split:
-- `src/kernel/bootstrap.rs`: startup, config load, auth token preparation, listener creation.
-- `src/kernel/server.rs`: event loop and client lifecycle.
-- `src/kernel/checkpointing.rs`: periodic checkpoint logic and snapshot assembly.
-- `src/main.rs`: tracing init plus call into bootstrap.
+- rendere il progetto piu' professionale e coerente a livello di workspace Rust;
+- eliminare la duplicazione dei contratti tra kernel e GUI Tauri;
+- tipizzare i boundary critici invece di affidarsi a payload ed errori string-based;
+- ridurre l'accoppiamento interno del kernel senza fare refactor cosmetici;
+- mantenere il kernel come demone TCP indipendente e rendere la GUI piu' event-driven.
 
-Expected benefit:
-- Cleaner startup code.
-- Easier unit testing of bootstrap logic.
-- Better isolation of operational behavior from the binary entry point.
+## Decisioni Architetturali Vincolanti
 
-## Runtime And Execution Flow
+- Il kernel resta un processo separato dalla GUI Tauri.
+- Il transport embedded e' fuori scope.
+- Il control plane continuera' a usare TCP locale/autenticato.
+- L'ottimizzazione richiesta e' sul design del layer TCP e del modello di aggiornamento, non sulla sua rimozione.
 
-### 4. Extract syscall handling from `src/runtime.rs` DONE
+## Priorita' Approvate
 
-Current state:
-- `src/runtime.rs` combines inference result handling, process teardown, orchestration progression, token quota enforcement, syscall interception, and output delivery.
+1. Unificare il workspace Rust.
+2. Estrarre un crate condiviso per i DTO del control plane.
+3. Tipizzare rigidamente gli errori di boundary.
+4. Disaccoppiare internamente il kernel riducendo il `God Object`.
+5. Rendere il lato GUI e observability piu' event-driven riducendo il polling.
 
-Why refactor:
-- Runtime tick logic is central and performance-sensitive.
-- Mixed responsibilities make it easy to regress unrelated paths when changing one execution stage.
-- Syscall interception is logically independent from inference result delivery.
+## Non Goals
 
-Recommended split:
-- `src/runtime/tick.rs`: top-level phase ordering.
-- `src/runtime/inference_results.rs`: worker result application.
-- `src/runtime/syscalls.rs`: syscall buffer scanning and dispatch integration.
-- `src/runtime/orchestration.rs`: orchestration progress handling.
+- riscrivere subito tutto il kernel in micro-crate;
+- eliminare il protocollo TCP;
+- accorpare kernel e Tauri nello stesso processo;
+- ridefinire i payload pubblici senza una fase di compatibilita' esplicita.
 
-Expected benefit:
-- More testable runtime phases.
-- Lower regression surface.
-- Easier instrumentation of each phase.
+## Execution Tracker
 
-### 5. Simplify `src/tools.rs` DONE
+- [x] Phase 1. Workspace Rust unificato
+- [x] Phase 2. Crate condiviso `agentic-control-models`
+- [x] Phase 3. Errori di boundary tipizzati
+- [x] Phase 4. Facade e state partition del kernel
+- [x] Phase 5. TCP event-driven e riduzione del polling GUI
 
-Current state:
-- `src/tools.rs` contains workspace path policy, sandbox selection, rate limiting, timeout execution, audit logging, stale-script cleanup, and Python tool execution.
+## Phase 1. Workspace Rust Unificato
 
-Why refactor:
-- It mixes policy, filesystem security, subprocess execution, and telemetry.
-- Rate-limit state and sandbox policy are orthogonal concerns.
-- This file is a likely hotspot for accidental security regressions.
+### Outcome
 
-Recommended split:
-- `src/tools/policy.rs`: rate limit and sandbox config.
-- `src/tools/path_guard.rs`: safe path resolution and workspace root handling.
-- `src/tools/python_runner.rs`: script generation and execution.
-- `src/tools/audit.rs`: audit log persistence.
+Portare `apps/agent-workspace/src-tauri` dentro il workspace Cargo root insieme al kernel e a `crates/agentic-protocol`.
 
-Expected benefit:
-- Safer review boundaries.
-- Clearer ownership of sandbox logic.
-- Less accidental coupling between tool behavior and filesystem rules.
+### Motivazione
 
-### 6. Deduplicate checkpoint snapshot assembly DONE
+Finche' Tauri vive in un sottoworkspace separato:
 
-Current state:
-- Snapshot building logic is duplicated between `src/main.rs` and `src/commands/checkpoint_cmd.rs`.
+- i refactor condivisi sono piu' fragili;
+- i lockfile e i check possono divergere;
+- l'estrazione di crate comuni e' piu' costosa;
+- manca una vista unica del grafo Rust del progetto.
 
-Why refactor:
-- The same kernel state is serialized through two separate assembly flows.
-- Any future snapshot field risks drifting between auto-checkpoint and manual checkpoint.
+### Tasks
 
-Recommended split:
-- Add a single snapshot builder service, for example `src/checkpoint/builder.rs`, used by both manual and periodic checkpointing.
+1. Aggiungere `apps/agent-workspace/src-tauri` a `[workspace].members` nel root `Cargo.toml`.
+2. Rimuovere il `[workspace]` locale dal `Cargo.toml` di Tauri.
+3. Verificare `cargo metadata` e `cargo check --workspace`.
+4. Mantenere invariato, per ora, il crate root del kernel come package + workspace.
 
-Expected benefit:
-- One serialization path.
-- Lower maintenance cost when snapshot schema evolves.
+### Acceptance Criteria
 
-## Configuration And Operational Consistency
+- `cargo check --workspace` risolve correttamente sia kernel sia Tauri.
+- esiste un solo workspace Rust operativo.
+- i path dependency esistenti restano validi.
 
-### 7. Finish config adoption outside the core kernel DONE
+### Status
 
-Current state:
-- The kernel now reads `agenticos.toml` at startup.
-- GUI and command-line clients partially read the shared config.
-- Evaluation scripts in `src/eval_llama3.py` and `src/eval_swarm.py` still carry their own host, port, timeout, model-path, and report-path defaults.
+Completata in questo step.
 
-Why refactor:
-- Operational drift is still possible between runtime, GUI, and benchmark tooling.
-- The repo still contains multiple entry points with partially duplicated transport defaults.
+## Phase 2. Shared Control Models
 
-Recommended follow-up:
-- Introduce one tiny shared Python config loader used by `gui/` and `src/*.py` utilities.
-- Keep TOML as the source of truth and treat env vars as optional overrides only.
+### Outcome
 
-Expected benefit:
-- Fewer environment-specific surprises.
-- Easier reproducibility across GUI, CLI, and benchmarks.
+Creare `crates/agentic-control-models` come source of truth per i DTO scambiati tra kernel e Tauri.
 
-## Efficiency And Hot Paths
+### Status
 
-### 8. Avoid repeated full-catalog recomputation on every refresh-heavy path DONE
+Completata sul boundary Rust-Rust:
 
-Current state:
-- `ModelCatalog::discover` and formatting helpers rebuild catalog state and response payloads from scratch.
-- `EXEC` and GUI flows trigger frequent refreshes and status queries.
+- `STATUS`, `STATUS <pid>`, `STATUS orch:<id>`;
+- `LIST_MODELS`, `MODEL_INFO`;
+- result payload di `EXEC`, `ORCHESTRATE`, `LOAD`, `SELECT_MODEL`, `PING`, `SHUTDOWN`;
+- il bridge Tauri importa i DTO control-plane direttamente dal crate condiviso;
+- i test del model catalog validano i payload contro i DTO condivisi invece di usare `serde_json::Value`.
 
-Why refactor:
-- As the number of models grows, full rescans and repeated JSON assembly become more expensive.
-- The current implementation is fine at small scale but does not age well with a large local model library.
+Nota:
 
-Recommended refactor:
-- Cache discovered entries keyed by directory mtime or file hash snapshot.
-- Cache formatted LIST/INFO payloads and invalidate only on catalog refresh.
+- restano tipi TypeScript e view model UI lato frontend, ma non fanno piu' parte della duplicazione Rust kernel <-> Tauri che questa fase doveva eliminare.
 
-Expected benefit:
-- Better responsiveness in model-heavy workspaces.
-- Less repeated filesystem churn.
+### Motivazione
 
-### 9. Review prompt/token conversions around remote inference DONE
+La duplicazione attuale dei payload tra:
 
-Current state:
-- The external backend reconstructs prompts from tokens and may tokenize emitted text when token ids are absent.
-- This is necessary for compatibility, but it is also a frequent source of subtle bugs.
+- kernel Rust;
+- backend Tauri Rust;
+- mapping frontend;
 
-Why refactor:
-- Prompt reconstruction, completion parsing, and stop handling are part of a fragile adapter layer.
-- This code deserves a tighter abstraction boundary and dedicated fixtures.
+e' il punto di rottura piu' pericoloso dell'integrazione.
 
-Recommended refactor:
-- Formalize a transport adapter contract for remote backends.
-- Move prompt serialization and completion decoding into explicit adapter utilities.
-- Add fixture-based tests using captured `llama-server` payloads.
+### Scope
 
-Expected benefit:
-- Easier regression prevention for Qwen and future reasoning models.
+Il nuovo crate conterra':
 
-## GUI Architecture
+- DTO per `STATUS`, `STATUS <pid>`, `LIST_MODELS`, `MODEL_INFO`;
+- DTO per `EXEC`, `ORCHESTRATE`, `LOAD`, `SELECT_MODEL`, `PING`, `SHUTDOWN`;
+- tipi condivisi per model catalog, scheduler/quota snapshot, context snapshot, orchestration snapshot;
+- eventuali enum di supporto direttamente usate a boundary.
 
-### 10. Reduce `gui/app.py` DONE
+### Tasks
 
-Current state:
-- `gui/app.py` coordinates layout, command dispatch, retry behavior, worker threads, state transitions, and widget updates.
+1. Creare il nuovo crate in `crates/agentic-control-models`.
+2. Spostare i modelli oggi duplicati in `apps/agent-workspace/src-tauri/src/models/kernel.rs`.
+3. Adattare il kernel a serializzare direttamente i DTO condivisi.
+4. Adattare Tauri a deserializzare gli stessi DTO senza mirror locali.
+5. Aggiungere contract tests base sui payload critici.
 
-Why refactor:
-- It acts as controller, service layer, and view orchestrator simultaneously.
-- Retry logic and transport error handling are repeated in multiple methods.
+### Acceptance Criteria
 
-Recommended split:
-- `gui/request_handler.py`: retries, timeouts, async request dispatch.
-- `gui/session_state.py`: selected model, active process state, connection state.
-- `gui/app.py`: UI wiring only.
+- nessun DTO control-plane resta duplicato tra kernel e Tauri;
+- i payload pubblici piu' usati sono definiti una volta sola;
+- i test falliscono se kernel e bridge divergono.
 
-Expected benefit:
-- Simpler window logic.
-- Lower risk when modifying connection behavior.
+## Phase 3. Typed Boundary Errors
 
-### 11. Centralize GUI response parsing DONE
+### Outcome
 
-Current state:
-- `gui/widgets/models.py`, `gui/widgets/processes.py`, `gui/widgets/memory.py`, and `gui/widgets/chat.py` parse different slices of kernel responses independently.
+Rendere typed tutti gli errori che attraversano boundary di protocollo, command layer e bridge Tauri.
 
-Why refactor:
-- Schema knowledge is spread across widgets.
-- Any STATUS or LIST response evolution forces multiple manual updates.
+### Motivazione
 
-Recommended split:
-- `gui/response_parser.py`: normalized parser functions for STATUS, LIST_MODELS, CHECKPOINT, and orchestration outputs.
+Prima di separare i domini bisogna rendere affidabile il debugging tra moduli. Gli errori string-based possono ancora esistere internamente in alcuni path, ma non devono piu' essere il contratto tra componenti.
 
-Expected benefit:
-- Single source of truth for kernel response decoding.
-- Less widget-specific string parsing.
+### Scope
 
-### 12. Reorganize the `gui/widgets/` folder by responsibility DONE
+Target iniziale:
 
-Current state:
-- `gui/widgets/` contains domain panels, layout helpers, and supporting widgets in one flat folder.
+- protocol decode/encode errors;
+- auth/handshake errors;
+- command validation errors;
+- model selection/load errors;
+- transport and bridge errors Tauri;
+- mapping stabile verso codici errore del control plane.
 
-Why refactor:
-- The folder no longer communicates ownership clearly.
-- Flat growth makes reuse and onboarding harder.
+### Tasks
 
-Recommended layout:
-- `gui/sections/`: chat, models, processes, memory, orchestration, logs.
-- `gui/widgets/`: reusable visual controls only.
-- `gui/services/`: protocol client wrappers, request handling, parser layer.
+1. Introdurre enum `thiserror` dedicate ai boundary.
+2. Mappare gli errori verso codici stabili e payload coerenti.
+3. Sostituire i `Err(String)` sui path pubblici piu' critici.
+4. Allineare il bridge Tauri a questi errori tipizzati.
+5. Aggiungere test per le conversioni error -> response.
 
-Expected benefit:
-- Better navigability.
-- Cleaner UI/service separation.
+### Acceptance Criteria
 
-## Command Layer And Domain Boundaries
+- gli handler pubblici non espongono piu' errori raw string-based come contratto primario;
+- i log e le risposte hanno codici prevedibili;
+- il bridge Tauri puo' distinguere classi di errore senza parsing fragile.
 
-### 13. Reduce parsing duplication across commands and orchestration DONE
+### Status
 
-Current state:
-- Workload parsing and generation defaults are consumed from several places: command handlers, orchestration, model catalog, scheduler, and prompting.
+Completata per il perimetro operativo principale:
 
-Why refactor:
-- Behavior is currently correct but spread across modules that should not all own policy decisions.
-- Policy drift is likely as more routing logic is added.
+- `kernel/protocol.rs` usa `KernelBridgeError` tipizzato invece di `Result<_, String>`;
+- `kernel/client.rs` propaga errori typed fino al confine dei comandi Tauri;
+- la conversione a `String` avviene solo sul boundary IPC dei `#[tauri::command]`;
+- aggiunti test mirati per mismatch di schema e decode degli errori kernel con codice stabile;
+- introdotto `ControlErrorCode` in `agentic-protocol` come source of truth dei codici errore pubblici;
+- migrati i command handler `AUTH`, `STATUS`, `LOAD`, `EXEC`, `process`, `misc`, `memory`, `checkpoint`, `orchestration`, `scheduler`, `tools` a codici errore tipizzati sul lato kernel.
 
-Recommended split:
-- Create a small `src/policy/` module for workload normalization, generation defaults, and scheduler quota defaults.
+## Phase 4. Kernel Decoupling
 
-Expected benefit:
-- One place for operational policy.
-- Cleaner distinction between domain policy and execution code.
+### Outcome
 
-### 14. Revisit command module folder structure DONE
+Ridurre il dominio di `Kernel` e `CommandContext` introducendo facade e partizioni di stato piu' strette.
 
-Current state:
-- `src/commands/` is already split, but several handlers still reach deeply into engine, memory, scheduler, orchestrator, and checkpoint internals.
+### Motivazione
 
-Why refactor:
-- Command handlers should coordinate services, not rebuild domain state themselves.
-- The current `CommandContext` is useful, but some handlers still know too much about downstream storage structures.
+Spostare file in cartelle diverse non risolve il problema se ogni handler continua a dipendere dall'intero stato mutabile del kernel.
 
-Recommended direction:
-- Keep transport parsing in `commands/`.
-- Move reusable domain operations into dedicated services consumed by command handlers.
+### Strategia
 
-Expected benefit:
-- Thinner command handlers.
-- Less churn when domain internals change.
+Prima si separano le responsabilita' a livello di API interne, poi eventualmente si valuta l'estrazione in crate dedicati.
 
-## Suggested Refactor Order
+### Prima Partizione Proposta
 
-### Phase A: Low-risk structural wins
+- `ControlPlaneState`
+- `RuntimeState`
+- `ModelState`
+- `MemoryState`
+- `ObservabilityState`
 
-1. Extract checkpoint snapshot builder.
-2. Split `src/tools.rs` by concern.
-3. Centralize GUI response parsing.
-4. Move config loading for Python evaluation scripts to the shared TOML source.
+### Tasks
 
-### Phase B: High-value core cleanup
+1. Ridurre `CommandContext` a capability specifiche per gruppo di comandi.
+2. Introdurre facade/services per model lifecycle, process lifecycle, status snapshots, orchestration queries.
+3. Spostare i command handler verso dipendenze piu' strette.
+4. Ridurre i punti che richiedono accesso mutabile all'intero `Kernel`.
+5. Preparare il terreno per il futuro split `agentic-kernel` / `agentic-kernel-bin`.
 
-1. Split `src/backend.rs`.
-2. Split `src/model_catalog.rs`.
-3. Reduce `src/main.rs` to bootstrap only.
-4. Extract runtime phases from `src/runtime.rs`.
+### Acceptance Criteria
 
-### Phase C: UI architecture cleanup
+- i comandi `model`, `status`, `process`, `tools`, `orchestration` non richiedono tutti la stessa vista completa del kernel;
+- il compile-time ownership model diventa piu' locale;
+- i servizi trasversali esistenti vengono consolidati invece di moltiplicare gli accessi diretti.
 
-1. Shrink `gui/app.py`.
-2. Reorganize `gui/widgets/` into sections, widgets, and services.
+### Status
 
-## Notes
+Completata sul command layer:
 
-- The recent `agenticos.toml` work improves runtime consistency, but it also highlights where configuration ownership is still spread across the repository.
-- The most urgent structural risk remains the adapter boundary around remote inference in `src/backend.rs` and the size of `src/model_catalog.rs`.
-- No refactors from this plan are implemented in this document; this is an analysis and sequencing artifact only.
+- introdotto `StatusCommandContext` come capability ristretta read-mostly;
+- introdotto `ModelCommandContext` come capability ristretta per il model control;
+- estratto `src/services/status_snapshot.rs` come servizio dedicato alla costruzione degli snapshot `STATUS`;
+- `src/commands/status.rs` ora fa parsing + response, mentre la composizione dei dati e' fuori dal command handler;
+- `src/commands/model.rs` non dipende piu' dall'intero `CommandContext`;
+- introdotto `ProcessCommandContext` come capability ristretta per term/kill;
+- introdotto `OrchestrationCommandContext` come capability ristretta per l'avvio delle DAG;
+- estratti `src/services/process_control.rs` e `src/services/orchestration_runtime.rs` per spostare fuori dai command handler la logica di controllo processo e bootstrap orchestration.
+- introdotti `ExecCommandContext`, `SchedulerCommandContext`, `ToolsCommandContext`, `MiscCommandContext`, `MemoryCommandContext`, `CheckpointCommandContext`;
+- i command handler `exec`, `scheduler`, `tools`, `misc`, `memory`, `checkpoint` ora dipendono da view-context dedicati invece del contesto monolitico;
+- il dispatch centrale resta l'unico punto che costruisce `CommandContext`, mentre gli handler ricevono solo le capability necessarie;
+- verifica oggettiva: nessun handler in `src/commands` riceve piu' `&mut CommandContext<'_>` direttamente.
+
+## Phase 5. TCP Event-Driven GUI
+
+### Outcome
+
+Mantenere TCP ma spostare GUI e bridge verso un modello osservabile push-first, riducendo il polling continuo.
+
+### Motivazione
+
+Per l'uso desktop attuale, la vera inefficienza non e' il loopback TCP in se', ma:
+
+- polling ripetuto di `STATUS`;
+- snapshot complete ricalcolate spesso;
+- aggiornamenti UI che arrivano in ritardo o fuori ordine;
+- doppio lavoro tra stream timeline e fetch periodici.
+
+### Direzione Tecnica
+
+Il kernel resta demone indipendente, ma il bridge Tauri deve diventare piu' simile a un subscriber TCP che a un poller.
+
+### Tasks
+
+1. Definire eventi di runtime stabili per PID/sessione/orchestrazione/modello.
+2. Introdurre una subscription TCP dedicata per eventi osservabili.
+3. Mantenere `STATUS` e snapshot come fallback e bootstrap, non come canale primario live.
+4. Fare in modo che Tauri traduca gli eventi TCP in eventi UI consistenti.
+5. Ridurre il polling frontend ai soli casi di recovery o cold start.
+
+### Acceptance Criteria
+
+- timeline e mind panel si aggiornano principalmente via eventi push;
+- il polling periodico viene ridotto o relegato al fallback;
+- il bridge gestisce reconnect e resume senza bloccare la GUI.
+
+### Status
+
+Completata con il nuovo flusso push-first:
+
+- aggiunto `SUBSCRIBE` al control plane TCP e capability `event_stream_v1`;
+- introdotti `KernelEvent` e `KernelEventEnvelope` nel crate condiviso `agentic-control-models`;
+- il kernel accoda eventi di runtime/control-plane (`SessionStarted`, `TimelineChunk`, `WorkspaceChanged`, `LobbyChanged`, `SessionFinished`, `SessionErrored`, `ModelChanged`, `KernelShutdownRequested`) e li flush-a ai client sottoscritti dal main loop `mio`;
+- il bridge Tauri avvia in `setup` una subscription persistente separata con reconnect automatico e emissione di eventi app-level;
+- `TimelineStore` Tauri non dipende piu' da una dedicated `EXEC` streaming thread: `start_session` apre una connessione breve per ottenere il PID, mentre la live UI arriva dal subscriber globale;
+- il frontend React ascolta `kernel://bridge_status`, `kernel://lobby_snapshot`, `kernel://workspace_snapshot`, `kernel://timeline_snapshot` e aggiorna gli store Zustand in push;
+- rimossi i `setInterval` da `layout.tsx` e `workspace-page.tsx`;
+- `fetch_lobby_snapshot`, `fetch_workspace_snapshot` e `fetch_timeline_snapshot` restano come bootstrap/manual recovery path, non come canale live primario.
+
+## Suggested Order Of Execution
+
+1. Consolidare subito il workspace.
+2. Estrarre i DTO condivisi piu' usati da `STATUS` e `LIST_MODELS`.
+3. Tipizzare gli errori dei path di protocollo e bridge.
+4. Ridurre `Kernel` tramite facade partendo dai command group meno rischiosi.
+5. Progettare ed introdurre il canale eventi TCP per lobby/workspace.
+
+## Validation Strategy
+
+- `cargo check --workspace` ad ogni fase strutturale;
+- test mirati kernel e Tauri sui contratti condivisi;
+- build frontend dopo i cambi bridge/API;
+- regressione manuale su Lobby, Workspace, Timeline, Mind Panel;
+- aggiornamento continuo di `TAURI_SYSTEM_AUDIT.md` man mano che i punti vengono chiusi.
+
+## Immediate Next Step
+
+Dopo la consolidazione del workspace, il lavoro parte dal punto 2:
+
+- creare `crates/agentic-control-models`;
+- migrare dentro il crate i DTO piu' critici del bridge Tauri;
+- usare il nuovo crate come base per i successivi errori tipizzati e per il refactor dei boundary.

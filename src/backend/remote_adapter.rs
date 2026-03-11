@@ -56,10 +56,17 @@ pub(crate) fn decode_completion_response(
     raw: serde_json::Value,
     tokenizer: &Tokenizer,
 ) -> Result<DecodedCompletion> {
-    let response: CompletionResponse = serde_json::from_value(raw)
-        .map_err(|e| E::msg(format!("Malformed completion payload from external RPC backend: {}", e)))?;
+    let response: CompletionResponse = serde_json::from_value(raw).map_err(|e| {
+        E::msg(format!(
+            "Malformed completion payload from external RPC backend: {}",
+            e
+        ))
+    })?;
 
-    let choice = response.choices.as_ref().and_then(|choices| choices.first());
+    let choice = response
+        .choices
+        .as_ref()
+        .and_then(|choices| choices.first());
     let emitted_text = combine_completion_text(
         response.reasoning_content.as_deref(),
         response.content.as_deref(),

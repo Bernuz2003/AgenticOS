@@ -42,7 +42,10 @@ pub(crate) fn topological_sort(tasks: &[TaskNodeDef]) -> Result<Vec<String>, Orc
         in_degree.entry(task.id.as_str()).or_insert(0);
         adjacency.entry(task.id.as_str()).or_default();
         for dep in &task.deps {
-            adjacency.entry(dep.as_str()).or_default().push(task.id.as_str());
+            adjacency
+                .entry(dep.as_str())
+                .or_default()
+                .push(task.id.as_str());
             *in_degree.entry(task.id.as_str()).or_insert(0) += 1;
         }
     }

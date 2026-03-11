@@ -142,7 +142,9 @@ fn render_single_chat_turn(
         return render_jinja_chat_template(template, &[ChatMessage { role, content }], metadata);
     }
 
-    Some(render_placeholder_chat_turn(role, content, family, metadata, template))
+    Some(render_placeholder_chat_turn(
+        role, content, family, metadata, template,
+    ))
 }
 
 fn render_placeholder_chat_turn(
@@ -247,18 +249,27 @@ mod tests {
     use crate::model_catalog::ModelMetadata;
 
     use super::{
-        format_interprocess_user_message_with_metadata,
-        format_system_injection_with_metadata,
-        format_user_message_with_metadata,
-        should_stop_on_text_with_metadata,
-        PromptFamily,
+        format_interprocess_user_message_with_metadata, format_system_injection_with_metadata,
+        format_user_message_with_metadata, should_stop_on_text_with_metadata, PromptFamily,
     };
 
     #[test]
     fn qwen_stop_markers_are_detected() {
-        assert!(should_stop_on_text_with_metadata(PromptFamily::Qwen, "...<|im_end|>...", None));
-        assert!(should_stop_on_text_with_metadata(PromptFamily::Qwen, "...<|endoftext|>...", None));
-        assert!(!should_stop_on_text_with_metadata(PromptFamily::Qwen, "plain text without stop marker", None));
+        assert!(should_stop_on_text_with_metadata(
+            PromptFamily::Qwen,
+            "...<|im_end|>...",
+            None
+        ));
+        assert!(should_stop_on_text_with_metadata(
+            PromptFamily::Qwen,
+            "...<|endoftext|>...",
+            None
+        ));
+        assert!(!should_stop_on_text_with_metadata(
+            PromptFamily::Qwen,
+            "plain text without stop marker",
+            None
+        ));
     }
 
     #[test]
@@ -280,18 +291,12 @@ mod tests {
             ..Default::default()
         };
 
-        let rendered = format_system_injection_with_metadata(
-            "hello",
-            PromptFamily::Llama,
-            Some(&metadata),
-        );
+        let rendered =
+            format_system_injection_with_metadata("hello", PromptFamily::Llama, Some(&metadata));
         assert_eq!(rendered, "<system>hello</system><assistant>");
 
-        let user_rendered = format_user_message_with_metadata(
-            "ciao",
-            PromptFamily::Llama,
-            Some(&metadata),
-        );
+        let user_rendered =
+            format_user_message_with_metadata("ciao", PromptFamily::Llama, Some(&metadata));
         assert_eq!(user_rendered, "<user>ciao</user><assistant>");
     }
 
@@ -310,7 +315,11 @@ mod tests {
             "abc<stop_here>def",
             Some(&metadata),
         ));
-        assert!(should_stop_on_text_with_metadata(PromptFamily::Qwen, "...<|im_end|>...", None));
+        assert!(should_stop_on_text_with_metadata(
+            PromptFamily::Qwen,
+            "...<|im_end|>...",
+            None
+        ));
     }
 
     #[test]
@@ -319,7 +328,8 @@ mod tests {
         assert!(qwen.contains("<|im_start|>user"));
         assert!(qwen.contains("<|im_start|>assistant"));
 
-        let inter = format_interprocess_user_message_with_metadata(7, "pong", PromptFamily::Qwen, None);
+        let inter =
+            format_interprocess_user_message_with_metadata(7, "pong", PromptFamily::Qwen, None);
         assert!(inter.contains("[Message from PID 7]: pong"));
         assert!(inter.contains("<|im_start|>assistant"));
     }
@@ -333,11 +343,8 @@ mod tests {
             ..Default::default()
         };
 
-        let rendered = format_user_message_with_metadata(
-            "dimmi ciao",
-            PromptFamily::Qwen,
-            Some(&metadata),
-        );
+        let rendered =
+            format_user_message_with_metadata("dimmi ciao", PromptFamily::Qwen, Some(&metadata));
 
         assert_eq!(rendered, "<user>dimmi ciao</user><assistant>");
     }

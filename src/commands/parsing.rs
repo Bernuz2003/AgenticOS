@@ -17,7 +17,10 @@ pub(crate) fn parse_memw_payload(payload: &[u8]) -> Result<(u64, Vec<u8>), Strin
         return Ok((pid, raw));
     }
 
-    Err("MEMW requires canonical format '<pid>\\n<raw-bytes>'; pipe syntax is no longer accepted".to_string())
+    Err(
+        "MEMW requires canonical format '<pid>\\n<raw-bytes>'; pipe syntax is no longer accepted"
+            .to_string(),
+    )
 }
 
 pub(crate) fn parse_generation_payload(

@@ -17,7 +17,10 @@ pub(super) fn resolve_valid_swap_dir(requested: Option<PathBuf>) -> Result<PathB
 
     if !candidate.is_absolute() {
         for comp in candidate.components() {
-            if matches!(comp, Component::ParentDir | Component::RootDir | Component::Prefix(_)) {
+            if matches!(
+                comp,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            ) {
                 return Err(format!(
                     "Invalid swap path {:?}: traversal or absolute components are not allowed for relative paths",
                     candidate
@@ -35,8 +38,12 @@ pub(super) fn resolve_valid_swap_dir(requested: Option<PathBuf>) -> Result<PathB
     fs::create_dir_all(&candidate_abs)
         .map_err(|e| format!("Failed to create swap dir {:?}: {}", candidate_abs, e))?;
 
-    let workspace_canon = fs::canonicalize(&workspace_root)
-        .map_err(|e| format!("Failed to canonicalize workspace dir {:?}: {}", workspace_root, e))?;
+    let workspace_canon = fs::canonicalize(&workspace_root).map_err(|e| {
+        format!(
+            "Failed to canonicalize workspace dir {:?}: {}",
+            workspace_root, e
+        )
+    })?;
     let candidate_canon = fs::canonicalize(&candidate_abs)
         .map_err(|e| format!("Failed to canonicalize swap dir {:?}: {}", candidate_abs, e))?;
 

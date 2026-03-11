@@ -1,6 +1,12 @@
-# AgenticOS GUI (MVP)
+# AgenticOS GUI (PySide6 Fallback)
 
-Interfaccia desktop PySide6 per controllare il kernel e osservare il runtime in tempo reale.
+Interfaccia desktop PySide6 mantenuta come fallback diagnostico per controllare il kernel e osservare il runtime in tempo reale.
+
+## Stato
+
+- La GUI desktop primaria del progetto e' ora `Agent Workspace` sotto `apps/agent-workspace/`.
+- Questa GUI PySide6 e' `deprecated` ma resta supportata come fallback operativo finche' la nuova GUI Tauri completa almeno un ciclo operativo reale sul campo.
+- Il protocollo TCP locale, `workspace/.kernel_token` e i contratti `STATUS`/`STATUS <pid>`/`STATUS orch:<id>` restano condivisi fra le due GUI.
 
 ## Funzioni MVP
 

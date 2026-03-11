@@ -20,11 +20,12 @@ pub fn writable_interest() -> Interest {
 
 #[cfg(test)]
 mod tests {
+    use agentic_protocol::MAX_CONTENT_LENGTH;
+    use std::collections::HashSet;
     use std::fs;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::AtomicBool;
-    use std::collections::HashSet;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::Duration;
@@ -32,10 +33,9 @@ mod tests {
     use crate::commands::MetricsState;
     use crate::engine::LLMEngine;
     use crate::memory::{MemoryConfig, NeuralMemory};
-    use crate::model_catalog::WorkloadClass;
     use crate::model_catalog::ModelCatalog;
+    use crate::model_catalog::WorkloadClass;
     use crate::orchestrator::Orchestrator;
-    use crate::protocol::MAX_CONTENT_LENGTH;
     use crate::scheduler::ProcessScheduler;
     use crate::tool_registry::ToolRegistry;
     use jsonschema::JSONSchema;
@@ -82,6 +82,7 @@ mod tests {
         tool_registry: &mut ToolRegistry,
         auth_token: &str,
     ) {
+        let mut pending_events = Vec::new();
         for _ in 0..4 {
             let _ = handle_read_with_registry(
                 client,
@@ -94,6 +95,7 @@ mod tests {
                 shutdown_requested,
                 in_flight,
                 pending_kills,
+                &mut pending_events,
                 metrics,
                 tool_registry,
                 auth_token,
@@ -116,7 +118,9 @@ mod tests {
     }
 
     fn control_payload(resp: &str) -> &str {
-        resp.split_once("\r\n").map(|(_, payload)| payload).expect("framed payload")
+        resp.split_once("\r\n")
+            .map(|(_, payload)| payload)
+            .expect("framed payload")
     }
 
     fn control_json(resp: &str) -> Value {
@@ -204,7 +208,8 @@ mod tests {
             let payload_len = parts[2].parse::<usize>().expect("payload len");
             let payload_start = offset + header_end + 2;
             let payload_end = payload_start + payload_len;
-            let payload = std::str::from_utf8(&bytes[payload_start..payload_end]).expect("utf8 payload");
+            let payload =
+                std::str::from_utf8(&bytes[payload_start..payload_end]).expect("utf8 payload");
             payloads.push(serde_json::from_str::<Value>(payload).expect("json payload"));
             offset = payload_end;
         }
@@ -348,8 +353,17 @@ mod tests {
     #[test]
     fn tcp_ping_roundtrip_on_transport_layer() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         peer.write_all(b"PING 1 0\n").expect("write ping");
 
@@ -383,8 +397,17 @@ mod tests {
     #[test]
     fn tcp_partial_header_then_complete_header() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         peer.write_all(b"PING 1").expect("write chunk1");
         let _ = handle_read(
@@ -430,8 +453,17 @@ mod tests {
     #[test]
     fn tcp_invalid_header_then_valid_ping_same_stream() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         peer.write_all(b"WHAT 1 0\nPING 1 0\n")
             .expect("write invalid+valid");
@@ -461,8 +493,17 @@ mod tests {
     #[test]
     fn tcp_oversized_header_then_valid_ping_same_stream() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         let request = format!("PING 1 {}\nPING 1 0\n", MAX_CONTENT_LENGTH + 1);
         peer.write_all(request.as_bytes())
@@ -493,8 +534,17 @@ mod tests {
     #[test]
     fn tcp_disconnect_requests_close() {
         let (mut client, peer) = setup_client_and_peer();
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         drop(peer);
 
@@ -519,8 +569,17 @@ mod tests {
     fn tcp_multi_client_isolated_buffers() {
         let (mut client_a, mut peer_a) = setup_client_and_peer();
         let (mut client_b, mut peer_b) = setup_client_and_peer();
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         peer_a.write_all(b"PING 1 0\n").expect("write ping a");
         peer_b.write_all(b"PING 2 0\n").expect("write ping b");
@@ -570,8 +629,17 @@ mod tests {
 
     #[test]
     fn tcp_reconnect_after_disconnect_still_works() {
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         let (mut client1, peer1) = setup_client_and_peer();
         drop(peer1);
@@ -592,7 +660,9 @@ mod tests {
         assert!(should_close);
 
         let (mut client2, mut peer2) = setup_client_and_peer();
-        peer2.write_all(b"PING 9 0\n").expect("write ping after reconnect");
+        peer2
+            .write_all(b"PING 9 0\n")
+            .expect("write ping after reconnect");
         let should_close_2 = handle_read(
             &mut client2,
             &mut memory,
@@ -619,8 +689,17 @@ mod tests {
     #[test]
     fn tcp_status_returns_kernel_metrics_snapshot() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         peer.write_all(b"STATUS 1 0\n").expect("write status");
         let should_close = handle_read(
@@ -650,8 +729,17 @@ mod tests {
     #[test]
     fn tcp_shutdown_sets_flag() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         peer.write_all(b"SHUTDOWN 1 0\n").expect("write shutdown");
         let should_close = handle_read(
@@ -689,12 +777,22 @@ mod tests {
         let mio_stream = mio::net::TcpStream::from_std(server_stream);
         let mut client = Client::new(mio_stream, false);
 
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         let payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
         let header = format!("HELLO 1 {}\n", payload.len());
-        peer.write_all(header.as_bytes()).expect("write hello header");
+        peer.write_all(header.as_bytes())
+            .expect("write hello header");
         peer.write_all(payload).expect("write hello payload");
 
         let _ = handle_read(
@@ -734,24 +832,75 @@ mod tests {
         let mio_stream = mio::net::TcpStream::from_std(server_stream);
         let mut client = Client::new(mio_stream, false);
 
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         let hello_payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
         let hello_header = format!("HELLO 1 {}\n", hello_payload.len());
-        peer.write_all(hello_header.as_bytes()).expect("write hello header");
+        peer.write_all(hello_header.as_bytes())
+            .expect("write hello header");
         peer.write_all(hello_payload).expect("write hello payload");
-        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
         let _ = handle_write(&mut client);
         let _ = read_frame(&mut peer);
 
-        peer.write_all(b"AUTH 1 12\nsecret_token").expect("write auth");
-        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        peer.write_all(b"AUTH 1 12\nsecret_token")
+            .expect("write auth");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
         let _ = handle_write(&mut client);
         let _ = read_frame(&mut peer);
 
-        peer.write_all(b"TOOL_INFO 1 6\npython").expect("write tool info");
-        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        peer.write_all(b"TOOL_INFO 1 6\npython")
+            .expect("write tool info");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
         let _ = handle_write(&mut client);
 
         let resp = read_frame(&mut peer);
@@ -760,7 +909,10 @@ mod tests {
         assert_matches_schema("protocol/schemas/v1/tool-info.schema.json", &payload);
         assert_eq!(payload["schema_id"], "agenticos.control.tool_info.v1");
         assert_eq!(payload["ok"], true);
-        assert!(payload["request_id"].as_str().unwrap_or("").starts_with("1:"));
+        assert!(payload["request_id"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("1:"));
         assert_eq!(payload["data"]["tool"]["descriptor"]["name"], "python");
         assert_eq!(payload["data"]["tool"]["backend"]["kind"], "host");
         assert!(payload["data"]["sandbox"].is_object());
@@ -777,24 +929,75 @@ mod tests {
         let mio_stream = mio::net::TcpStream::from_std(server_stream);
         let mut client = Client::new(mio_stream, false);
 
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         let hello_payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
         let hello_header = format!("HELLO 1 {}\n", hello_payload.len());
-        peer.write_all(hello_header.as_bytes()).expect("write hello header");
+        peer.write_all(hello_header.as_bytes())
+            .expect("write hello header");
         peer.write_all(hello_payload).expect("write hello payload");
-        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
         let _ = handle_write(&mut client);
         let _ = read_frame(&mut peer);
 
-        peer.write_all(b"AUTH 1 12\nsecret_token").expect("write auth");
-        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        peer.write_all(b"AUTH 1 12\nsecret_token")
+            .expect("write auth");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
         let _ = handle_write(&mut client);
         let _ = read_frame(&mut peer);
 
-        peer.write_all(b"LIST_TOOLS 1 0\n").expect("write list tools");
-        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        peer.write_all(b"LIST_TOOLS 1 0\n")
+            .expect("write list tools");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
         let _ = handle_write(&mut client);
 
         let resp = read_frame(&mut peer);
@@ -820,20 +1023,57 @@ mod tests {
         let mio_stream = mio::net::TcpStream::from_std(server_stream);
         let mut client = Client::new(mio_stream, false);
 
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
         let mut tool_registry = ToolRegistry::with_builtins();
 
         let hello_payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
         let hello_header = format!("HELLO 1 {}\n", hello_payload.len());
-        peer.write_all(hello_header.as_bytes()).expect("write hello header");
+        peer.write_all(hello_header.as_bytes())
+            .expect("write hello header");
         peer.write_all(hello_payload).expect("write hello payload");
-        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        pump_read_with_registry(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            &mut tool_registry,
+            "secret_token",
+        );
         pump_write(&mut client);
         let _ = read_frame(&mut peer);
 
-        peer.write_all(b"AUTH 1 12\nsecret_token").expect("write auth");
-        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        peer.write_all(b"AUTH 1 12\nsecret_token")
+            .expect("write auth");
+        pump_read_with_registry(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            &mut tool_registry,
+            "secret_token",
+        );
         pump_write(&mut client);
         let _ = read_frame(&mut peer);
 
@@ -841,30 +1081,73 @@ mod tests {
         let register_header = format!("REGISTER_TOOL 1 {}\n", register_payload.len());
         let mut register_frame = register_header.into_bytes();
         register_frame.extend_from_slice(register_payload);
-        peer.write_all(&register_frame).expect("write register frame");
-        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        peer.write_all(&register_frame)
+            .expect("write register frame");
+        pump_read_with_registry(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            &mut tool_registry,
+            "secret_token",
+        );
         pump_write(&mut client);
 
         let register_resp = read_frame(&mut peer);
         assert!(register_resp.starts_with("+OK REGISTER_TOOL"));
         let register_json = control_json(&register_resp);
-        assert_matches_schema("protocol/schemas/v1/register-tool.schema.json", &register_json);
-        assert_eq!(register_json["data"]["tool"]["descriptor"]["name"], "runtime_echo");
-        assert_eq!(register_json["data"]["tool"]["backend"]["kind"], "remote_http");
+        assert_matches_schema(
+            "protocol/schemas/v1/register-tool.schema.json",
+            &register_json,
+        );
+        assert_eq!(
+            register_json["data"]["tool"]["descriptor"]["name"],
+            "runtime_echo"
+        );
+        assert_eq!(
+            register_json["data"]["tool"]["backend"]["kind"],
+            "remote_http"
+        );
 
         let unregister_payload = br#"{"name":"runtime_echo"}"#;
         let unregister_header = format!("UNREGISTER_TOOL 1 {}\n", unregister_payload.len());
         let mut unregister_frame = unregister_header.into_bytes();
         unregister_frame.extend_from_slice(unregister_payload);
-        peer.write_all(&unregister_frame).expect("write unregister frame");
-        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        peer.write_all(&unregister_frame)
+            .expect("write unregister frame");
+        pump_read_with_registry(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            &mut tool_registry,
+            "secret_token",
+        );
         pump_write(&mut client);
 
         let unregister_resp = read_frame(&mut peer);
         assert!(unregister_resp.starts_with("+OK UNREGISTER_TOOL"));
         let unregister_json = control_json(&unregister_resp);
-        assert_matches_schema("protocol/schemas/v1/unregister-tool.schema.json", &unregister_json);
-        assert_eq!(unregister_json["data"]["tool"]["descriptor"]["name"], "runtime_echo");
+        assert_matches_schema(
+            "protocol/schemas/v1/unregister-tool.schema.json",
+            &unregister_json,
+        );
+        assert_eq!(
+            unregister_json["data"]["tool"]["descriptor"]["name"],
+            "runtime_echo"
+        );
     }
 
     #[test]
@@ -878,21 +1161,58 @@ mod tests {
         let mio_stream = mio::net::TcpStream::from_std(server_stream);
         let mut client = Client::new(mio_stream, false);
 
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
         let mut tool_registry = ToolRegistry::with_builtins();
 
-        peer.write_all(b"AUTH 1 12\nsecret_token").expect("write auth");
-        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        peer.write_all(b"AUTH 1 12\nsecret_token")
+            .expect("write auth");
+        pump_read_with_registry(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            &mut tool_registry,
+            "secret_token",
+        );
         pump_write(&mut client);
         let _ = read_frame(&mut peer);
 
         let register_payload = br#"{"descriptor":{"name":"runtime_echo","aliases":[],"description":"Echo payload through remote backend.","input_schema":{"type":"object"},"output_schema":{"type":"object"},"backend_kind":"remote_http","capabilities":["echo"],"dangerous":false,"enabled":true,"source":"runtime"},"backend":{"kind":"remote_http","url":"http://127.0.0.1:8081/tool","method":"POST","timeout_ms":1500,"headers":{}}}"#;
         let register_header = format!("REGISTER_TOOL 1 {}\n", register_payload.len());
-    let mut register_frame = register_header.into_bytes();
-    register_frame.extend_from_slice(register_payload);
-    peer.write_all(&register_frame).expect("write register frame");
-        pump_read_with_registry(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, &mut tool_registry, "secret_token");
+        let mut register_frame = register_header.into_bytes();
+        register_frame.extend_from_slice(register_payload);
+        peer.write_all(&register_frame)
+            .expect("write register frame");
+        pump_read_with_registry(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            &mut tool_registry,
+            "secret_token",
+        );
         pump_write(&mut client);
 
         let resp = read_frame(&mut peer);
@@ -911,31 +1231,89 @@ mod tests {
         let mio_stream = mio::net::TcpStream::from_std(server_stream);
         let mut client = Client::new(mio_stream, false);
 
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
-        scheduler.register(77, WorkloadClass::General, crate::scheduler::ProcessPriority::High);
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
+        scheduler.register(
+            77,
+            WorkloadClass::General,
+            crate::scheduler::ProcessPriority::High,
+        );
 
         let hello_payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
         let hello_header = format!("HELLO 1 {}\n", hello_payload.len());
-        peer.write_all(hello_header.as_bytes()).expect("write hello header");
+        peer.write_all(hello_header.as_bytes())
+            .expect("write hello header");
         peer.write_all(hello_payload).expect("write hello payload");
-        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
         let _ = handle_write(&mut client);
         let _ = read_frame(&mut peer);
 
-        peer.write_all(b"AUTH 1 12\nsecret_token").expect("write auth");
-        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        peer.write_all(b"AUTH 1 12\nsecret_token")
+            .expect("write auth");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
         let _ = handle_write(&mut client);
         let _ = read_frame(&mut peer);
 
-        peer.write_all(b"GET_QUOTA 1 2\n77").expect("write get_quota");
-        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        peer.write_all(b"GET_QUOTA 1 2\n77")
+            .expect("write get_quota");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
         let _ = handle_write(&mut client);
 
         let resp = read_frame(&mut peer);
         assert!(resp.starts_with("+OK GET_QUOTA"));
         let payload = control_json(&resp);
-        assert_matches_schema("protocol/schemas/v1/scheduler-control.schema.json", &payload);
+        assert_matches_schema(
+            "protocol/schemas/v1/scheduler-control.schema.json",
+            &payload,
+        );
         assert_eq!(payload["schema_id"], "agenticos.control.get_quota.v1");
         assert_eq!(payload["data"]["pid"], 77);
         assert_eq!(payload["data"]["priority"], "high");
@@ -952,19 +1330,56 @@ mod tests {
         let mio_stream = mio::net::TcpStream::from_std(server_stream);
         let mut client = Client::new(mio_stream, false);
 
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         let hello_payload = br#"{"supported_versions":["v1"],"required_capabilities":[]}"#;
         let hello_header = format!("HELLO 1 {}\n", hello_payload.len());
-        peer.write_all(hello_header.as_bytes()).expect("write hello header");
+        peer.write_all(hello_header.as_bytes())
+            .expect("write hello header");
         peer.write_all(hello_payload).expect("write hello payload");
-        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
         let _ = handle_write(&mut client);
         let _ = read_frame(&mut peer);
 
-        peer.write_all(b"WHAT 1 0\nTOOL_INFO 1 0\n").expect("write malformed and tool_info");
-        let _ = handle_read(&mut client, &mut memory, &mut engine_state, &mut catalog, &mut scheduler, &mut orchestrator, 1, &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics, "secret_token");
+        peer.write_all(b"WHAT 1 0\nTOOL_INFO 1 0\n")
+            .expect("write malformed and tool_info");
+        let _ = handle_read(
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
+            "secret_token",
+        );
         let _ = handle_write(&mut client);
 
         let combined = read_frame(&mut peer);
@@ -985,8 +1400,17 @@ mod tests {
     #[test]
     fn tcp_pressure_memw_queued_does_not_block_ping() {
         let (mut client, mut peer) = setup_client_and_peer();
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state_with_memory_mb(0);
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state_with_memory_mb(0);
 
         let swap_dir = format!(
             "workspace/test_transport_swap_{}",
@@ -996,7 +1420,8 @@ mod tests {
                 .unwrap_or(0)
         );
         {
-            memory.configure_async_swap(true, Some(std::path::PathBuf::from(&swap_dir)))
+            memory
+                .configure_async_swap(true, Some(std::path::PathBuf::from(&swap_dir)))
                 .expect("enable swap");
             memory.set_token_slot_quota_per_pid(4096);
             memory.register_process(77, 512).expect("register process");
@@ -1086,48 +1511,94 @@ mod tests {
         let mut client = Client::new(mio_stream, false);
         let mut peer = peer;
 
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         // Send STATUS without AUTH first — should get AUTH_REQUIRED
         peer.write_all(b"STATUS 1 0\n").expect("write status");
         let _ = handle_read(
-            &mut client, &mut memory, &mut engine_state, &mut catalog,
-            &mut scheduler, &mut orchestrator, 1,
-            &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics,
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
             "secret_token",
         );
         let _ = handle_write(&mut client);
         let mut out = [0u8; 512];
         let n = peer.read(&mut out).expect("read auth_required");
         let resp = String::from_utf8_lossy(&out[..n]);
-        assert!(resp.contains("-ERR AUTH_REQUIRED"), "expected AUTH_REQUIRED, got: {}", resp);
+        assert!(
+            resp.contains("-ERR AUTH_REQUIRED"),
+            "expected AUTH_REQUIRED, got: {}",
+            resp
+        );
 
         // Now authenticate with correct token
-        peer.write_all(b"AUTH 1 12\nsecret_token").expect("write auth");
+        peer.write_all(b"AUTH 1 12\nsecret_token")
+            .expect("write auth");
         let _ = handle_read(
-            &mut client, &mut memory, &mut engine_state, &mut catalog,
-            &mut scheduler, &mut orchestrator, 1,
-            &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics,
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
             "secret_token",
         );
         let _ = handle_write(&mut client);
         let n2 = peer.read(&mut out).expect("read auth response");
         let resp2 = String::from_utf8_lossy(&out[..n2]);
-        assert!(resp2.contains("+OK AUTH"), "expected +OK AUTH, got: {}", resp2);
+        assert!(
+            resp2.contains("+OK AUTH"),
+            "expected +OK AUTH, got: {}",
+            resp2
+        );
 
         // Now STATUS should work
         peer.write_all(b"STATUS 1 0\n").expect("write status 2");
         let _ = handle_read(
-            &mut client, &mut memory, &mut engine_state, &mut catalog,
-            &mut scheduler, &mut orchestrator, 1,
-            &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics,
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
             "secret_token",
         );
         let _ = handle_write(&mut client);
         let n3 = peer.read(&mut out).expect("read status");
         let resp3 = String::from_utf8_lossy(&out[..n3]);
-        assert!(resp3.contains("+OK STATUS"), "expected +OK STATUS, got: {}", resp3);
+        assert!(
+            resp3.contains("+OK STATUS"),
+            "expected +OK STATUS, got: {}",
+            resp3
+        );
     }
 
     #[test]
@@ -1142,22 +1613,44 @@ mod tests {
         let mut client = Client::new(mio_stream, false);
         let mut peer = peer;
 
-        let (mut memory, mut engine_state, mut catalog, shutdown_requested, mut scheduler, mut orchestrator, in_flight, mut pending_kills, mut metrics) =
-            setup_shared_state();
+        let (
+            mut memory,
+            mut engine_state,
+            mut catalog,
+            shutdown_requested,
+            mut scheduler,
+            mut orchestrator,
+            in_flight,
+            mut pending_kills,
+            mut metrics,
+        ) = setup_shared_state();
 
         // Send AUTH with wrong token
-        peer.write_all(b"AUTH 1 9\nwrong_tok").expect("write bad auth");
+        peer.write_all(b"AUTH 1 9\nwrong_tok")
+            .expect("write bad auth");
         let _ = handle_read(
-            &mut client, &mut memory, &mut engine_state, &mut catalog,
-            &mut scheduler, &mut orchestrator, 1,
-            &shutdown_requested, &in_flight, &mut pending_kills, &mut metrics,
+            &mut client,
+            &mut memory,
+            &mut engine_state,
+            &mut catalog,
+            &mut scheduler,
+            &mut orchestrator,
+            1,
+            &shutdown_requested,
+            &in_flight,
+            &mut pending_kills,
+            &mut metrics,
             "secret_token",
         );
         let _ = handle_write(&mut client);
         let mut out = [0u8; 512];
         let n = peer.read(&mut out).expect("read");
         let resp = String::from_utf8_lossy(&out[..n]);
-        assert!(resp.contains("-ERR AUTH_FAILED"), "expected AUTH_FAILED, got: {}", resp);
+        assert!(
+            resp.contains("-ERR AUTH_FAILED"),
+            "expected AUTH_FAILED, got: {}",
+            resp
+        );
         assert!(!client.authenticated);
     }
 }

@@ -61,10 +61,7 @@ pub(crate) fn syscall_config() -> SysCallConfig {
             tools.max_calls_per_window,
         ),
         window_s: env_u64("AGENTIC_SYSCALL_WINDOW_S", tools.window_s),
-        error_burst_kill: env_usize(
-            "AGENTIC_SYSCALL_ERROR_BURST_KILL",
-            tools.error_burst_kill,
-        ),
+        error_burst_kill: env_usize("AGENTIC_SYSCALL_ERROR_BURST_KILL", tools.error_burst_kill),
     }
 }
 

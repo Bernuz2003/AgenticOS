@@ -7,7 +7,10 @@ use candle_transformers::models::quantized_qwen2;
 use crate::memory::ContextSlotId;
 use crate::prompting::PromptFamily;
 
-use super::{ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult, ModelBackend};
+use super::{
+    ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult,
+    ModelBackend,
+};
 
 pub(crate) struct QuantizedLlamaBackend {
     weights: quantized_llama::ModelWeights,

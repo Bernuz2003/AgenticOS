@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::model_catalog::WorkloadClass;
-use crate::process::{ContextPolicy, ContextState};
+use crate::process::{ContextPolicy, ContextState, ContextStatusSnapshot};
 
 // ── Priority ────────────────────────────────────────────────────────────
 
@@ -123,6 +123,16 @@ pub struct RestoredProcessMetadata {
     pub context_state: ContextState,
 }
 
+#[derive(Debug, Clone)]
+pub struct CheckedOutProcessMetadata {
+    pub owner_id: usize,
+    pub state: String,
+    pub tokens: usize,
+    pub index_pos: usize,
+    pub max_tokens: usize,
+    pub context: ContextStatusSnapshot,
+}
+
 // ── ProcessScheduler ────────────────────────────────────────────────────
 
 pub struct ProcessScheduler {
@@ -130,6 +140,7 @@ pub struct ProcessScheduler {
     quotas: HashMap<u64, ProcessQuota>,
     accounting: HashMap<u64, ResourceAccounting>,
     restored_processes: HashMap<u64, RestoredProcessMetadata>,
+    checked_out_processes: HashMap<u64, CheckedOutProcessMetadata>,
 }
 
 impl ProcessScheduler {
@@ -139,6 +150,7 @@ impl ProcessScheduler {
             quotas: HashMap::new(),
             accounting: HashMap::new(),
             restored_processes: HashMap::new(),
+            checked_out_processes: HashMap::new(),
         }
     }
 
@@ -146,16 +158,14 @@ impl ProcessScheduler {
 
     /// Register a new process with its workload class.
     /// Sets default priority (`Normal`) and workload-class-aware quotas.
-    pub fn register(
-        &mut self,
-        pid: u64,
-        workload: WorkloadClass,
-        priority: ProcessPriority,
-    ) {
+    pub fn register(&mut self, pid: u64, workload: WorkloadClass, priority: ProcessPriority) {
         self.priorities.insert(pid, priority);
-        self.quotas.insert(pid, ProcessQuota::defaults_for(workload));
-        self.accounting.insert(pid, ResourceAccounting::new(workload));
+        self.quotas
+            .insert(pid, ProcessQuota::defaults_for(workload));
+        self.accounting
+            .insert(pid, ResourceAccounting::new(workload));
         self.restored_processes.remove(&pid);
+        self.checked_out_processes.remove(&pid);
     }
 
     /// Remove all scheduler state for a process.
@@ -164,6 +174,7 @@ impl ProcessScheduler {
         self.quotas.remove(&pid);
         self.accounting.remove(&pid);
         self.restored_processes.remove(&pid);
+        self.checked_out_processes.remove(&pid);
     }
 
     pub fn clear_restored_processes(&mut self) {
@@ -184,10 +195,25 @@ impl ProcessScheduler {
         pids
     }
 
+    pub fn record_checked_out_process(&mut self, pid: u64, metadata: CheckedOutProcessMetadata) {
+        self.checked_out_processes.insert(pid, metadata);
+    }
+
+    pub fn clear_checked_out_process(&mut self, pid: u64) {
+        self.checked_out_processes.remove(&pid);
+    }
+
+    pub fn checked_out_process(&self, pid: u64) -> Option<&CheckedOutProcessMetadata> {
+        self.checked_out_processes.get(&pid)
+    }
+
     // ── Priority ────────────────────────────────────────────────────────
 
     pub fn priority(&self, pid: u64) -> ProcessPriority {
-        self.priorities.get(&pid).copied().unwrap_or(ProcessPriority::Normal)
+        self.priorities
+            .get(&pid)
+            .copied()
+            .unwrap_or(ProcessPriority::Normal)
     }
 
     pub fn set_priority(&mut self, pid: u64, priority: ProcessPriority) -> bool {
@@ -271,7 +297,11 @@ impl ProcessScheduler {
         let acc = self.accounting.get(&pid)?;
         Some(ProcessSchedulerSnapshot {
             priority: self.priority(pid),
-            quota: self.quotas.get(&pid).copied().unwrap_or(ProcessQuota::defaults_for(WorkloadClass::General)),
+            quota: self
+                .quotas
+                .get(&pid)
+                .copied()
+                .unwrap_or(ProcessQuota::defaults_for(WorkloadClass::General)),
             tokens_generated: acc.tokens_generated,
             syscalls_used: acc.syscalls_used,
             elapsed_secs: acc.elapsed_secs(),
@@ -283,9 +313,8 @@ impl ProcessScheduler {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn summary(&self) -> String {
         let total = self.accounting.len();
-        let by_priority = |p: ProcessPriority| -> usize {
-            self.priorities.values().filter(|&&v| v == p).count()
-        };
+        let by_priority =
+            |p: ProcessPriority| -> usize { self.priorities.values().filter(|&&v| v == p).count() };
         format!(
             "scheduler_tracked={} priority_critical={} priority_high={} priority_normal={} priority_low={}",
             total,
@@ -298,9 +327,8 @@ impl ProcessScheduler {
 
     /// Structured summary for JSON STATUS response.
     pub fn summary_counts(&self) -> (usize, usize, usize, usize, usize) {
-        let by_priority = |p: ProcessPriority| -> usize {
-            self.priorities.values().filter(|&&v| v == p).count()
-        };
+        let by_priority =
+            |p: ProcessPriority| -> usize { self.priorities.values().filter(|&&v| v == p).count() };
         (
             self.accounting.len(),
             by_priority(ProcessPriority::Critical),
@@ -398,7 +426,10 @@ mod tests {
         let mut sched = ProcessScheduler::new();
         sched.register(1, WorkloadClass::Fast, ProcessPriority::Normal);
 
-        let custom = ProcessQuota { max_tokens: 100, max_syscalls: 3 };
+        let custom = ProcessQuota {
+            max_tokens: 100,
+            max_syscalls: 3,
+        };
         assert!(sched.set_quota(1, custom));
 
         // max_syscalls = 3: first two calls ok, third exceeds
@@ -416,8 +447,14 @@ mod tests {
 
     #[test]
     fn priority_from_str_loose() {
-        assert_eq!(ProcessPriority::from_str_loose("HIGH"), Some(ProcessPriority::High));
-        assert_eq!(ProcessPriority::from_str_loose("low"), Some(ProcessPriority::Low));
+        assert_eq!(
+            ProcessPriority::from_str_loose("HIGH"),
+            Some(ProcessPriority::High)
+        );
+        assert_eq!(
+            ProcessPriority::from_str_loose("low"),
+            Some(ProcessPriority::Low)
+        );
         assert_eq!(ProcessPriority::from_str_loose("unknown"), None);
     }
 

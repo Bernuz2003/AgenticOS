@@ -5,6 +5,8 @@
 AgenticOS è un **AI workstation OS local-first, single-node**: un kernel per agenti LLM che espone un runtime TCP event-driven e una GUI di controllo per gestire processi autonomi basati su Large Language Model.
 Ogni processo possiede un'istanza del modello, genera token in streaming, può invocare tool di sistema (syscall) e comunicare con altri processi.
 
+La GUI primaria e' `Agent Workspace` (`apps/agent-workspace/`), una desktop app Tauri con frontend React/TypeScript e bridge Rust autenticato verso il kernel. La storica GUI PySide6 resta disponibile come fallback diagnostico `deprecated`.
+
 Questo documento descrive l'architettura interna del kernel, i flussi end-to-end, i sottosistemi e il protocollo di comunicazione.
 
 ---
@@ -33,7 +35,8 @@ Questo documento descrive l'architettura interna del kernel, i flussi end-to-end
 ```
 ┌─────────────────┐     TCP :6380     ┌──────────────────────────────┐
 │   Client / GUI  │◄────────────────►│      AgenticOS Kernel        │
-│  (Python, CLI)  │  RESP-like proto  │  (single-thread, mio 1.0)   │
+│ (Tauri, Python, │  RESP-like proto  │  (single-thread, mio 1.0)   │
+│      CLI)       │                   │                              │
 └─────────────────┘                   └──────────────────────────────┘
                                         │
                   ┌─────────────────────┼──────────────────────┐

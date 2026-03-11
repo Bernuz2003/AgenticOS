@@ -13,6 +13,7 @@ use crate::inference_worker::{self, InferenceCmd, InferenceResult};
 use crate::memory::{MemoryConfig, NeuralMemory};
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
+use crate::runtime::syscalls::{self, SyscallCmd, SyscallCompletion};
 use crate::scheduler::ProcessScheduler;
 use crate::tool_registry::ToolRegistry;
 use crate::tools::SyscallRateMap;
@@ -32,13 +33,21 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
 
     let memory = build_memory(config)?;
     let shutdown_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    let model_catalog = ModelCatalog::discover(config.paths.models_dir.clone())
-        .map_err(io::Error::other)?;
+    let model_catalog =
+        ModelCatalog::discover(config.paths.models_dir.clone()).map_err(io::Error::other)?;
     let checkpoint_interval_secs = config.checkpoint.interval_secs;
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<InferenceCmd>();
     let (result_tx, result_rx) = mpsc::channel::<InferenceResult>();
     let worker_handle = inference_worker::spawn_worker(result_tx, cmd_rx);
+    let syscall_rates = Arc::new(std::sync::Mutex::new(SyscallRateMap::new()));
+    let (syscall_cmd_tx, syscall_cmd_rx) = mpsc::channel::<SyscallCmd>();
+    let (syscall_result_tx, syscall_result_rx) = mpsc::channel::<SyscallCompletion>();
+    let syscall_worker_handle = syscalls::spawn_syscall_worker(
+        Arc::clone(&syscall_rates),
+        syscall_result_tx,
+        syscall_cmd_rx,
+    );
 
     let auth_disabled = config.auth.disabled;
     let auth_token = write_auth_token(config)?;
@@ -72,11 +81,15 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         last_checkpoint: Instant::now(),
         cmd_tx,
         result_rx,
+        syscall_cmd_tx,
+        syscall_result_rx,
         in_flight: HashSet::new(),
         pending_kills: Vec::new(),
+        pending_events: Vec::new(),
+        next_event_sequence: 0,
         worker_handle: Some(worker_handle),
+        syscall_worker_handle: Some(syscall_worker_handle),
         metrics: MetricsState::new(),
-        syscall_rates: SyscallRateMap::new(),
         tool_registry: ToolRegistry::with_builtins(),
         auth_token,
         auth_disabled,
