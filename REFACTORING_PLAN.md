@@ -26,6 +26,9 @@ Obiettivo del refactor:
 3. Tipizzare rigidamente gli errori di boundary.
 4. Disaccoppiare internamente il kernel riducendo il `God Object`.
 5. Rendere il lato GUI e observability piu' event-driven riducendo il polling.
+6. Estrarre il kernel in un crate libreria dedicato.
+7. Separare il bootstrap binario del kernel e rendere la root un workspace puro.
+8. Riallineare il tree interno del kernel al dominio architetturale target e correggere path/test.
 
 ## Non Goals
 
@@ -41,6 +44,9 @@ Obiettivo del refactor:
 - [x] Phase 3. Errori di boundary tipizzati
 - [x] Phase 4. Facade e state partition del kernel
 - [x] Phase 5. TCP event-driven e riduzione del polling GUI
+- [x] Phase 6. Crate `agentic-kernel`
+- [x] Phase 7. Crate `agentic-kernel-bin` e workspace root puro
+- [x] Phase 8. Re-home del tree kernel e path hardening
 
 ## Phase 1. Workspace Rust Unificato
 
@@ -272,13 +278,119 @@ Completata con il nuovo flusso push-first:
 - rimossi i `setInterval` da `layout.tsx` e `workspace-page.tsx`;
 - `fetch_lobby_snapshot`, `fetch_workspace_snapshot` e `fetch_timeline_snapshot` restano come bootstrap/manual recovery path, non come canale live primario.
 
+## Phase 6. Extract `agentic-kernel`
+
+### Outcome
+
+Spostare il codice Rust del kernel dal package root a un crate libreria dedicato in `crates/agentic-kernel`.
+
+### Motivazione
+
+Finche' il kernel resta il package root:
+
+- il repository non esprime davvero il boundary tra workspace e prodotto kernel;
+- il refactor architetturale resta incompleto;
+- il binario e la libreria restano accoppiati nella stessa root;
+- il tree consigliato dal report non e' ancora reale.
+
+### Tasks
+
+1. Creare `crates/agentic-kernel/Cargo.toml`.
+2. Spostare i moduli Rust del kernel dentro `crates/agentic-kernel/src/`.
+3. Introdurre `crates/agentic-kernel/src/lib.rs` come crate root reale.
+4. Lasciare fuori da questo move i file Python/utility non appartenenti al crate Rust.
+5. Verificare che il crate compili e testi nello stesso workspace.
+
+### Acceptance Criteria
+
+- il kernel non vive piu' nel package root;
+- tutti i moduli Rust del kernel sono importati dal crate `agentic-kernel`;
+- `cargo check --workspace` continua a passare.
+
+### Status
+
+Completata:
+
+- creato `crates/agentic-kernel` come crate libreria reale;
+- spostati i moduli Rust del kernel dal package root a `crates/agentic-kernel/src/`;
+- lasciati fuori dal move i file Python/utility presenti in `src/`;
+- introdotto `crates/agentic-kernel/src/lib.rs` come entrypoint della libreria;
+- `cargo check --workspace` e `cargo test -q -p agentic-kernel` verdi dopo il move.
+
+## Phase 7. Extract `agentic-kernel-bin`
+
+### Outcome
+
+Creare un crate binario dedicato che dipende da `agentic-kernel` e trasformare la root in workspace puro.
+
+### Motivazione
+
+Questa fase completa la separazione libreria/binario che il report indicava come prerequisito per un repository professionale e mantenibile.
+
+### Tasks
+
+1. Creare `crates/agentic-kernel-bin/Cargo.toml`.
+2. Spostare il bootstrap runtime nel bin crate.
+3. Ridurre il root `Cargo.toml` a solo `[workspace]`.
+4. Mantenere il nome operativo del binario kernel compatibile con l'attuale toolchain.
+
+### Acceptance Criteria
+
+- la root del repository non e' piu' un package Cargo compilabile;
+- il kernel e' avviabile tramite il bin crate dedicato;
+- il workspace include `agentic-kernel` e `agentic-kernel-bin`.
+
+### Status
+
+Completata:
+
+- creato `crates/agentic-kernel-bin`;
+- spostato il bootstrap runtime nel bin crate;
+- trasformato il root `Cargo.toml` in workspace puro;
+- mantenuto il nome operativo del binario `agentic_os_kernel`.
+
+## Phase 8. Re-home Tree And Path Hardening
+
+### Outcome
+
+Allineare i path e, dove sensato, il tree interno del crate `agentic-kernel` alla struttura architetturale target del report.
+
+### Motivazione
+
+Il crate split da solo non basta: dopo lo spostamento vanno corretti i punti che assumono ancora il vecchio package root e preparato il tree interno verso `control/runtime/model/memory/tools/state`.
+
+### Tasks
+
+1. Correggere i path che dipendono da `CARGO_MANIFEST_DIR` o dalla vecchia root package.
+2. Aggiornare test/schema lookup e path runtime sensibili.
+3. Iniziare il re-home interno coerente con i domini del report, senza fare micro-crate prematuri.
+4. Verificare i comandi `cargo check`, `cargo test` e build Tauri dopo il move.
+
+### Acceptance Criteria
+
+- nessun test/schema lookup dipende implicitamente dalla vecchia root package;
+- il crate `agentic-kernel` e' pronto per un successivo riallineamento interno ai domini `control/runtime/model/memory/tools/state`;
+- il workspace completo resta verde.
+
+### Status
+
+Completata:
+
+- corretti i path dipendenti dal vecchio package root per config, schema lookup e catalog discovery;
+- normalizzati i path runtime del kernel verso root repository per `agenticos.toml`, `models/`, `workspace/`, `checkpoint` e `swap`;
+- adattati i test del transport layer e del catalog discovery al nuovo crate root;
+- verifiche completate con `cargo check --workspace`, `cargo test -q -p agentic-kernel`, `cargo test -q -p agent-workspace` e `npm --prefix apps/agent-workspace run build`.
+
 ## Suggested Order Of Execution
 
 1. Consolidare subito il workspace.
 2. Estrarre i DTO condivisi piu' usati da `STATUS` e `LIST_MODELS`.
 3. Tipizzare gli errori dei path di protocollo e bridge.
 4. Ridurre `Kernel` tramite facade partendo dai command group meno rischiosi.
-5. Progettare ed introdurre il canale eventi TCP per lobby/workspace.
+5. Rendere la GUI TCP push-first e rimuovere il polling periodico.
+6. Estrarre `agentic-kernel`.
+7. Estrarre `agentic-kernel-bin` e convertire la root in workspace puro.
+8. Correggere path/test e re-home interno del tree kernel.
 
 ## Validation Strategy
 
@@ -286,12 +398,12 @@ Completata con il nuovo flusso push-first:
 - test mirati kernel e Tauri sui contratti condivisi;
 - build frontend dopo i cambi bridge/API;
 - regressione manuale su Lobby, Workspace, Timeline, Mind Panel;
-- aggiornamento continuo di `TAURI_SYSTEM_AUDIT.md` man mano che i punti vengono chiusi.
+- aggiornamento continuo di `REFACTORING_PLAN.md` come tracker operativo del refactor.
 
 ## Immediate Next Step
 
-Dopo la consolidazione del workspace, il lavoro parte dal punto 2:
+Le fasi approvate 1-8 sono ora chiuse. I prossimi lavori non sono piu' prerequisiti del refactor base, ma affinamenti successivi:
 
-- creare `crates/agentic-control-models`;
-- migrare dentro il crate i DTO piu' critici del bridge Tauri;
-- usare il nuovo crate come base per i successivi errori tipizzati e per il refactor dei boundary.
+- riallineamento interno opzionale del tree `agentic-kernel/src/` verso i domini `control/runtime/model/memory/tools/state` senza introdurre micro-crate prematuri;
+- contract test dedicati al canale `SUBSCRIBE` / `event_stream_v1`;
+- estensione del push model a tutte le superfici di osservabilita' residue della GUI.

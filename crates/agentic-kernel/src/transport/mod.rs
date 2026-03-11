@@ -25,6 +25,7 @@ mod tests {
     use std::fs;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -127,8 +128,12 @@ mod tests {
         serde_json::from_str(control_payload(resp)).expect("valid json payload")
     }
 
+    fn repository_path(relative: &str) -> PathBuf {
+        crate::config::repository_path(relative)
+    }
+
     fn load_schema(rel_path: &str) -> Value {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path);
+        let path = repository_path(rel_path);
         load_schema_from_path(&path)
     }
 
@@ -236,7 +241,7 @@ mod tests {
         })
         .expect("memory init");
         let engine_state: Option<LLMEngine> = None;
-        let catalog = ModelCatalog::discover("models").expect("catalog discover");
+        let catalog = ModelCatalog::discover(repository_path("models")).expect("catalog discover");
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         (
             memory,
@@ -272,7 +277,7 @@ mod tests {
         })
         .expect("memory init");
         let engine_state: Option<LLMEngine> = None;
-        let catalog = ModelCatalog::discover("models").expect("catalog discover");
+        let catalog = ModelCatalog::discover(repository_path("models")).expect("catalog discover");
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         (
             memory,

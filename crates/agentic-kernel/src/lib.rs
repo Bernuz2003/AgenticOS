@@ -24,7 +24,7 @@ mod transport;
 use kernel::server::Kernel;
 use std::io;
 
-fn main() -> io::Result<()> {
+pub fn run() -> io::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

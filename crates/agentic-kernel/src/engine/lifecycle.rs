@@ -346,7 +346,8 @@ mod tests {
     #[ignore = "uses the real local Qwen3.5 artifacts to validate generic discovery and rejection"]
     fn qwen35_catalog_target_is_rejected_before_backend_load() {
         let model_id = "qwen3.5-9b/Qwen3.5-9B-Q4_K_M";
-        let catalog = ModelCatalog::discover("models").expect("discover models");
+        let catalog = ModelCatalog::discover(crate::config::repository_path("models"))
+            .expect("discover models");
         let entry = catalog.find_by_id(model_id).expect("qwen3.5 entry present");
 
         assert_eq!(entry.family, PromptFamily::Qwen);

@@ -1,0 +1,11 @@
+[package]
+name = "agentic-kernel-bin"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "agentic_os_kernel"
+path = "src/main.rs"
+
+[dependencies]
+agentic-kernel = { path = "../agentic-kernel" }

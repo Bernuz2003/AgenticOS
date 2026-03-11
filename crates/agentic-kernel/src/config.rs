@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 static KERNEL_CONFIG: OnceLock<KernelConfig> = OnceLock::new();
@@ -89,10 +89,10 @@ pub struct PathsConfig {
 impl Default for PathsConfig {
     fn default() -> Self {
         Self {
-            models_dir: PathBuf::from("models"),
-            workspace_dir: PathBuf::from("workspace"),
-            checkpoint_path: PathBuf::from("workspace/checkpoint.json"),
-            kernel_token_path: PathBuf::from("workspace/.kernel_token"),
+            models_dir: repository_path("models"),
+            workspace_dir: repository_path("workspace"),
+            checkpoint_path: repository_path("workspace/checkpoint.json"),
+            kernel_token_path: repository_path("workspace/.kernel_token"),
         }
     }
 }
@@ -114,7 +114,7 @@ impl Default for MemoryRuntimeConfig {
         Self {
             active: true,
             swap_async: true,
-            swap_dir: PathBuf::from("workspace/swap"),
+            swap_dir: repository_path("workspace/swap"),
             block_size: 16,
             hidden_dim: 256,
             total_memory_mb: 64,
@@ -362,10 +362,19 @@ pub fn kernel_config() -> &'static KernelConfig {
 }
 
 pub fn config_file_path() -> PathBuf {
-    env_string("AGENTIC_CONFIG_PATH")
+    if let Some(path) = env_string("AGENTIC_CONFIG_PATH")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("agenticos.toml"))
+    {
+        return path;
+    }
+
+    let cwd_candidate = PathBuf::from("agenticos.toml");
+    if cwd_candidate.exists() {
+        cwd_candidate
+    } else {
+        repository_path("agenticos.toml")
+    }
 }
 
 fn load_kernel_config() -> Result<KernelConfig, String> {
@@ -380,7 +389,48 @@ fn load_kernel_config() -> Result<KernelConfig, String> {
     };
 
     apply_env_overrides(&mut config);
+    normalize_config_paths(&mut config, &path);
     Ok(config)
+}
+
+pub fn repository_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
+pub fn repository_path(relative: impl AsRef<Path>) -> PathBuf {
+    repository_root().join(relative)
+}
+
+fn normalize_config_paths(config: &mut KernelConfig, config_path: &Path) {
+    let base_dir = if config_path.is_absolute() {
+        config_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(repository_root)
+    } else if config_path.exists() {
+        std::env::current_dir()
+            .ok()
+            .map(|cwd| cwd.join(config_path))
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(repository_root)
+    } else {
+        repository_root()
+    };
+
+    absolutize_from(&base_dir, &mut config.paths.models_dir);
+    absolutize_from(&base_dir, &mut config.paths.workspace_dir);
+    absolutize_from(&base_dir, &mut config.paths.checkpoint_path);
+    absolutize_from(&base_dir, &mut config.paths.kernel_token_path);
+    absolutize_from(&base_dir, &mut config.memory.swap_dir);
+}
+
+fn absolutize_from(base_dir: &Path, path: &mut PathBuf) {
+    if path.is_relative() {
+        *path = base_dir.join(&*path);
+    }
 }
 
 fn apply_env_overrides(config: &mut KernelConfig) {

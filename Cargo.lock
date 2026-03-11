@@ -30,15 +30,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentic-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "thiserror 2.0.17",
-]
-
-[[package]]
-name = "agentic_os_kernel"
+name = "agentic-kernel"
 version = "0.5.0"
 dependencies = [
  "agentic-control-models",
@@ -59,6 +51,21 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "agentic-kernel-bin"
+version = "0.5.0"
+dependencies = [
+ "agentic-kernel",
+]
+
+[[package]]
+name = "agentic-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
