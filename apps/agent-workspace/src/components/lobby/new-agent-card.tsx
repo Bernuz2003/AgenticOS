@@ -1,4 +1,4 @@
-import { LoaderCircle, Plus } from "lucide-react";
+import { LoaderCircle } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { startSession } from "../../lib/api";
@@ -40,15 +40,7 @@ export function NewAgentCard() {
       className="panel-surface flex min-h-[270px] flex-col justify-between border-dashed p-6 text-left transition duration-200 hover:-translate-y-1 hover:border-slate-900/20 hover:bg-white/85"
     >
       <div className="space-y-3">
-        <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white">
-          <Plus className="h-6 w-6" />
-        </div>
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-950">Nuova sessione</h2>
-          <p className="mt-2 max-w-sm text-sm leading-6 text-slate-600">
-            Avvia una nuova sessione `EXEC` dal bridge Tauri e apri subito la Workspace con Timeline live per il PID appena creato.
-          </p>
-        </div>
+        <h2 className="text-2xl font-bold tracking-tight text-slate-950">Nuova sessione</h2>
       </div>
 
       <div className="space-y-3 rounded-2xl bg-slate-950/[0.04] p-4 text-sm text-slate-700">

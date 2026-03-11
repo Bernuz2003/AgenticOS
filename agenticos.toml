@@ -57,7 +57,7 @@ max_tokens = 500
 temperature = 0.7
 top_p = 0.9
 seed = 299792458
-max_tokens = 20
+max_tokens = 500
 
 [generation.mistral]
 temperature = 0.7

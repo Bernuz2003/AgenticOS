@@ -94,9 +94,6 @@ export function MindPanel({
             <Waypoints className="h-4 w-4" />
             Strategy: {strategyLabel(strategy)}
           </div>
-          <p className="mt-2 text-sm text-slate-600">
-            {snapshot?.context?.lastCompactionReason ?? "Snapshot M29 live da STATUS <pid> tramite bridge Tauri."}
-          </p>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="rounded-[24px] bg-white p-4">
@@ -152,10 +149,6 @@ export function MindPanel({
             Audit stream
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-              <Filter className="h-3.5 w-3.5" />
-              Filter
-            </span>
             {filterOptions.map((option) => (
               <button
                 key={option.value}

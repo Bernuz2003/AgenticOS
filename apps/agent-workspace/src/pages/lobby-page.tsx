@@ -199,9 +199,6 @@ export function LobbyPage() {
               <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">
                 Catalogo e load control
               </h3>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                La Lobby usa `LIST_MODELS`, `LOAD` e `SHUTDOWN`; la selezione resta locale al form e `LOAD` allinea automaticamente selected e loaded model.
-              </p>
             </div>
             <span className="status-pill border-slate-900/10 bg-slate-100 text-slate-700">
               {catalog?.totalModels ?? 0} models

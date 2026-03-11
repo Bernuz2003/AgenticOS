@@ -1,14 +1,34 @@
 {
   "session_id": "pid-1",
   "pid": 1,
-  "workload": "General",
+  "workload": "general",
   "turns": [
     {
-      "prompt": "Dimmi la capitale Italiana",
-      "assistant_stream": "<think>\nThinking Process:\n\n1.  **Analyze the Request:**\n    *   Language: Italian (\"Dimmi la capitale Italiana\" - Tell me the Italian capital).\n    *   Question: What is the capital of Italy?\n    *   Intent: Factual information retrieval.\n\n2.  **Retrieve Knowledge:**\n    *   Country: Italy (Italia).\n    *   Capital: Rome (Roma).\n\n3.  **Formulate the Answer:**\n    *   Direct answer: Roma.\n    *   Complete sentence: La capitale dell'Italia è Roma.\n    *   Tone: Helpful, direct.\n\n4.  **Draft Response (Internal Monologue):**\n    *   Okay, the user asked in Italian. I should reply in",
+      "prompt": "Qual è la capitale della Francia?",
+      "assistant_stream": "<think>\n\n</think>\n\nLa capitale della Francia è **Parigi**.\n\nÈ la città più popolosa del paese e funge da centro politico, economico e culturale del paese.",
+      "running": false
+    },
+    {
+      "prompt": "E del Giappone?",
+      "assistant_stream": "<think>\n\n</think>\n\nLa capitale del Giappone è **Tokyo**.\n\nÈ la città più popolosa del mondo e funge da centro politico, economico e culturale del paese.",
+      "running": false
+    },
+    {
+      "prompt": "Qual è il primo paese di cui ti ho chiesto la capitale?",
+      "assistant_stream": "<think>\n\n</think>\n\nIl primo paese di cui ti ho chiesto la capitale è la **Francia**.",
+      "running": false
+    },
+    {
+      "prompt": "E il secondo?",
+      "assistant_stream": "<think>\n\n</think>\n\nIl secondo paese",
       "running": false
     }
   ],
   "error": null,
-  "system_events": []
+  "system_events": [
+    [
+      "Process finished: pid=1 tokens_generated=100 elapsed_secs=211.540",
+      "complete"
+    ]
+  ]
 }
