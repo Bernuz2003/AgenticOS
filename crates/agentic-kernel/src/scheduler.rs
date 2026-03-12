@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use crate::backend::BackendCapabilities;
 use crate::model_catalog::WorkloadClass;
 use crate::process::{ContextPolicy, ContextState, ContextStatusSnapshot};
 
@@ -119,6 +120,13 @@ pub struct RestoredProcessMetadata {
     pub state: String,
     pub token_count: usize,
     pub max_tokens: usize,
+    pub context_slot_id: Option<u64>,
+    pub resident_slot_policy: Option<String>,
+    pub resident_slot_state: Option<String>,
+    pub resident_slot_snapshot_path: Option<String>,
+    pub backend_id: Option<String>,
+    pub backend_class: Option<String>,
+    pub backend_capabilities: Option<BackendCapabilities>,
     pub context_policy: ContextPolicy,
     pub context_state: ContextState,
 }
@@ -130,6 +138,13 @@ pub struct CheckedOutProcessMetadata {
     pub tokens: usize,
     pub index_pos: usize,
     pub max_tokens: usize,
+    pub context_slot_id: Option<u64>,
+    pub resident_slot_policy: Option<String>,
+    pub resident_slot_state: Option<String>,
+    pub resident_slot_snapshot_path: Option<String>,
+    pub backend_id: Option<String>,
+    pub backend_class: Option<String>,
+    pub backend_capabilities: Option<BackendCapabilities>,
     pub context: ContextStatusSnapshot,
 }
 

@@ -1,30 +1,76 @@
+use agentic_control_models::BackendCapabilitiesView;
 use anyhow::{Error as E, Result};
-use candle_core::Device;
-use candle_transformers::generation::LogitsProcessor;
-use std::fs;
-use std::io::Write;
 use std::path::Path;
 use tokenizers::Tokenizer;
 
-use crate::memory::ContextSlotId;
+use crate::memory::{ContextSlotId, SlotPersistenceKind};
 use crate::prompting::{GenerationConfig, PromptFamily};
 
 mod diagnostics;
 mod external_llamacpp;
 pub(crate) mod http;
-mod local;
 mod remote_adapter;
 
 pub(crate) use diagnostics::diagnose_external_backend;
 use external_llamacpp::ExternalLlamaCppBackend;
-use local::{QuantizedLlamaBackend, QuantizedQwen2Backend};
 
 #[cfg(test)]
 use remote_adapter::{combine_completion_text, completion_is_finished, CompletionResponse};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendClass {
+    ResidentLocal,
+    #[allow(dead_code)]
+    RemoteStateless,
+}
+
+impl BackendClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ResidentLocal => "resident_local",
+            Self::RemoteStateless => "remote_stateless",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BackendCapabilities {
+    pub resident_kv: bool,
+    pub persistent_slots: bool,
+    pub save_restore_slots: bool,
+    pub prompt_cache_reuse: bool,
+    pub streaming_generation: bool,
+    pub structured_output: bool,
+    pub cancel_generation: bool,
+    pub memory_telemetry: bool,
+    pub tool_pause_resume: bool,
+    pub context_compaction_reset: bool,
+    pub parallel_sessions: bool,
+}
+
+impl From<BackendCapabilities> for BackendCapabilitiesView {
+    fn from(value: BackendCapabilities) -> Self {
+        Self {
+            resident_kv: value.resident_kv,
+            persistent_slots: value.persistent_slots,
+            save_restore_slots: value.save_restore_slots,
+            prompt_cache_reuse: value.prompt_cache_reuse,
+            streaming_generation: value.streaming_generation,
+            structured_output: value.structured_output,
+            cancel_generation: value.cancel_generation,
+            memory_telemetry: value.memory_telemetry,
+            tool_pause_resume: value.tool_pause_resume,
+            context_compaction_reset: value.context_compaction_reset,
+            parallel_sessions: value.parallel_sessions,
+        }
+    }
+}
+
 pub struct DriverDescriptor {
     pub id: &'static str,
     pub kind: &'static str,
+    pub class: BackendClass,
+    pub capabilities: BackendCapabilities,
     pub available: bool,
     pub load_supported: bool,
     pub note: &'static str,
@@ -53,6 +99,8 @@ impl DriverDescriptor {
 #[derive(Debug, Clone)]
 pub struct DriverResolution {
     pub resolved_backend_id: String,
+    pub backend_class: BackendClass,
+    pub capabilities: BackendCapabilities,
     pub resolution_source: &'static str,
     pub resolution_rationale: String,
     pub available: bool,
@@ -62,59 +110,59 @@ pub struct DriverResolution {
 pub struct InferenceStepRequest<'a> {
     pub context_slot_id: Option<ContextSlotId>,
     pub tokens: &'a [u32],
+    pub rendered_prompt: &'a str,
+    pub resident_prompt_suffix: &'a str,
     pub index_pos: usize,
     pub remaining_generation_budget: usize,
-    pub logits_processor: &'a mut LogitsProcessor,
     pub tokenizer: &'a Tokenizer,
     pub generation: GenerationConfig,
-    pub device: &'a Device,
+    #[allow(dead_code)]
     pub eos_token_id: u32,
+    #[allow(dead_code)]
     pub eot_token_id: u32,
 }
 
-const FAMILIES_LLAMA: [PromptFamily; 1] = [PromptFamily::Llama];
-const FAMILIES_QWEN: [PromptFamily; 1] = [PromptFamily::Qwen];
 const FAMILIES_COMMON: [PromptFamily; 3] = [
     PromptFamily::Llama,
     PromptFamily::Qwen,
     PromptFamily::Mistral,
 ];
-const ARCH_LLAMA: [&str; 1] = ["llama"];
-const ARCH_QWEN2: [&str; 1] = ["qwen2"];
 const ARCH_ANY: [&str; 0] = [];
+const CAP_EXTERNAL_LLAMACPP: BackendCapabilities = BackendCapabilities {
+    resident_kv: true,
+    persistent_slots: true,
+    save_restore_slots: true,
+    prompt_cache_reuse: true,
+    streaming_generation: true,
+    structured_output: false,
+    cancel_generation: false,
+    memory_telemetry: true,
+    tool_pause_resume: true,
+    context_compaction_reset: true,
+    parallel_sessions: true,
+};
+const DEFAULT_RESIDENT_BACKEND_ID: &str = "external-llamacpp";
 
-const DRIVER_REGISTRY: [DriverDescriptor; 3] = [
-    DriverDescriptor {
-        id: "candle.quantized_llama",
-        kind: "internal",
-        available: true,
-        load_supported: true,
-        note: "Built-in Candle quantized Llama backend.",
-        families: &FAMILIES_LLAMA,
-        architectures: &ARCH_LLAMA,
-    },
-    DriverDescriptor {
-        id: "candle.quantized_qwen2",
-        kind: "internal",
-        available: true,
-        load_supported: true,
-        note: "Built-in Candle quantized Qwen2 backend.",
-        families: &FAMILIES_QWEN,
-        architectures: &ARCH_QWEN2,
-    },
-    DriverDescriptor {
-        id: "external-llamacpp",
-        kind: "external-stub",
-        available: false,
-        load_supported: false,
-        note: "Reserved external driver slot for future llama.cpp integration.",
-        families: &FAMILIES_COMMON,
-        architectures: &ARCH_ANY,
-    },
-];
+const DRIVER_REGISTRY: [DriverDescriptor; 1] = [DriverDescriptor {
+    id: "external-llamacpp",
+    kind: "resident-adapter",
+    class: BackendClass::ResidentLocal,
+    capabilities: CAP_EXTERNAL_LLAMACPP,
+    available: false,
+    load_supported: false,
+    note: "Resident local llama.cpp adapter exposed through llama-server.",
+    families: &FAMILIES_COMMON,
+    architectures: &ARCH_ANY,
+}];
 
 pub fn driver_registry() -> &'static [DriverDescriptor] {
     &DRIVER_REGISTRY
+}
+
+pub fn driver_descriptor(backend_id: &str) -> Option<&'static DriverDescriptor> {
+    DRIVER_REGISTRY
+        .iter()
+        .find(|driver| driver.id == backend_id)
 }
 
 fn external_llamacpp_endpoint() -> Option<String> {
@@ -135,21 +183,67 @@ fn external_llamacpp_endpoint() -> Option<String> {
 }
 
 #[cfg(test)]
-thread_local! {
-    static TEST_EXTERNAL_ENDPOINT_OVERRIDE: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
+pub(crate) fn test_external_endpoint_override_get() -> Option<String> {
+    let cell = test_external_endpoint_override_cell();
+    cell.lock()
+        .expect("lock external endpoint override")
+        .clone()
 }
 
 #[cfg(test)]
-fn test_external_endpoint_override_get() -> Option<String> {
-    TEST_EXTERNAL_ENDPOINT_OVERRIDE.with(|cell| cell.borrow().clone())
+pub(crate) fn test_external_endpoint_override_set(value: Option<String>) {
+    let cell = test_external_endpoint_override_cell();
+    *cell.lock().expect("lock external endpoint override") = value;
 }
 
 #[cfg(test)]
-fn test_external_endpoint_override_set(value: Option<String>) {
-    TEST_EXTERNAL_ENDPOINT_OVERRIDE.with(|cell| {
-        *cell.borrow_mut() = value;
-    });
+fn test_external_endpoint_override_cell() -> &'static std::sync::Mutex<Option<String>> {
+    static TEST_EXTERNAL_ENDPOINT_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
+        std::sync::OnceLock::new();
+    TEST_EXTERNAL_ENDPOINT_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+fn test_external_endpoint_override_lock() -> &'static std::sync::Mutex<()> {
+    static TEST_EXTERNAL_ENDPOINT_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+    TEST_EXTERNAL_ENDPOINT_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[cfg(test)]
+pub(crate) struct TestExternalEndpointOverrideGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: Option<String>,
+}
+
+#[cfg(test)]
+impl TestExternalEndpointOverrideGuard {
+    pub(crate) fn set(value: &str) -> Self {
+        Self::set_option(Some(value.to_string()))
+    }
+
+    pub(crate) fn clear() -> Self {
+        Self::set_option(None)
+    }
+
+    fn set_option(value: Option<String>) -> Self {
+        let lock = test_external_endpoint_override_lock()
+            .lock()
+            .expect("lock external endpoint override guard");
+        let previous = test_external_endpoint_override_get();
+        test_external_endpoint_override_set(value);
+        Self {
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestExternalEndpointOverrideGuard {
+    fn drop(&mut self) {
+        test_external_endpoint_override_set(self.previous.clone());
+    }
 }
 
 fn is_driver_runtime_loadable(driver: &DriverDescriptor) -> bool {
@@ -169,61 +263,49 @@ fn runtime_driver_flags(driver: &DriverDescriptor) -> (bool, bool) {
     }
 }
 
+fn default_runtime_driver_for_model(
+    family: PromptFamily,
+    architecture: Option<&str>,
+) -> Option<&'static DriverDescriptor> {
+    if let Some(driver) = DRIVER_REGISTRY.iter().find(|driver| {
+        driver.id == DEFAULT_RESIDENT_BACKEND_ID
+            && driver.supports_model(family, architecture)
+            && is_driver_runtime_loadable(driver)
+    }) {
+        return Some(driver);
+    }
+
+    DRIVER_REGISTRY.iter().find(|driver| {
+        driver.id != DEFAULT_RESIDENT_BACKEND_ID
+            && driver.supports_model(family, architecture)
+            && is_driver_runtime_loadable(driver)
+    })
+}
+
 pub(crate) fn persist_context_slot_payload_for_backend(
     backend_id: &str,
-    _slot_id: ContextSlotId,
-    tmp_path: &Path,
+    slot_id: ContextSlotId,
     final_path: &Path,
-    payload: &[u8],
-) -> Result<(), String> {
+) -> Result<SlotPersistenceKind, String> {
     match backend_id {
-        "candle.quantized_llama" | "candle.quantized_qwen2" | "candle.slot-compat" => {
-            persist_candle_slot_payload(tmp_path, final_path, payload)
-        }
+        "external-llamacpp" => persist_external_context_slot_snapshot(slot_id, final_path),
         other => Err(format!(
-            "Backend '{}' does not yet expose a physical context-slot save mechanism.",
+            "Backend '{}' is not a supported resident inference backend.",
             other
         )),
     }
 }
 
-fn persist_candle_slot_payload(
-    tmp_path: &Path,
+fn persist_external_context_slot_snapshot(
+    slot_id: ContextSlotId,
     final_path: &Path,
-    payload: &[u8],
-) -> Result<(), String> {
-    let Some(base_dir) = final_path.parent() else {
-        return Err("Swap path safety violation: final path has no parent directory".to_string());
-    };
-
-    if tmp_path.parent() != Some(base_dir) || final_path.parent() != Some(base_dir) {
-        return Err("Swap path safety violation: computed file path escaped base dir".to_string());
-    }
-
-    let mut tmp_file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(tmp_path)
-        .map_err(|e| format!("tmp open failed: {}", e))?;
-
-    if let Err(e) = tmp_file.write_all(payload) {
-        let _ = fs::remove_file(tmp_path);
-        return Err(format!("tmp write failed: {}", e));
-    }
-
-    if let Err(e) = tmp_file.sync_all() {
-        let _ = fs::remove_file(tmp_path);
-        return Err(format!("tmp fsync failed: {}", e));
-    }
-
-    drop(tmp_file);
-
-    if let Err(e) = fs::rename(tmp_path, final_path) {
-        let _ = fs::remove_file(tmp_path);
-        return Err(format!("atomic rename failed: {}", e));
-    }
-
-    Ok(())
+) -> Result<SlotPersistenceKind, String> {
+    let backend =
+        ExternalLlamaCppBackend::from_env(PromptFamily::Unknown).map_err(|e| e.to_string())?;
+    backend
+        .save_context_slot(slot_id, final_path)
+        .map_err(|e| e.to_string())?;
+    Ok(SlotPersistenceKind::BackendSlotSnapshot)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -243,9 +325,7 @@ pub fn resolve_driver_for_model(
         return Err("Cannot resolve driver for unknown model family.".to_string());
     }
 
-    let fallback = DRIVER_REGISTRY.iter().find(|driver| {
-        driver.supports_model(family, architecture) && is_driver_runtime_loadable(driver)
-    });
+    let fallback = default_runtime_driver_for_model(family, architecture);
 
     let architecture_label = architecture
         .map(|value| format!(" architecture '{}'", value))
@@ -271,6 +351,8 @@ pub fn resolve_driver_for_model(
                 let (available, load_supported) = runtime_driver_flags(driver);
                 return Ok(DriverResolution {
                     resolved_backend_id: driver.id.to_string(),
+                    backend_class: driver.class,
+                    capabilities: driver.capabilities,
                     resolution_source: "metadata-preference",
                     resolution_rationale: format!(
                         "using preferred driver '{}' declared by model metadata for family {:?}{}",
@@ -285,6 +367,8 @@ pub fn resolve_driver_for_model(
                 let (available, load_supported) = runtime_driver_flags(fallback_driver);
                 return Ok(DriverResolution {
                     resolved_backend_id: fallback_driver.id.to_string(),
+                    backend_class: fallback_driver.class,
+                    capabilities: fallback_driver.capabilities,
                     resolution_source: "metadata-preference-fallback",
                     resolution_rationale: format!(
                         "preferred driver '{}' is registered but not loadable yet for family {:?}{}; falling back to '{}': {}",
@@ -305,6 +389,8 @@ pub fn resolve_driver_for_model(
             let (available, load_supported) = runtime_driver_flags(fallback_driver);
             return Ok(DriverResolution {
                 resolved_backend_id: fallback_driver.id.to_string(),
+                backend_class: fallback_driver.class,
+                capabilities: fallback_driver.capabilities,
                 resolution_source: "metadata-preference-unknown-fallback",
                 resolution_rationale: format!(
                     "preferred driver '{}' is unknown; falling back to '{}' for family {:?}{}",
@@ -325,6 +411,8 @@ pub fn resolve_driver_for_model(
         let (available, load_supported) = runtime_driver_flags(driver);
         return Ok(DriverResolution {
             resolved_backend_id: driver.id.to_string(),
+            backend_class: driver.class,
+            capabilities: driver.capabilities,
             resolution_source: "family-default",
             resolution_rationale: format!(
                 "using default loadable driver '{}' for family {:?}{}",
@@ -406,12 +494,7 @@ impl RuntimeModel {
         Self { inner }
     }
 
-    pub fn load_from_gguf(
-        path: &str,
-        family: PromptFamily,
-        backend_id: &str,
-        device: &Device,
-    ) -> Result<Self> {
+    pub fn load_from_gguf(_path: &str, family: PromptFamily, backend_id: &str) -> Result<Self> {
         let descriptor = driver_registry()
             .iter()
             .find(|driver| driver.id == backend_id)
@@ -424,18 +507,14 @@ impl RuntimeModel {
             )));
         }
 
-        if backend_id != "external-llamacpp"
-            && (!descriptor.available || !descriptor.load_supported)
-        {
+        if !is_driver_runtime_loadable(descriptor) {
             return Err(E::msg(format!(
-                "Backend '{}' is registered as '{}' but is not loadable in-process yet: {}",
+                "Backend '{}' is registered as '{}' but is not loadable yet: {}",
                 backend_id, descriptor.kind, descriptor.note
             )));
         }
 
         let backend: Box<dyn ModelBackend> = match backend_id {
-            "candle.quantized_llama" => Box::new(QuantizedLlamaBackend::load(path, device)?),
-            "candle.quantized_qwen2" => Box::new(QuantizedQwen2Backend::load(path, device)?),
             "external-llamacpp" => Box::new(ExternalLlamaCppBackend::from_env(family)?),
             _ => {
                 return Err(E::msg(format!(
@@ -454,6 +533,18 @@ impl RuntimeModel {
 
     pub fn family(&self) -> PromptFamily {
         self.inner.family()
+    }
+
+    pub fn backend_class(&self) -> BackendClass {
+        driver_descriptor(self.backend_id())
+            .map(|driver| driver.class)
+            .unwrap_or(BackendClass::RemoteStateless)
+    }
+
+    pub fn backend_capabilities(&self) -> BackendCapabilities {
+        driver_descriptor(self.backend_id())
+            .map(|driver| driver.capabilities)
+            .unwrap_or_default()
     }
 
     pub fn generate_step(
@@ -491,16 +582,15 @@ impl RuntimeModel {
 mod tests {
     use super::{
         combine_completion_text, completion_is_finished, diagnose_external_backend,
-        resolve_driver_for_family, resolve_driver_for_model, test_external_endpoint_override_get,
-        test_external_endpoint_override_set, CompletionResponse, ContextSlotPersistence,
+        persist_context_slot_payload_for_backend, resolve_driver_for_family,
+        resolve_driver_for_model, BackendClass, CompletionResponse, ContextSlotPersistence,
         ExternalLlamaCppBackend, InferenceBackend, InferenceStepRequest, InferenceStepResult,
-        PromptFamily, RuntimeModel,
+        PromptFamily, RuntimeModel, TestExternalEndpointOverrideGuard,
     };
-    use crate::memory::ContextSlotId;
+    use crate::memory::{ContextSlotId, SlotPersistenceKind};
     use crate::prompting::GenerationConfig;
     use anyhow::Result;
-    use candle_core::Device;
-    use candle_transformers::generation::LogitsProcessor;
+    use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::path::Path;
@@ -511,24 +601,6 @@ mod tests {
 
     type SharedStringLog = Arc<Mutex<Vec<String>>>;
     type MockServerHandle = thread::JoinHandle<()>;
-
-    struct EndpointOverrideGuard {
-        previous: Option<String>,
-    }
-
-    impl EndpointOverrideGuard {
-        fn set(value: &str) -> Self {
-            let previous = test_external_endpoint_override_get();
-            test_external_endpoint_override_set(Some(value.to_string()));
-            Self { previous }
-        }
-    }
-
-    impl Drop for EndpointOverrideGuard {
-        fn drop(&mut self) {
-            test_external_endpoint_override_set(self.previous.clone());
-        }
-    }
 
     fn test_tokenizer() -> Tokenizer {
         let vocab = [("<unk>".to_string(), 0), ("hello".to_string(), 1)]
@@ -598,6 +670,58 @@ mod tests {
         (format!("http://{}", address), paths, bodies, handle)
     }
 
+    fn spawn_mock_streaming_tool_server(
+    ) -> (String, SharedStringLog, SharedStringLog, MockServerHandle) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock streaming server");
+        let address = listener.local_addr().expect("mock streaming addr");
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let paths_for_thread = Arc::clone(&paths);
+        let bodies_for_thread = Arc::clone(&bodies);
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept mock streaming request");
+            let mut buffer = [0_u8; 4096];
+            let read = stream
+                .read(&mut buffer)
+                .expect("read mock streaming request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("/")
+                .to_string();
+            let body = request
+                .split("\r\n\r\n")
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            paths_for_thread
+                .lock()
+                .expect("lock streaming paths")
+                .push(path);
+            bodies_for_thread
+                .lock()
+                .expect("lock streaming bodies")
+                .push(body);
+
+            let chunk_one =
+                "data: {\"content\":\"TOOL:calc {\\\"expression\\\":\\\"1+1\\\"}\",\"stop\":false}\n\n";
+            let chunk_two = "data: {\"content\":\"\\nignored tail\",\"stop\":false}\n\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:X}\r\n{}\r\n{:X}\r\n{}\r\n0\r\n\r\n",
+                chunk_one.len(),
+                chunk_one,
+                chunk_two.len(),
+                chunk_two,
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        (format!("http://{}", address), paths, bodies, handle)
+    }
+
     fn spawn_mock_diag_server() -> (String, SharedStringLog, MockServerHandle) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock diag server");
         let address = listener.local_addr().expect("mock diag server addr");
@@ -646,23 +770,37 @@ mod tests {
     }
 
     #[test]
-    fn resolves_family_default_driver() {
-        let resolution =
-            resolve_driver_for_family(PromptFamily::Llama, None).expect("resolve llama driver");
-        assert_eq!(resolution.resolved_backend_id, "candle.quantized_llama");
-        assert_eq!(resolution.resolution_source, "family-default");
+    fn family_default_requires_loadable_external_runtime() {
+        let _endpoint = TestExternalEndpointOverrideGuard::clear();
+        let err = resolve_driver_for_family(PromptFamily::Llama, None)
+            .expect_err("llama driver should require a configured resident runtime");
+        assert!(err.contains("No registered loadable driver"));
     }
 
     #[test]
-    fn preferred_external_driver_falls_back_when_stub_only() {
-        let resolution = resolve_driver_for_family(PromptFamily::Qwen, Some("external-llamacpp"))
-            .expect("resolve qwen fallback driver");
-        assert_eq!(resolution.resolved_backend_id, "candle.quantized_qwen2");
-        assert_eq!(resolution.resolution_source, "metadata-preference-fallback");
+    fn family_default_prefers_external_runtime_when_configured() {
+        let _endpoint = TestExternalEndpointOverrideGuard::set("http://127.0.0.1:18080");
+
+        let resolution =
+            resolve_driver_for_family(PromptFamily::Llama, None).expect("resolve llama driver");
+
+        assert_eq!(resolution.resolved_backend_id, "external-llamacpp");
+        assert_eq!(resolution.backend_class, BackendClass::ResidentLocal);
+        assert_eq!(resolution.resolution_source, "family-default");
+        assert!(resolution.capabilities.persistent_slots);
+    }
+
+    #[test]
+    fn preferred_external_driver_errors_when_endpoint_is_missing() {
+        let _endpoint = TestExternalEndpointOverrideGuard::clear();
+        let err = resolve_driver_for_family(PromptFamily::Qwen, Some("external-llamacpp"))
+            .expect_err("external backend should fail when endpoint is missing");
+        assert!(err.contains("not loadable"));
     }
 
     #[test]
     fn unsupported_family_without_loadable_driver_errors() {
+        let _endpoint = TestExternalEndpointOverrideGuard::clear();
         let err = resolve_driver_for_family(PromptFamily::Mistral, None)
             .expect_err("mistral should not resolve to loadable driver yet");
         assert!(err.contains("No registered loadable driver"));
@@ -677,15 +815,17 @@ mod tests {
 
     #[test]
     fn architecture_specific_driver_resolution_uses_external_rpc_when_configured() {
-        let _endpoint = EndpointOverrideGuard::set("http://127.0.0.1:18080");
+        let _endpoint = TestExternalEndpointOverrideGuard::set("http://127.0.0.1:18080");
 
         let resolution = resolve_driver_for_model(PromptFamily::Qwen, Some("qwen35"), None)
             .expect("qwen35 should resolve to external rpc when configured");
 
         assert_eq!(resolution.resolved_backend_id, "external-llamacpp");
+        assert_eq!(resolution.backend_class, BackendClass::ResidentLocal);
         assert_eq!(resolution.resolution_source, "family-default");
         assert!(resolution.available);
         assert!(resolution.load_supported);
+        assert!(resolution.capabilities.persistent_slots);
     }
 
     struct DummyBackend;
@@ -800,15 +940,13 @@ mod tests {
     #[test]
     fn external_backend_roundtrips_generation_and_slot_rpc() {
         let (endpoint, paths, bodies, server_handle) = spawn_mock_llamacpp_server(4);
-        let _endpoint = EndpointOverrideGuard::set(&endpoint);
+        let _endpoint = TestExternalEndpointOverrideGuard::set(&endpoint);
 
-        let mut model = RuntimeModel::load_from_gguf(
-            "ignored.gguf",
-            PromptFamily::Qwen,
-            "external-llamacpp",
-            &Device::Cpu,
-        )
-        .expect("load external runtime model");
+        let mut model =
+            RuntimeModel::load_from_gguf("ignored.gguf", PromptFamily::Qwen, "external-llamacpp")
+                .expect("load external runtime model");
+        assert_eq!(model.backend_class(), BackendClass::ResidentLocal);
+        assert!(model.backend_capabilities().save_restore_slots);
         let tokenizer = test_tokenizer();
         let generation = GenerationConfig {
             temperature: 0.7,
@@ -816,18 +954,17 @@ mod tests {
             seed: 1,
             max_tokens: 16,
         };
-        let mut logits_processor = LogitsProcessor::new(1, Some(0.7), Some(0.9));
 
         let step = model
             .generate_step(InferenceStepRequest {
                 context_slot_id: Some(7),
                 tokens: &[1],
+                rendered_prompt: "hello",
+                resident_prompt_suffix: "hello",
                 index_pos: 0,
                 remaining_generation_budget: generation.max_tokens,
-                logits_processor: &mut logits_processor,
                 tokenizer: &tokenizer,
                 generation,
-                device: &Device::Cpu,
                 eos_token_id: 2,
                 eot_token_id: 3,
             })
@@ -871,9 +1008,96 @@ mod tests {
     }
 
     #[test]
+    fn external_backend_streaming_stops_on_tool_marker() {
+        let (endpoint, paths, bodies, server_handle) = spawn_mock_streaming_tool_server();
+        let _endpoint = TestExternalEndpointOverrideGuard::set(&endpoint);
+
+        let mut model =
+            RuntimeModel::load_from_gguf("ignored.gguf", PromptFamily::Qwen, "external-llamacpp")
+                .expect("load external runtime model");
+        let tokenizer = test_tokenizer();
+        let generation = GenerationConfig {
+            temperature: 0.7,
+            top_p: 0.9,
+            seed: 1,
+            max_tokens: 32,
+        };
+
+        let step = model
+            .generate_step(InferenceStepRequest {
+                context_slot_id: Some(7),
+                tokens: &[1],
+                rendered_prompt: "hello",
+                resident_prompt_suffix: "hello",
+                index_pos: 0,
+                remaining_generation_budget: generation.max_tokens,
+                tokenizer: &tokenizer,
+                generation,
+                eos_token_id: 2,
+                eot_token_id: 3,
+            })
+            .expect("streaming generate step through external backend");
+
+        server_handle.join().expect("join streaming mock server");
+
+        assert_eq!(
+            paths.lock().expect("lock paths").as_slice(),
+            &["/completion"]
+        );
+        assert_eq!(step.emitted_text, "TOOL:calc {\"expression\":\"1+1\"}");
+        assert_eq!(
+            step.appended_tokens,
+            tokenizer
+                .encode(step.emitted_text.as_str(), false)
+                .expect("encode emitted tool invocation")
+                .get_ids()
+                .to_vec()
+        );
+        assert!(!step.finished);
+
+        assert!(
+            bodies
+                .lock()
+                .expect("lock bodies")
+                .first()
+                .map(|body| body.contains("\"stream\":true"))
+                .unwrap_or(false),
+            "streaming completion request should enable llama.cpp streaming mode"
+        );
+    }
+
+    #[test]
+    fn persist_context_slot_payload_uses_external_slot_save_for_resident_backend() {
+        let (endpoint, paths, _bodies, server_handle) = spawn_mock_llamacpp_server(1);
+        let _endpoint = TestExternalEndpointOverrideGuard::set(&endpoint);
+        let base = Path::new("workspace/test_external_slot_persist");
+        let _ = fs::remove_dir_all(base);
+        fs::create_dir_all(base).expect("create external persist test dir");
+        let final_path = base.join("pid_1_slot_7.swap");
+
+        let persistence_kind =
+            persist_context_slot_payload_for_backend("external-llamacpp", 7, &final_path)
+                .expect("resident backend slot persist should succeed");
+
+        server_handle.join().expect("join mock server");
+
+        assert_eq!(persistence_kind, SlotPersistenceKind::BackendSlotSnapshot);
+        assert!(
+            !final_path.exists(),
+            "external slot save should not create a local payload file"
+        );
+        assert_eq!(
+            paths.lock().expect("lock paths").as_slice(),
+            &["/slots/7?action=save"]
+        );
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn external_backend_preserves_special_tokens_in_prompt_decode() {
         let (endpoint, _paths, bodies, server_handle) = spawn_mock_llamacpp_server(1);
-        let _endpoint = EndpointOverrideGuard::set(&endpoint);
+        let _endpoint = TestExternalEndpointOverrideGuard::set(&endpoint);
 
         let vocab = [
             ("<unk>".to_string(), 0),
@@ -901,18 +1125,17 @@ mod tests {
             seed: 1,
             max_tokens: 16,
         };
-        let mut logits_processor = LogitsProcessor::new(1, Some(0.7), Some(0.9));
 
         backend
             .generate_step(InferenceStepRequest {
                 context_slot_id: Some(3),
                 tokens: &[1, 2, 3, 4, 5],
+                rendered_prompt: "<|im_start|>userhi<|im_end|><|im_start|>assistant",
+                resident_prompt_suffix: "<|im_start|>userhi<|im_end|><|im_start|>assistant",
                 index_pos: 0,
                 remaining_generation_budget: generation.max_tokens,
-                logits_processor: &mut logits_processor,
                 tokenizer: &tokenizer,
                 generation,
-                device: &Device::Cpu,
                 eos_token_id: 6,
                 eot_token_id: 7,
             })
@@ -939,8 +1162,10 @@ mod tests {
     #[test]
     fn external_backend_uses_chunked_completion_requests() {
         let (endpoint, _paths, bodies, server_handle) = spawn_mock_llamacpp_server(1);
-        let _endpoint = EndpointOverrideGuard::set(&endpoint);
-        let expected_chunk_tokens = crate::config::kernel_config().external_llamacpp.chunk_tokens;
+        let _endpoint = TestExternalEndpointOverrideGuard::set(&endpoint);
+        let expected_chunk_tokens = crate::config::kernel_config()
+            .external_llamacpp
+            .chunk_tokens;
 
         let mut backend = ExternalLlamaCppBackend::from_env(PromptFamily::Qwen)
             .expect("build external backend from endpoint override");
@@ -951,18 +1176,17 @@ mod tests {
             seed: 1,
             max_tokens: 64,
         };
-        let mut logits_processor = LogitsProcessor::new(1, Some(0.7), Some(0.9));
 
         backend
             .generate_step(InferenceStepRequest {
                 context_slot_id: Some(3),
                 tokens: &[1],
+                rendered_prompt: "hello",
+                resident_prompt_suffix: "hello",
                 index_pos: 0,
                 remaining_generation_budget: generation.max_tokens,
-                logits_processor: &mut logits_processor,
                 tokenizer: &tokenizer,
                 generation,
-                device: &Device::Cpu,
                 eos_token_id: 6,
                 eot_token_id: 7,
             })
@@ -983,9 +1207,9 @@ mod tests {
     }
 
     #[test]
-    fn external_backend_uses_remaining_turn_budget_not_total_context_len() {
+    fn external_backend_uses_rendered_prompt_cache_instead_of_redecoding_tokens() {
         let (endpoint, _paths, bodies, server_handle) = spawn_mock_llamacpp_server(1);
-        let _endpoint = EndpointOverrideGuard::set(&endpoint);
+        let _endpoint = TestExternalEndpointOverrideGuard::set(&endpoint);
 
         let mut backend = ExternalLlamaCppBackend::from_env(PromptFamily::Qwen)
             .expect("build external backend from endpoint override");
@@ -996,19 +1220,66 @@ mod tests {
             seed: 1,
             max_tokens: 16,
         };
-        let mut logits_processor = LogitsProcessor::new(1, Some(0.7), Some(0.9));
+
+        backend
+            .generate_step(InferenceStepRequest {
+                context_slot_id: Some(3),
+                tokens: &[1],
+                rendered_prompt: "hello\nTOOL:calc {\"expression\":\"1+1\"}\nOutput:\n2\n",
+                resident_prompt_suffix: "Output:\n2\n",
+                index_pos: 0,
+                remaining_generation_budget: generation.max_tokens,
+                tokenizer: &tokenizer,
+                generation,
+                eos_token_id: 6,
+                eot_token_id: 7,
+            })
+            .expect("generate step should succeed");
+
+        server_handle.join().expect("join mock server");
+
+        let body = bodies
+            .lock()
+            .expect("lock bodies")
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            body.contains("\\nTOOL:calc"),
+            "external backend should honor the rendered prompt cache instead of re-decoding token ids"
+        );
+        assert!(
+            body.contains("\"prompt\":\"hello\\nTOOL:calc {\\\"expression\\\":\\\"1+1\\\"}\\nOutput:\\n2\\n\""),
+            "llama.cpp should still receive the full prompt when append-only transport is unavailable"
+        );
+    }
+
+    #[test]
+    fn external_backend_uses_remaining_turn_budget_not_total_context_len() {
+        let (endpoint, _paths, bodies, server_handle) = spawn_mock_llamacpp_server(1);
+        let _endpoint = TestExternalEndpointOverrideGuard::set(&endpoint);
+
+        let mut backend = ExternalLlamaCppBackend::from_env(PromptFamily::Qwen)
+            .expect("build external backend from endpoint override");
+        let tokenizer = test_tokenizer();
+        let generation = GenerationConfig {
+            temperature: 0.7,
+            top_p: 0.9,
+            seed: 1,
+            max_tokens: 16,
+        };
         let long_context = vec![1_u32; 32];
 
         let step = backend
             .generate_step(InferenceStepRequest {
                 context_slot_id: Some(3),
                 tokens: &long_context,
+                rendered_prompt: "hello",
+                resident_prompt_suffix: "",
                 index_pos: long_context.len(),
                 remaining_generation_budget: 1,
-                logits_processor: &mut logits_processor,
                 tokenizer: &tokenizer,
                 generation,
-                device: &Device::Cpu,
                 eos_token_id: 6,
                 eot_token_id: 7,
             })
@@ -1027,7 +1298,10 @@ mod tests {
             "external backend must honor the remaining turn budget"
         );
         assert_eq!(step.appended_tokens, vec![1]);
-        assert!(step.finished, "one-token remaining budget should end the turn");
+        assert!(
+            step.finished,
+            "one-token remaining budget should end the turn"
+        );
     }
 
     #[test]
@@ -1060,11 +1334,16 @@ mod tests {
     #[test]
     fn external_backend_diagnostic_reports_health_props_and_slots() {
         let (endpoint, paths, server_handle) = spawn_mock_diag_server();
-        let _endpoint = EndpointOverrideGuard::set(&endpoint);
+        let _endpoint = TestExternalEndpointOverrideGuard::set(&endpoint);
 
         let report = diagnose_external_backend().expect("diagnostic report should succeed");
 
         assert_eq!(report["backend"].as_str(), Some("external-llamacpp"));
+        assert_eq!(report["backend_class"].as_str(), Some("resident_local"));
+        assert_eq!(
+            report["backend_capabilities"]["persistent_slots"].as_bool(),
+            Some(true)
+        );
         assert_eq!(report["health"]["status_code"].as_u64(), Some(200));
         assert_eq!(report["props"]["json"]["total_slots"].as_u64(), Some(4));
         assert_eq!(report["summary"]["visible_slots"].as_u64(), Some(2));

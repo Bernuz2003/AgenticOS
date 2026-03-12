@@ -18,12 +18,20 @@ pub struct ManagedProcessRequest {
 }
 
 pub fn free_backend_slot_if_known(engine: &mut LLMEngine, memory: &NeuralMemory, pid: u64) {
-    let Some(slot_id) = memory.slot_for_pid(pid) else {
-        return;
-    };
+    if let Err(err) = engine.free_process_context_slot(pid) {
+        let Some(slot_id) = memory.slot_for_pid(pid) else {
+            return;
+        };
 
-    if let Err(err) = engine.free_context_slot(slot_id) {
-        tracing::debug!(pid, slot_id, %err, "MEMORY: backend slot free not available");
+        if let Err(fallback_err) = engine.free_context_slot(slot_id) {
+            tracing::debug!(
+                pid,
+                slot_id,
+                primary_error = %err,
+                fallback_error = %fallback_err,
+                "MEMORY: backend slot free not available"
+            );
+        }
     }
 }
 

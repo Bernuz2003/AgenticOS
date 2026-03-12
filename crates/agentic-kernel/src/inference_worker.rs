@@ -2,7 +2,6 @@ use std::sync::mpsc;
 use std::thread;
 
 use anyhow::Result;
-use candle_core::Device;
 
 use crate::backend::{InferenceFinishReason, InferenceStepRequest};
 use crate::process::{AgentProcess, ProcessState};
@@ -43,7 +42,6 @@ fn run_step(
     eos_token_id: u32,
     eot_token_id: u32,
 ) -> Result<(AgentProcess, String, usize, bool)> {
-    let device = Device::Cpu;
     let remaining_generation_budget = process
         .max_tokens
         .saturating_sub(process.generated_tokens_in_current_turn());
@@ -58,16 +56,18 @@ fn run_step(
     }
 
     process.state = ProcessState::Running;
+    let rendered_prompt = process.prompt_text().to_string();
+    let resident_prompt_suffix = process.pending_resident_prompt_suffix().to_string();
 
     let step = process.model.generate_step(InferenceStepRequest {
         context_slot_id: process.context_slot_id,
         tokens: &process.tokens,
+        rendered_prompt: &rendered_prompt,
+        resident_prompt_suffix: &resident_prompt_suffix,
         index_pos: process.index_pos,
         remaining_generation_budget,
-        logits_processor: &mut process.logits_processor,
         tokenizer: &process.tokenizer,
         generation: process.generation,
-        device: &device,
         eos_token_id,
         eot_token_id,
     })?;

@@ -73,6 +73,15 @@ pub(super) fn scan_syscall_buffer(buffer: &mut String) -> Option<String> {
             return Some(full_command);
         }
     }
+    if let Some(command) = buffer
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("TOOL:") && crate::tools::validates_tool_invocation(line))
+        .map(str::to_string)
+    {
+        buffer.clear();
+        return Some(command);
+    }
     if buffer.len() > 8000 {
         buffer.clear();
     }
@@ -117,15 +126,15 @@ pub(super) fn dispatch_process_syscall(
             engine,
             memory,
             scheduler,
-                ManagedProcessRequest {
-                    prompt: prompt.to_string(),
-                    owner_id,
-                    workload,
-                    priority,
-                    lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
-                    context_policy: inherited_context_policy,
-                },
-            ) {
+            ManagedProcessRequest {
+                prompt: prompt.to_string(),
+                owner_id,
+                workload,
+                priority,
+                lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+                context_policy: inherited_context_policy,
+            },
+        ) {
             Ok(new_pid) => {
                 pending_events.push(KernelEvent::SessionStarted {
                     pid: new_pid.pid,

@@ -43,14 +43,14 @@ Questo documento descrive l'architettura interna del kernel, i flussi end-to-end
                   │                     │                      │
            ┌──────▼──────┐    ┌────────▼────────┐    ┌───────▼───────┐
            │  LLMEngine  │    │  NeuralMemory   │    │  Scheduler    │
-           │  (candle)   │    │  (paged alloc)  │    │  (priority +  │
-           │  processes  │    │  LRU + swap     │    │   quota)      │
+           │ resident    │    │ resident-slot   │    │  (priority +  │
+           │  processes  │    │ parking/swap    │    │   quota)      │
            └──────┬──────┘    └────────┬────────┘    └───────────────┘
                   │                    │
            ┌──────▼──────┐    ┌────────▼────────┐
            │   Backend   │    │   Swap Worker   │
-           │ Llama/Qwen  │    │   (thread)      │
-           │   (GGUF)    │    │   atomic I/O    │
+           │ llama.cpp   │    │   (thread)      │
+           │ / cloud API │    │ slot snapshot   │
            └─────────────┘    └─────────────────┘
 ```
 
@@ -58,7 +58,7 @@ Questo documento descrive l'architettura interna del kernel, i flussi end-to-end
 - **Single-thread event-driven** — il loop principale è non-blocking (`mio` epoll).
 - **Local-first e single-node** — la priorita' e' correttezza e affidabilita' del runtime locale, non concorrenza forte o distribuzione.
 - **Process-centric** — ogni `EXEC` crea un processo con la propria copia del modello, stato di generazione e buffer syscall.
-- **Paged memory** — allocatore a blocchi fisici con page table, eviction LRU e swap asincrono su disco.
+- **Resident-slot memory** — residency manager per PID, parking asincrono e restore backend-owned dei context slot.
 - **Priority scheduler** — 4 livelli di priorità (Low → Critical), quote token e syscall per workload class. Governa ordine e limiti locali; non e' un motore di parallelismo forte.
 - **Syscall sandbox** — i processi LLM invocano tool (Python, file I/O, calc) tramite pattern `[[COMMAND: args]]`, con rate-limit, timeout e audit.
 - **Multi-model** — catalogo auto-discovery, routing capability-aware, hot-swap tra famiglie LLM.
@@ -357,8 +357,8 @@ stateDiagram-v2
     [*] --> Ready : spawn_process()
     Ready --> Running : step_process() (primo token)
     Running --> Running : step_process() (token successivi)
-    Running --> WaitingForMemory : OOM → swap queued
-    WaitingForMemory --> Ready : swap completed
+    Running --> Parked : OOM → swap queued
+    Parked --> Ready : swap completed
     Running --> Finished : stop condition / TERM
     Running --> [*] : KILL (rimozione immediata)
     Finished --> [*] : cleanup (release memory, unregister scheduler)
@@ -374,86 +374,62 @@ La generazione si ferma quando:
 
 ### Duplicazione modello
 
-- **Llama** — `model.clone()` (zero-alloc, shared weights via `Arc`)
-- **Qwen2** — full reload da disco (clone non supportato dalla libreria candle)
-- **Architetture future** — il runtime non assume piu' che ogni modello `Qwen` sia caricabile col backend `Qwen2`: il control plane deve prima risolvere un driver compatibile con `general.architecture`.
+- **Resident local** — il kernel duplica l'adapter backend, non i pesi del modello.
+- **Save/restore** — la continuità di processo dipende dai context slot residenti, non dal clone in-process dei tensori.
+- **Architetture future** — il control plane deve sempre risolvere un driver compatibile con `general.architecture` prima del load.
 
 ---
 
 ## 7. Memory subsystem
 
-Il sottosistema memoria è un allocatore a pagine ispirato alla memoria virtuale degli OS tradizionali.
+Il sottosistema memoria è ora un residency manager orientato ai backend `resident_local`.
 
 ### Architettura
 
 ```mermaid
 graph TB
-    subgraph "Logical Layer"
-        PID["PID → TensorId"]
-        PT["Page Table<br/>TensorId → [BlockIndex]"]
-    end
-
-    subgraph "Physical Layer"
-        BLK["Physical Blocks<br/>Vec&lt;Tensor&gt; (pre-allocati)"]
-        FREE["Free List<br/>VecDeque&lt;BlockIndex&gt;"]
-    end
-
-    subgraph "Eviction"
-        LRU["LRU Order<br/>VecDeque&lt;TensorId&gt;"]
+    subgraph "Residency"
+        PID["PID → ContextSlotId"]
+        LS["Logical residency<br/>tracked pids + parked set"]
     end
 
     subgraph "Swap"
         SM["SwapManager"]
         WT["Worker Thread"]
-        DISK["workspace/swap/<br/>persist_*.bin"]
+        DISK["workspace/swap/<br/>pid_*_slot_*.swap"]
     end
 
-    PID --> PT --> BLK
-    FREE -.-> BLK
-    LRU -.->|evict victim| PT
-    PT -.->|OOM| SM --> WT --> DISK
+    PID --> LS
+    LS -.->|pressure or MEMW| SM --> WT --> DISK
 ```
 
 ### Configurazione (default)
 
 | Parametro | Valore | Significato |
 |-----------|--------|-------------|
-| `block_size` | 16 | Righe per blocco |
-| `hidden_dim` | 256 | Colonne per blocco |
-| `total_memory_mb` | 64 | RAM totale allocata |
-| **Blocchi totali** | 1024 | `64MB / (16 × 256 × 4 bytes)` |
+| `swap_async` | `true` | Abilita il parking asincrono dei resident slot |
+| `swap_dir` | `workspace/swap` | Directory degli snapshot slot backend-owned |
+| `token_slot_quota_per_pid` | `4096` | Quota logica per PID usata dall'admission control |
 
-### Flusso write
+### Flusso `MEMW`
 
 ```mermaid
 flowchart TD
-    WRITE["write_for_pid_bytes(pid, data)"] --> RESOLVE["Resolve PID → TensorId"]
-    RESOLVE --> CALC["Calcola blocks_needed"]
-    CALC --> CHECK{free_blocks<br/>≥ needed?}
-    CHECK -->|sì| ALLOC["Alloca blocchi, scrivi dati"]
-    CHECK -->|no| EVICT["evict_lru_until_fit()"]
-    EVICT --> RECHECK{spazio<br/>liberato?}
-    RECHECK -->|sì| ALLOC
-    RECHECK -->|no| SWAP{swap<br/>enabled?}
-    SWAP -->|sì| ENQUEUE["SwapManager::enqueue(pid, payload)<br/>PID → WaitingForMemory"]
-    SWAP -->|no| OOM["OOM error<br/>counters.oom_events += 1"]
-    ALLOC --> TOUCH["touch_tensor_lru(id)"]
+    WRITE["write_for_pid_bytes(pid, payload)"] --> RESOLVE["Resolve PID → ContextSlotId"]
+    RESOLVE --> ACTIVE{memory<br/>active?}
+    ACTIVE -->|no| SKIP["noop osservabile"]
+    ACTIVE -->|sì| SWAP{swap<br/>enabled?}
+    SWAP -->|no| NOTE["pressure noted<br/>no parking"]
+    SWAP -->|sì| ENQUEUE["SwapManager::enqueue(pid, slot)<br/>PID → Parked"]
 ```
-
-### Eviction LRU
-
-- Ogni accesso a un tensore lo sposta in coda alla LRU (most-recently-used).
-- Quando serve spazio, si evice dal fronte (least-recently-used).
-- Il tensore attualmente in scrittura è **protetto** dall'eviction.
-- Ciclo di eviction: `evict_lru_until_fit(required, protected)`.
 
 ### Swap asincrono
 
-Un worker thread dedicato (`agentic_swap_worker`) gestisce la persistenza su disco:
+Un worker thread dedicato (`agentic_swap_worker`) gestisce il parking dei resident slot:
 
-1. Il main thread invia un `SwapJob { pid, payload }` via channel.
-2. Il PID viene marcato `WaitingForMemory`.
-3. Il worker scrive atomicamente su `workspace/swap/` (temp + fsync + rename).
+1. Il main thread invia un `SwapJob { pid, slot_id, backend_id }` via channel.
+2. Il PID viene marcato `Parked`.
+3. Il worker chiama `save_context_slot()` sul backend residente e usa il path come handle di snapshot.
 4. Il worker invia `SwapResult` indietro via channel.
 5. Nel successivo `run_engine_tick()`, `poll_swap_events()` drena i risultati e risveglia i processi.
 
@@ -569,7 +545,7 @@ Il control plane risolve un `ResolvedModelTarget` composto da path, family, toke
 1. `family` per la compatibilita' logica del modello.
 2. `architecture` per evitare fallback falsi-positivi verso loader interni incompatibili.
 
-Questo significa che un modello `Qwen` con `general.architecture=qwen35` viene scoperto e descritto correttamente dal catalogo, ma non viene inoltrato automaticamente a `candle.quantized_qwen2`. Se nessun driver registrato supporta quell'architettura, `LOAD` fallisce prima del backend load con errore esplicito e machine-readable.
+Questo significa che un modello `Qwen` con `general.architecture=qwen35` viene scoperto e descritto correttamente dal catalogo, ma non viene inoltrato automaticamente a un backend incompatibile. Se nessun driver registrato supporta quell'architettura, `LOAD` fallisce prima del backend load con errore esplicito e machine-readable.
 
 ### Capability routing
 
@@ -651,13 +627,12 @@ Se `AGENTIC_CHECKPOINT_INTERVAL_SECS > 0`, il kernel salva automaticamente ogni 
 
 ## 12. Configurazione
 
-Tutte le configurazioni sono via variabili d'ambiente (nessun file di config).
+La configurazione primaria vive in `agenticos.toml`, con override opzionali via variabili d'ambiente.
 
 | Variabile | Default | Descrizione |
 |-----------|---------|-------------|
 | `RUST_LOG` | `info` | Livello di log (tracing) |
 | `AGENTIC_LOG_CONNECTIONS` | `false` | Log connessioni TCP |
-| `AGENTIC_MEMORY_ACTIVE` | `true` | Abilita sottosistema NeuralMemory |
 | `AGENTIC_MEMORY_SWAP_ASYNC` | `true` | Abilita swap asincrono su disco |
 | `AGENTIC_MEMORY_SWAP_DIR` | `workspace/swap` | Directory per file di swap |
 | `AGENTIC_CHECKPOINT_INTERVAL_SECS` | `0` (off) | Intervallo auto-checkpoint in secondi |

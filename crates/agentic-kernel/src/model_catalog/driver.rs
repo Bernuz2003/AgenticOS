@@ -1,3 +1,4 @@
+use crate::backend::BackendCapabilities;
 use crate::backend::{resolve_driver_for_model, DriverResolution};
 use crate::errors::CatalogError;
 
@@ -5,6 +6,8 @@ use super::ModelEntry;
 
 pub(super) struct DriverCatalogView {
     pub(super) resolved_backend: Option<String>,
+    pub(super) resolved_backend_class: Option<String>,
+    pub(super) resolved_backend_capabilities: Option<BackendCapabilities>,
     pub(super) driver_resolution_source: String,
     pub(super) driver_resolution_rationale: String,
     pub(super) driver_available: Option<bool>,
@@ -15,6 +18,8 @@ pub(super) fn driver_view_for_entry(entry: &ModelEntry) -> DriverCatalogView {
     match resolve_driver_for_entry(entry) {
         Ok(resolution) => DriverCatalogView {
             resolved_backend: Some(resolution.resolved_backend_id),
+            resolved_backend_class: Some(resolution.backend_class.as_str().to_string()),
+            resolved_backend_capabilities: Some(resolution.capabilities),
             driver_resolution_source: resolution.resolution_source.to_string(),
             driver_resolution_rationale: resolution.resolution_rationale,
             driver_available: Some(resolution.available),
@@ -22,6 +27,8 @@ pub(super) fn driver_view_for_entry(entry: &ModelEntry) -> DriverCatalogView {
         },
         Err(err) => DriverCatalogView {
             resolved_backend: None,
+            resolved_backend_class: None,
+            resolved_backend_capabilities: None,
             driver_resolution_source: "unresolved".to_string(),
             driver_resolution_rationale: err.to_string(),
             driver_available: None,

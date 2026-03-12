@@ -205,7 +205,7 @@ Dal codice attuale la risposta più probabile è: non è un effetto di `mmap`.
 Motivi:
 
 - i loader Candle usati da AgenticOS (`quantized_llama` e `quantized_qwen2`) non usano `mmap` per il GGUF;
-- `candle_core::quantized::gguf_file::TensorInfo::read()` legge i tensori con `read_exact()` in memoria;
+- il vecchio loader nativo rimosso leggeva i tensori con `read_exact()` in memoria;
 - quindi i path locali fanno materializzazione esplicita dei tensori dal file, non memory mapping lazy.
 
 La spiegazione più plausibile, in base al repo attuale, è un'altra:
@@ -221,7 +221,7 @@ La spiegazione più plausibile, in base al repo attuale, è un'altra:
 Questa diagnosi è una inferenza forte basata sul codice e sulla config attuale del repo:
 
 - `agenticos.toml` contiene `external_llamacpp.endpoint = "http://127.0.0.1:8080"`;
-- l'architettura `qwen35` è esplicitamente trattata come non compatibile col loader locale `candle.quantized_qwen2`;
+- l'architettura `qwen35` è esplicitamente trattata come non compatibile con backend locali incompatibili;
 - il repo contiene test che confermano il fallback a `external-llamacpp` quando l'endpoint RPC è disponibile.
 
 Se il tuo file reale `Qwen3.5` dichiarasse invece `general.architecture=qwen2`, allora la diagnosi cambierebbe e andrebbe confrontata con un benchmark locale puro. Ma il codice del progetto oggi punta chiaramente alla prima interpretazione.
@@ -240,7 +240,7 @@ Questo punto è più diagnostico che correttivo, ma propongo due adeguamenti:
 
 Così l'utente capisce subito se sta confrontando:
 
-- un load locale Candle;
+- un load locale resident backend;
 - oppure un attach a backend esterno.
 
 ### File coinvolti
@@ -343,7 +343,7 @@ Questo è importante soprattutto per:
 
 - output visualizzato token-by-token o chunk molto piccoli e regolari
 - assenza di burst da 16/32 token per Qwen3.5
-- nessuna regressione per i backend locali Candle
+- nessuna regressione per il backend locale residente `llama.cpp`
 
 ---
 
@@ -388,7 +388,7 @@ distinto da:
 
 - `Ready` = runnable / schedulabile subito
 - `Running`
-- `WaitingForMemory`
+- `Parked`
 - `WaitingForSyscall`
 - `Finished`
 

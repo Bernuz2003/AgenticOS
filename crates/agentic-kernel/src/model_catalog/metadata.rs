@@ -1,8 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use candle_core::quantized::gguf_file;
 use serde::{Deserialize, Serialize};
 
 use crate::prompting::PromptFamily;
@@ -55,54 +54,12 @@ pub(super) fn load_model_metadata(path: &Path) -> Option<ModelMetadata> {
 }
 
 pub(super) fn load_native_model_metadata(
-    model_path: &Path,
+    _model_path: &Path,
     tokenizer_path: Option<&Path>,
 ) -> (Option<ModelMetadata>, bool, bool) {
-    let gguf_metadata = load_gguf_native_metadata(model_path);
     let tokenizer_metadata = tokenizer_path.and_then(load_tokenizer_native_metadata);
-    let native_from_gguf = gguf_metadata.is_some();
     let native_from_tokenizer = tokenizer_metadata.is_some();
-    (
-        merge_model_metadata(gguf_metadata, tokenizer_metadata),
-        native_from_gguf,
-        native_from_tokenizer,
-    )
-}
-
-fn load_gguf_native_metadata(path: &Path) -> Option<ModelMetadata> {
-    let mut file = fs::File::open(path).ok()?;
-    let content = gguf_file::Content::read(&mut file).ok()?;
-    parse_gguf_metadata_map(&content.metadata)
-}
-
-pub(super) fn parse_gguf_metadata_map(
-    metadata: &HashMap<String, gguf_file::Value>,
-) -> Option<ModelMetadata> {
-    let mut parsed = ModelMetadata::default();
-
-    if let Some(architecture) = metadata
-        .get("general.architecture")
-        .and_then(|value| value.to_string().ok())
-    {
-        parsed.architecture = Some(architecture.to_string());
-        parsed.family = family_label(parse_family_label(architecture));
-    }
-
-    if let Some(template) = metadata
-        .get("tokenizer.chat_template")
-        .and_then(|value| value.to_string().ok())
-        .cloned()
-    {
-        if !template.trim().is_empty() {
-            parsed.chat_template = Some(template);
-        }
-    }
-
-    if parsed == ModelMetadata::default() {
-        None
-    } else {
-        Some(parsed)
-    }
+    (tokenizer_metadata, false, native_from_tokenizer)
 }
 
 fn load_tokenizer_native_metadata(path: &Path) -> Option<ModelMetadata> {
@@ -290,14 +247,5 @@ pub(super) fn parse_family_label(raw: &str) -> PromptFamily {
         PromptFamily::Mistral
     } else {
         PromptFamily::Unknown
-    }
-}
-
-fn family_label(family: PromptFamily) -> Option<String> {
-    match family {
-        PromptFamily::Llama => Some("Llama".to_string()),
-        PromptFamily::Qwen => Some("Qwen".to_string()),
-        PromptFamily::Mistral => Some("Mistral".to_string()),
-        PromptFamily::Unknown => None,
     }
 }

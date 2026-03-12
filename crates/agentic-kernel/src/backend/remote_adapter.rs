@@ -6,6 +6,35 @@ use tokenizers::Tokenizer;
 use crate::memory::ContextSlotId;
 use crate::prompting::GenerationConfig;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptTransportStrategy {
+    FullPrompt,
+    AppendOnlySuffix,
+}
+
+pub(crate) struct CompletionPromptTransport<'a> {
+    pub(crate) strategy: PromptTransportStrategy,
+    pub(crate) prompt: &'a str,
+}
+
+pub(crate) fn select_completion_prompt_transport<'a>(
+    rendered_prompt: &'a str,
+    resident_prompt_suffix: &'a str,
+    append_only_supported: bool,
+) -> CompletionPromptTransport<'a> {
+    if append_only_supported && !resident_prompt_suffix.is_empty() {
+        CompletionPromptTransport {
+            strategy: PromptTransportStrategy::AppendOnlySuffix,
+            prompt: resident_prompt_suffix,
+        }
+    } else {
+        CompletionPromptTransport {
+            strategy: PromptTransportStrategy::FullPrompt,
+            prompt: rendered_prompt,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub(crate) struct CompletionChoice {
     pub(crate) text: Option<String>,
@@ -29,6 +58,7 @@ pub(crate) struct CompletionResponse {
 
 pub(crate) struct DecodedCompletion {
     pub(crate) emitted_text: String,
+    #[allow(dead_code)]
     pub(crate) appended_tokens: Vec<u32>,
     pub(crate) finished: bool,
 }
@@ -38,6 +68,7 @@ pub(crate) fn build_completion_request(
     chunk_tokens: usize,
     context_slot_id: Option<ContextSlotId>,
     generation: GenerationConfig,
+    stream: bool,
 ) -> serde_json::Value {
     json!({
         "prompt": prompt,
@@ -48,7 +79,7 @@ pub(crate) fn build_completion_request(
         "seed": generation.seed,
         "cache_prompt": true,
         "return_tokens": true,
-        "stream": false,
+        "stream": stream,
     })
 }
 
@@ -146,9 +177,106 @@ fn slot_id_to_i32(slot_id: ContextSlotId) -> i32 {
     i32::try_from(slot_id).unwrap_or(i32::MAX)
 }
 
+pub(crate) fn drain_json_objects(buffer: &mut Vec<u8>) -> Result<Vec<serde_json::Value>> {
+    let mut objects = Vec::new();
+    let mut cursor = 0usize;
+
+    loop {
+        let Some(start_rel) = buffer[cursor..].iter().position(|byte| *byte == b'{') else {
+            if cursor > 0 {
+                if buffer[cursor..]
+                    .iter()
+                    .all(|byte| byte.is_ascii_whitespace())
+                {
+                    buffer.clear();
+                } else {
+                    buffer.drain(..cursor);
+                }
+            } else if !buffer.is_empty() && buffer.iter().all(|byte| byte.is_ascii_whitespace()) {
+                buffer.clear();
+            }
+            return Ok(objects);
+        };
+        let start = cursor + start_rel;
+        let Some(end_rel) = find_complete_json_object_end(&buffer[start..]) else {
+            if start > 0 {
+                buffer.drain(..start);
+            }
+            return Ok(objects);
+        };
+        let end = start + end_rel + 1;
+        objects.push(serde_json::from_slice(&buffer[start..end]).map_err(|err| {
+            E::msg(format!(
+                "Malformed streaming completion payload from external RPC backend: {}",
+                err
+            ))
+        })?);
+        cursor = end;
+    }
+}
+
+pub(crate) fn tool_invocation_end(stream: &str) -> Option<usize> {
+    if let Some(start) = stream.find("[[") {
+        let rest = &stream[start + 2..];
+        if let Some(end_offset) = rest.find("]]") {
+            let candidate = rest[..end_offset].trim();
+            if crate::tools::validates_tool_invocation(candidate) {
+                return Some(start + 2 + end_offset + 2);
+            }
+        }
+    }
+
+    let mut offset = 0usize;
+    for line in stream.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with("TOOL:") && crate::tools::validates_tool_invocation(trimmed) {
+            return Some(offset + line.len());
+        }
+        offset += line.len();
+    }
+
+    let last_line_start = stream.rfind('\n').map(|index| index + 1).unwrap_or(0);
+    let last_line = stream[last_line_start..].trim();
+    if last_line.starts_with("TOOL:") && crate::tools::validates_tool_invocation(last_line) {
+        return Some(stream.len());
+    }
+
+    None
+}
+
+fn find_complete_json_object_end(bytes: &[u8]) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (index, byte) in bytes.iter().enumerate() {
+        match *byte {
+            b'\\' if in_string && !escaped => escaped = true,
+            b'"' if !escaped => in_string = !in_string,
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => escaped = false,
+        }
+
+        if *byte != b'\\' {
+            escaped = false;
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_completion_request, decode_completion_response};
+    use super::{
+        build_completion_request, decode_completion_response, drain_json_objects,
+        select_completion_prompt_transport, tool_invocation_end, PromptTransportStrategy,
+    };
     use crate::prompting::{GenerationConfig, PromptFamily};
     use tokenizers::models::wordlevel::WordLevel;
     use tokenizers::pre_tokenizers::whitespace::Whitespace;
@@ -181,6 +309,7 @@ mod tests {
             32,
             Some(7),
             GenerationConfig::defaults_for(PromptFamily::Unknown),
+            false,
         );
 
         assert_eq!(request["prompt"].as_str(), Some("hello"));
@@ -189,6 +318,40 @@ mod tests {
         assert_eq!(request["cache_prompt"].as_bool(), Some(true));
         assert_eq!(request["return_tokens"].as_bool(), Some(true));
         assert_eq!(request["stream"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn build_completion_request_can_enable_streaming() {
+        let request = build_completion_request(
+            "hello",
+            8,
+            Some(3),
+            GenerationConfig::defaults_for(PromptFamily::Unknown),
+            true,
+        );
+
+        assert_eq!(request["stream"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn transport_strategy_uses_suffix_when_backend_supports_append_only() {
+        let transport =
+            select_completion_prompt_transport("hello\nOutput:\n2\n", "Output:\n2\n", true);
+
+        assert_eq!(
+            transport.strategy,
+            PromptTransportStrategy::AppendOnlySuffix
+        );
+        assert_eq!(transport.prompt, "Output:\n2\n");
+    }
+
+    #[test]
+    fn transport_strategy_falls_back_to_full_prompt_for_llamacpp() {
+        let transport =
+            select_completion_prompt_transport("hello\nOutput:\n2\n", "Output:\n2\n", false);
+
+        assert_eq!(transport.strategy, PromptTransportStrategy::FullPrompt);
+        assert_eq!(transport.prompt, "hello\nOutput:\n2\n");
     }
 
     #[test]
@@ -254,5 +417,26 @@ mod tests {
         .expect("decode completion");
 
         assert!(!decoded.finished);
+    }
+
+    #[test]
+    fn drain_json_objects_extracts_sse_prefixed_payloads() {
+        let mut buffer =
+            b"data: {\"content\":\"hello\",\"stop\":false}\n\ndata: {\"content\":\"world\",\"stop\":true}\n\n"
+                .to_vec();
+        let values = drain_json_objects(&mut buffer).expect("drain stream objects");
+
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0]["content"].as_str(), Some("hello"));
+        assert_eq!(values[1]["content"].as_str(), Some("world"));
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn tool_invocation_end_detects_complete_canonical_line() {
+        let stream = "Prelude\nTOOL:calc {\"expression\":\"1+1\"}";
+        let end = tool_invocation_end(stream).expect("tool marker");
+
+        assert_eq!(&stream[..end], stream);
     }
 }

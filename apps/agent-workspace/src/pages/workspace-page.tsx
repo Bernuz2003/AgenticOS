@@ -42,7 +42,7 @@ export function WorkspacePage() {
     }
 
     const derivedStatus: "idle" | "running" | "swapped" =
-      snapshot?.state === "WaitingForMemory"
+      snapshot?.state === "Parked"
         ? "swapped"
         : timeline?.running ||
             snapshot?.state === "Running" ||

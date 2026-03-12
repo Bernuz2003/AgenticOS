@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, DatabaseZap, Filter, Sparkles, Waypoints } from "lucide-react";
+import { Activity, DatabaseZap, Sparkles, Waypoints } from "lucide-react";
 import { strategyLabel } from "../../lib/format";
 import type { AgentSessionSummary } from "../../store/sessions-store";
 import type { AuditEvent, WorkspaceSnapshot } from "../../lib/api";
@@ -21,6 +21,14 @@ export function MindPanel({
   const strategy = snapshot?.context?.contextStrategy ?? session.contextStrategy;
   const compressions = snapshot?.context?.contextCompressions ?? 0;
   const retrievalHits = snapshot?.context?.contextRetrievalHits ?? 0;
+  const backendClass = snapshot?.backendClass ?? "unknown";
+  const backendId = snapshot?.backendId ?? "unknown";
+  const contextSlotId = snapshot?.contextSlotId ?? null;
+  const residentSlotPolicy = snapshot?.residentSlotPolicy ?? "unmanaged";
+  const residentSlotState = snapshot?.residentSlotState ?? "unbound";
+  const residentSlotSnapshotPath = snapshot?.residentSlotSnapshotPath ?? "none";
+  const residentKv = snapshot?.backendCapabilities?.residentKv ?? false;
+  const persistentSlots = snapshot?.backendCapabilities?.persistentSlots ?? false;
   const auditEvents = snapshot?.auditEvents ?? [
     {
       category: "status",
@@ -58,6 +66,7 @@ export function MindPanel({
   const filterOptions: Array<{ value: string; label: string }> = [
     { value: "all", label: "All" },
     { value: "runtime", label: "Runtime" },
+    { value: "tool", label: "Tool" },
     { value: "orchestration", label: "Orch" },
     { value: "status", label: "Status" },
     { value: "compaction", label: "Compaction" },
@@ -93,6 +102,17 @@ export function MindPanel({
           <div className="flex items-center gap-3 text-sm font-semibold text-slate-900">
             <Waypoints className="h-4 w-4" />
             Strategy: {strategyLabel(strategy)}
+          </div>
+          <div className="mt-3 text-xs leading-6 text-slate-600">
+            backend={backendClass} · slot={contextSlotId ?? "none"} · state={residentSlotState}
+            <br />
+            slot_policy={residentSlotPolicy}
+            <br />
+            backend_id={backendId}
+            <br />
+            resident_kv={String(residentKv)} · persistent_slots={String(persistentSlots)}
+            <br />
+            snapshot={residentSlotSnapshotPath}
           </div>
         </div>
         <div className="grid grid-cols-2 gap-3">

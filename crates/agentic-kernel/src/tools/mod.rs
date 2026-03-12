@@ -110,6 +110,10 @@ pub fn handle_syscall(
     }
 }
 
+pub(crate) fn validates_tool_invocation(command_block: &str) -> bool {
+    parse_tool_invocation(command_block).is_ok()
+}
+
 fn parse_tool_invocation(command_block: &str) -> Result<ToolInvocation, String> {
     if let Some(rest) = command_block.strip_prefix("TOOL:") {
         return parse_canonical_tool_invocation(rest);

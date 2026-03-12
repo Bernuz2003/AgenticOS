@@ -1,82 +1,35 @@
-use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
-use super::swap::SwapManager;
-use super::types::{ContextSlotId, MemoryConfig, MemorySnapshot, SwapEvent};
+use super::residency::LogicalResidencyManager;
+use super::types::{ContextSlotId, MemorySnapshot, SlotPersistenceKind, SwapEvent};
 use crate::errors::MemoryError;
-
-type BlockIndex = usize;
 
 #[derive(Default)]
 pub(super) struct MemoryCounters {
-    pub(super) alloc_bytes: usize,
-    pub(super) evictions: u64,
     pub(super) swap_count: u64,
     pub(super) swap_faults: u64,
     pub(super) swap_failures: u64,
     pub(super) oom_events: u64,
 }
 
-pub(super) struct ContextSlotRecord {
-    pub(super) pages: Vec<BlockIndex>,
-    pub(super) owner_pid: Option<u64>,
-}
-
 pub struct NeuralMemory {
-    pub(super) config: MemoryConfig,
-
-    total_blocks: usize,
-    pub(super) free_blocks: VecDeque<BlockIndex>,
-    pub(super) slot_table: HashMap<ContextSlotId, ContextSlotRecord>,
-
-    pub(super) pid_to_slot: HashMap<u64, ContextSlotId>,
-    pub(super) pid_token_slots: HashMap<u64, usize>,
-    token_slot_quota_per_pid: usize,
-    pub(super) counters: MemoryCounters,
     active: bool,
-
-    pub(super) swap: SwapManager,
-    pub(super) lru_order: VecDeque<ContextSlotId>,
-
-    next_slot_id: ContextSlotId,
+    residency: LogicalResidencyManager,
+    pub(super) counters: MemoryCounters,
 }
 
 impl NeuralMemory {
-    pub fn new(config: MemoryConfig) -> Result<Self, MemoryError> {
-        let elements_per_block = config.block_size * config.hidden_dim;
-        let bytes_per_element = 4;
-        let total_bytes = config.total_memory_mb * 1024 * 1024;
-        let bytes_per_block = elements_per_block * bytes_per_element;
-        let num_blocks = total_bytes / bytes_per_block;
+    pub fn new() -> Result<Self, MemoryError> {
+        tracing::info!("NeuralMemory: init (logical residency + resident slot parking)");
 
-        tracing::info!(
-            total_mb = config.total_memory_mb,
-            blocks = num_blocks,
-            params_per_block = elements_per_block,
-            "NeuralMemory: init (logical context slots)"
-        );
-
-        let mut free_blocks = VecDeque::with_capacity(num_blocks);
-
-        for i in 0..num_blocks {
-            free_blocks.push_back(i);
-        }
-
-        Ok(NeuralMemory {
-            config,
-            total_blocks: num_blocks,
-            free_blocks,
-            slot_table: HashMap::new(),
-            pid_to_slot: HashMap::new(),
-            pid_token_slots: HashMap::new(),
-            token_slot_quota_per_pid: crate::config::kernel_config()
-                .memory
-                .token_slot_quota_per_pid,
-            counters: MemoryCounters::default(),
+        Ok(Self {
             active: true,
-            swap: SwapManager::new(),
-            lru_order: VecDeque::new(),
-            next_slot_id: 1,
+            residency: LogicalResidencyManager::new(
+                crate::config::kernel_config()
+                    .memory
+                    .token_slot_quota_per_pid,
+            ),
+            counters: MemoryCounters::default(),
         })
     }
 
@@ -85,9 +38,10 @@ impl NeuralMemory {
         enabled: bool,
         swap_dir: Option<PathBuf>,
     ) -> Result<(), MemoryError> {
-        self.swap.configure(enabled, swap_dir)
+        self.residency.configure_async_swap(enabled, swap_dir)
     }
 
+    #[cfg(test)]
     pub fn set_active(&mut self, active: bool) {
         self.active = active;
     }
@@ -98,7 +52,7 @@ impl NeuralMemory {
     }
 
     pub fn set_token_slot_quota_per_pid(&mut self, quota: usize) {
-        self.token_slot_quota_per_pid = quota.max(1);
+        self.residency.set_token_slot_quota_per_pid(quota);
     }
 
     pub fn register_process(
@@ -106,54 +60,22 @@ impl NeuralMemory {
         pid: u64,
         token_slots: usize,
     ) -> Result<ContextSlotId, MemoryError> {
-        if !self.active {
-            return Ok(0);
+        match self.residency.register_process(pid, token_slots) {
+            Ok(slot_id) => Ok(slot_id),
+            Err(err @ (MemoryError::ZeroTokenSlots | MemoryError::QuotaExceeded { .. })) => {
+                self.counters.oom_events += 1;
+                Err(err)
+            }
+            Err(err) => Err(err),
         }
-
-        if token_slots == 0 {
-            self.counters.oom_events += 1;
-            return Err(MemoryError::ZeroTokenSlots);
-        }
-        if token_slots > self.token_slot_quota_per_pid {
-            self.counters.oom_events += 1;
-            return Err(MemoryError::QuotaExceeded {
-                pid,
-                requested: token_slots,
-                quota: self.token_slot_quota_per_pid,
-            });
-        }
-
-        if let Some(existing) = self.pid_to_slot.get(&pid).copied() {
-            self.pid_token_slots.insert(pid, token_slots);
-            self.touch_slot_lru(existing);
-            return Ok(existing);
-        }
-
-        let slot_id = self.alloc_slot();
-        self.pid_to_slot.insert(pid, slot_id);
-        if let Some(slot) = self.slot_table.get_mut(&slot_id) {
-            slot.owner_pid = Some(pid);
-        }
-        self.pid_token_slots.insert(pid, token_slots);
-        Ok(slot_id)
     }
 
     pub fn release_process(&mut self, pid: u64) -> Result<String, MemoryError> {
-        if !self.active {
-            return Ok(format!(
-                "NeuralMemory disabled: release skipped for PID {}",
-                pid
-            ));
-        }
-
-        self.swap.remove_waiting(pid);
-
-        let Some(slot_id) = self.pid_to_slot.remove(&pid) else {
+        let Some(slot_id) = self.residency.release_process(pid) else {
             return Ok(format!("NeuralMemory: PID {} had no allocation", pid));
         };
 
-        self.pid_token_slots.remove(&pid);
-        self.release_slot(slot_id)
+        Ok(format!("Released logical slot {} (pid={})", slot_id, pid))
     }
 
     #[allow(dead_code)]
@@ -171,72 +93,76 @@ impl NeuralMemory {
         raw_data: &[u8],
         backend_id: Option<&str>,
     ) -> Result<String, MemoryError> {
+        let Some(slot_id) = self.residency.slot_for_pid(pid) else {
+            if !self.active {
+                return Ok(format!(
+                    "NeuralMemory inactive: MEMW skipped for PID {} ({} bytes)",
+                    pid,
+                    raw_data.len()
+                ));
+            }
+            return Err(MemoryError::PidNotRegistered(pid));
+        };
+
         if !self.active {
             return Ok(format!(
-                "NeuralMemory disabled: MEMW skipped for PID {} ({} bytes)",
+                "NeuralMemory inactive: MEMW skipped for PID {} ({} bytes)",
                 pid,
                 raw_data.len()
             ));
         }
 
-        let slot_id = self
-            .pid_to_slot
-            .get(&pid)
-            .copied()
-            .ok_or(MemoryError::PidNotRegistered(pid))?;
-        match self.write_slot_bytes(slot_id, raw_data) {
-            Ok(msg) => {
-                self.swap.remove_waiting(pid);
-                Ok(msg)
-            }
-            Err(e) => {
-                if matches!(e, MemoryError::OutOfMemory { .. }) && self.swap.is_enabled() {
-                    let backend_id = backend_id.ok_or_else(|| {
-                        MemoryError::Swap(
-                            "Cannot enqueue backend-owned swap without an active backend id"
-                                .to_string(),
-                        )
-                    })?;
-                    self.counters.swap_faults += 1;
-                    let queued = self
-                        .swap
-                        .enqueue(pid, slot_id, backend_id, raw_data.to_vec())?;
-                    return Ok(queued);
-                }
-                Err(e)
-            }
+        if !self.residency.swap_enabled() {
+            self.residency.clear_parked(pid);
+            return Ok(format!(
+                "Resident memory pressure noted for PID {} slot {} ({} bytes); async parking disabled",
+                pid,
+                slot_id,
+                raw_data.len()
+            ));
         }
+
+        let backend_id = backend_id.ok_or_else(|| {
+            MemoryError::Swap(
+                "Cannot enqueue resident-slot park without an active backend id".to_string(),
+            )
+        })?;
+
+        self.counters.swap_faults += 1;
+        self.residency.enqueue_swap(pid, backend_id, raw_data.len())
     }
 
     pub fn snapshot(&self) -> MemorySnapshot {
+        let residency = self.residency.snapshot();
+
         MemorySnapshot {
             active: self.active,
-            total_blocks: self.total_blocks,
-            free_blocks: self.free_blocks.len(),
-            allocated_tensors: self.slot_table.len(),
-            tracked_pids: self.pid_to_slot.len(),
-            alloc_bytes: self.counters.alloc_bytes,
-            evictions: self.counters.evictions,
+            total_blocks: 0,
+            free_blocks: 0,
+            allocated_tensors: residency.logical_slots,
+            tracked_pids: residency.tracked_pids,
+            alloc_bytes: 0,
+            evictions: 0,
             swap_count: self.counters.swap_count,
             swap_faults: self.counters.swap_faults,
             swap_failures: self.counters.swap_failures,
-            pending_swaps: self.swap.waiting_count(),
-            waiting_pids: self.swap.waiting_count(),
+            pending_swaps: residency.pending_swaps,
+            parked_pids: residency.parked_pids,
             oom_events: self.counters.oom_events,
-            swap_worker_crashes: self.swap.worker_crashes(),
+            swap_worker_crashes: residency.swap_worker_crashes,
         }
     }
 
-    pub fn is_pid_waiting_for_memory(&self, pid: u64) -> bool {
-        self.swap.is_pid_waiting(pid)
+    pub fn is_pid_parked(&self, pid: u64) -> bool {
+        self.residency.is_pid_parked(pid)
     }
 
     pub fn slot_for_pid(&self, pid: u64) -> Option<ContextSlotId> {
-        self.pid_to_slot.get(&pid).copied()
+        self.residency.slot_for_pid(pid)
     }
 
     pub fn poll_swap_events(&mut self) -> Vec<SwapEvent> {
-        let (events, deltas) = self.swap.poll_events();
+        let (events, deltas) = self.residency.poll_swap_events();
         self.counters.swap_count += deltas.swap_count_inc;
         self.counters.swap_failures += deltas.swap_failures_inc;
         self.counters.swap_faults += deltas.swap_faults_inc;
@@ -247,230 +173,124 @@ impl NeuralMemory {
         &mut self,
         pid: u64,
         slot_id: ContextSlotId,
+        persistence_kind: SlotPersistenceKind,
         swap_path: Option<&Path>,
     ) -> Result<String, MemoryError> {
-        let Some(path) = swap_path else {
-            return Ok(format!(
-                "swap completion for PID {} had no persisted payload",
+        match persistence_kind {
+            SlotPersistenceKind::BackendSlotSnapshot => {
+                let Some(path) = swap_path else {
+                    return Err(MemoryError::Swap(format!(
+                        "resident backend slot restore for PID {} had no snapshot path",
+                        pid
+                    )));
+                };
+
+                Ok(format!(
+                    "resident backend slot snapshot ready pid={} slot={} snapshot={}",
+                    pid,
+                    slot_id,
+                    path.display()
+                ))
+            }
+            SlotPersistenceKind::Unknown => Err(MemoryError::Swap(format!(
+                "swap completion for PID {} used unknown persistence kind",
                 pid
-            ));
-        };
-
-        let raw = std::fs::read(path).map_err(|err| {
-            MemoryError::Swap(format!(
-                "failed to read swap payload for PID {} from {:?}: {}",
-                pid, path, err
-            ))
-        })?;
-
-        let detail = self.write_slot_bytes(slot_id, &raw)?;
-        let _ = std::fs::remove_file(path);
-        Ok(format!("{} restored_from={}", detail, path.display()))
-    }
-
-    pub fn alloc_slot(&mut self) -> ContextSlotId {
-        let id = self.next_slot_id;
-        self.next_slot_id += 1;
-        self.slot_table.insert(
-            id,
-            ContextSlotRecord {
-                pages: Vec::new(),
-                owner_pid: None,
-            },
-        );
-        self.touch_slot_lru(id);
-        id
-    }
-
-    pub fn write_slot_bytes(
-        &mut self,
-        slot_id: ContextSlotId,
-        raw_data: &[u8],
-    ) -> Result<String, MemoryError> {
-        if !self.active {
-            return Ok(format!(
-                "NeuralMemory disabled: write skipped for slot {} ({} bytes)",
-                slot_id,
-                raw_data.len()
-            ));
+            ))),
         }
-
-        if !self.slot_table.contains_key(&slot_id) {
-            return Err(MemoryError::TensorNotFound(slot_id));
-        }
-
-        if raw_data.len() % 4 != 0 {
-            return Err(MemoryError::MisalignedPayload {
-                bytes: raw_data.len(),
-            });
-        }
-
-        self.clear_slot_pages(slot_id, true);
-
-        let element_count = raw_data.len() / 4;
-
-        if element_count == 0 {
-            return Ok("No data".to_string());
-        }
-
-        let elements_per_block = self.config.block_size * self.config.hidden_dim;
-        let blocks_needed = element_count.div_ceil(elements_per_block);
-
-        if self.free_blocks.len() < blocks_needed {
-            let recovered = self.evict_lru_until_fit(blocks_needed, Some(slot_id));
-            if !recovered {
-                self.counters.oom_events += 1;
-                return Err(MemoryError::OutOfMemory {
-                    detail: "Not enough GPU blocks".into(),
-                });
-            }
-        }
-
-        if self.free_blocks.len() < blocks_needed {
-            self.counters.oom_events += 1;
-            return Err(MemoryError::OutOfMemory {
-                detail: "Not enough GPU blocks".into(),
-            });
-        }
-
-        for _ in 0..blocks_needed {
-            let block_idx = self.free_blocks.pop_front().unwrap();
-            if let Some(slot) = self.slot_table.get_mut(&slot_id) {
-                slot.pages.push(block_idx);
-            }
-        }
-
-        self.counters.alloc_bytes += blocks_needed * elements_per_block * 4;
-        self.touch_slot_lru(slot_id);
-
-        Ok(format!(
-            "Written {} floats into slot {} across {} blocks",
-            element_count, slot_id, blocks_needed
-        ))
-    }
-
-    pub fn release_slot(&mut self, slot_id: ContextSlotId) -> Result<String, MemoryError> {
-        if !self.active {
-            return Ok(format!(
-                "NeuralMemory disabled: release skipped for slot {}",
-                slot_id
-            ));
-        }
-
-        let slot = self
-            .slot_table
-            .remove(&slot_id)
-            .ok_or(MemoryError::TensorNotFound(slot_id))?;
-        let pages = slot.pages;
-
-        let elements_per_block = self.config.block_size * self.config.hidden_dim;
-        let released_blocks = pages.len();
-        for block in pages {
-            self.free_blocks.push_back(block);
-        }
-
-        let released_bytes = released_blocks * elements_per_block * 4;
-        self.counters.alloc_bytes = self.counters.alloc_bytes.saturating_sub(released_bytes);
-
-        if let Some(pid) = slot.owner_pid {
-            self.pid_to_slot.remove(&pid);
-            self.pid_token_slots.remove(&pid);
-        }
-
-        self.lru_order.retain(|&current| current != slot_id);
-
-        Ok(format!(
-            "Released slot {} ({} blocks)",
-            slot_id, released_blocks
-        ))
-    }
-
-    #[allow(dead_code)]
-    pub fn alloc(&mut self) -> ContextSlotId {
-        self.alloc_slot()
-    }
-
-    #[allow(dead_code)]
-    pub fn write_from_bytes(
-        &mut self,
-        id: ContextSlotId,
-        raw_data: &[u8],
-    ) -> Result<String, MemoryError> {
-        self.write_slot_bytes(id, raw_data)
-    }
-
-    #[allow(dead_code)]
-    pub fn release_tensor(&mut self, id: ContextSlotId) -> Result<String, MemoryError> {
-        self.release_slot(id)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::memory::{MemoryConfig, NeuralMemory};
+    use crate::backend::TestExternalEndpointOverrideGuard;
+    use crate::memory::{NeuralMemory, SlotPersistenceKind};
     use std::fs;
-    use std::path::PathBuf;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::path::{Path, PathBuf};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    fn spawn_mock_slot_save_server(
+        expected_requests: usize,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock swap server");
+        let address = listener.local_addr().expect("mock swap addr");
+        let paths = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let paths_for_thread = std::sync::Arc::clone(&paths);
+
+        let handle = thread::spawn(move || {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().expect("accept mock swap request");
+                let mut buffer = [0_u8; 4096];
+                let read = stream.read(&mut buffer).expect("read mock swap request");
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/")
+                    .to_string();
+                paths_for_thread.lock().expect("lock paths").push(path);
+
+                let body = r#"{"ok":true}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write mock swap response");
+            }
+        });
+
+        (format!("http://{}", address), paths, handle)
+    }
+
     #[test]
-    fn register_write_release_pid_flow() {
-        let mut mem = NeuralMemory::new(MemoryConfig {
-            block_size: 4,
-            hidden_dim: 4,
-            total_memory_mb: 1,
-        })
-        .expect("memory init");
+    fn register_write_release_pid_flow_uses_residency_only_metrics() {
+        let mut mem = NeuralMemory::new().expect("memory init");
 
         mem.set_token_slot_quota_per_pid(32);
-        let _slot = mem.register_process(42, 16).expect("register pid");
+        let slot_id = mem.register_process(42, 16).expect("register pid");
 
-        let payload = [1.0f32, 2.0f32, 3.0f32, 4.0f32]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<u8>>();
         let write_msg = mem
-            .write_for_pid_bytes(42, &payload)
-            .expect("write bytes for pid");
-        assert!(write_msg.contains("Written"));
+            .write_for_pid_bytes(42, b"resident pressure")
+            .expect("record resident pressure");
+        assert!(write_msg.contains("Resident memory pressure noted"));
+        assert!(write_msg.contains(&format!("slot {}", slot_id)));
 
         let snapshot_before_release = mem.snapshot();
         assert_eq!(snapshot_before_release.tracked_pids, 1);
-        assert!(snapshot_before_release.alloc_bytes > 0);
+        assert_eq!(snapshot_before_release.allocated_tensors, 1);
+        assert_eq!(snapshot_before_release.alloc_bytes, 0);
+        assert_eq!(snapshot_before_release.evictions, 0);
 
         let rel = mem.release_process(42).expect("release pid");
-        assert!(rel.contains("Released slot") || rel.contains("had no allocation"));
+        assert!(rel.contains("Released logical slot"));
 
         let snapshot_after_release = mem.snapshot();
         assert_eq!(snapshot_after_release.tracked_pids, 0);
     }
 
     #[test]
-    fn write_for_pid_bytes_rejects_misaligned_payload() {
-        let mut mem = NeuralMemory::new(MemoryConfig {
-            block_size: 4,
-            hidden_dim: 4,
-            total_memory_mb: 1,
-        })
-        .expect("memory init");
-
-        mem.set_token_slot_quota_per_pid(32);
-        mem.register_process(9, 16).expect("register pid");
+    fn write_for_pid_bytes_rejects_unregistered_pid() {
+        let mut mem = NeuralMemory::new().expect("memory init");
 
         let err = mem
             .write_for_pid_bytes(9, b"12345")
-            .expect_err("misaligned payload should fail");
-        assert!(err.to_string().contains("not aligned to 4 bytes"));
+            .expect_err("missing pid should fail");
+        assert!(err.to_string().contains("not registered"));
     }
 
     #[test]
     fn quota_enforcement_increments_oom_counter() {
-        let mut mem = NeuralMemory::new(MemoryConfig {
-            block_size: 4,
-            hidden_dim: 4,
-            total_memory_mb: 1,
-        })
-        .expect("memory init");
+        let mut mem = NeuralMemory::new().expect("memory init");
 
         mem.set_token_slot_quota_per_pid(8);
         let err = mem
@@ -481,103 +301,69 @@ mod tests {
     }
 
     #[test]
-    fn fallback_mode_is_noop_and_safe() {
-        let mut mem = NeuralMemory::new(MemoryConfig {
-            block_size: 4,
-            hidden_dim: 4,
-            total_memory_mb: 1,
-        })
-        .expect("memory init");
+    fn logical_residency_survives_memory_disable() {
+        let mut mem = NeuralMemory::new().expect("memory init");
 
+        let slot_id = mem.register_process(100, 12).expect("register pid");
         mem.set_active(false);
         assert!(!mem.is_active());
-
-        let reg = mem.register_process(100, 12).expect("register noop");
-        assert_eq!(reg, 0);
+        assert_eq!(mem.slot_for_pid(100), Some(slot_id));
+        assert_eq!(mem.snapshot().tracked_pids, 1);
+        assert!(!mem.snapshot().active);
 
         let wr = mem
             .write_for_pid_bytes(100, b"hello")
-            .expect("write noop should be ok");
-        assert!(wr.contains("disabled"));
+            .expect("write skip should be ok");
+        assert!(wr.contains("NeuralMemory inactive"));
 
-        let rel = mem.release_process(100).expect("release noop");
-        assert!(rel.contains("disabled"));
+        let rel = mem.release_process(100).expect("release logical slot");
+        assert!(rel.contains("Released logical slot"));
+        assert_eq!(mem.snapshot().tracked_pids, 0);
     }
 
     #[test]
-    fn pressure_with_multiple_pids_triggers_oom_events() {
-        let mut mem = NeuralMemory::new(MemoryConfig {
-            block_size: 1024,
-            hidden_dim: 1024,
-            total_memory_mb: 1,
-        })
-        .expect("memory init");
-        mem.set_token_slot_quota_per_pid(4096);
+    fn resident_pressure_without_swap_does_not_park_process() {
+        let mut mem = NeuralMemory::new().expect("memory init");
 
-        let float_count = 300_000usize;
-        let payload = vec![0f32; float_count]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<u8>>();
+        mem.set_token_slot_quota_per_pid(32);
+        mem.register_process(5, 16).expect("register pid");
 
-        for pid in 1..=3u64 {
-            let _ = mem.register_process(pid, 512).expect("register pid");
-            let _ = mem.write_for_pid_bytes(pid, &payload);
-        }
+        let detail = mem
+            .write_for_pid_bytes(5, b"simulated pressure")
+            .expect("resident pressure should be recorded");
 
-        let snap = mem.snapshot();
-        assert!(snap.oom_events >= 1);
+        assert!(detail.contains("async parking disabled"));
+        assert!(!mem.is_pid_parked(5));
+        assert_eq!(mem.snapshot().swap_faults, 0);
     }
 
     #[test]
-    fn lru_eviction_frees_other_tensor_before_oom() {
-        let mut mem = NeuralMemory::new(MemoryConfig {
-            block_size: 512,
-            hidden_dim: 256,
-            total_memory_mb: 1,
-        })
-        .expect("memory init");
+    fn resident_pressure_with_swap_requires_backend_id() {
+        let mut mem = NeuralMemory::new().expect("memory init");
 
-        mem.set_token_slot_quota_per_pid(4096);
-        mem.register_process(1, 512).expect("register pid1");
-        mem.register_process(2, 512).expect("register pid2");
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let swap_dir = PathBuf::from(format!("workspace/test_swap_requires_backend_{}", now_ns));
+        mem.configure_async_swap(true, Some(swap_dir.clone()))
+            .expect("enable async swap");
+        mem.register_process(9, 16).expect("register pid");
 
-        let one_block_floats = 512 * 256;
-        let one_block_payload = vec![1.0f32; one_block_floats]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<u8>>();
+        let err = mem
+            .write_for_pid_bytes(9, b"pressure")
+            .expect_err("swap-enabled pressure requires backend id");
+        assert!(err.to_string().contains("active backend id"));
+        assert!(!mem.is_pid_parked(9));
 
-        mem.write_for_pid_bytes(1, &one_block_payload)
-            .expect("write pid1");
-        mem.write_for_pid_bytes(2, &one_block_payload)
-            .expect("write pid2");
-
-        let two_block_payload = vec![2.0f32; one_block_floats * 2]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<u8>>();
-        mem.write_for_pid_bytes(1, &two_block_payload)
-            .expect("lru eviction should avoid oom");
-
-        let slot2 = mem.pid_to_slot.get(&2).copied().expect("slot pid2");
-        let pages2 = mem
-            .slot_table
-            .get(&slot2)
-            .map(|slot| slot.pages.clone())
-            .unwrap_or_default();
-        assert!(pages2.is_empty(), "pid2 slot should be evicted by LRU");
-        assert!(mem.snapshot().evictions >= 2);
+        let _ = fs::remove_dir_all(swap_dir);
     }
 
     #[test]
-    fn async_swap_queue_marks_waiting_and_completes() {
-        let mut mem = NeuralMemory::new(MemoryConfig {
-            block_size: 1024,
-            hidden_dim: 1024,
-            total_memory_mb: 1,
-        })
-        .expect("memory init");
+    fn async_swap_queue_marks_parked_and_completes() {
+        let (endpoint, paths, server_handle) = spawn_mock_slot_save_server(1);
+        let _endpoint = TestExternalEndpointOverrideGuard::set(&endpoint);
+        let mut mem = NeuralMemory::new().expect("memory init");
 
         let now_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -590,18 +376,14 @@ mod tests {
         mem.set_token_slot_quota_per_pid(4096);
         mem.register_process(1, 512).expect("register pid");
 
-        let float_count = 300_000usize;
-        let payload = vec![1.0f32; float_count]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<u8>>();
+        let payload = vec![1_u8; 300_000];
 
         let msg = mem
-            .write_for_pid_bytes_with_backend(1, &payload, Some("candle.quantized_llama"))
-            .expect("should enqueue on oom");
-        assert!(msg.contains("queued for async swap"));
+            .write_for_pid_bytes_with_backend(1, &payload, Some("external-llamacpp"))
+            .expect("should enqueue resident slot park");
+        assert!(msg.contains("queued for async parking"));
         assert!(msg.contains("slot"));
-        assert!(mem.is_pid_waiting_for_memory(1));
+        assert!(mem.is_pid_parked(1));
         assert!(mem.snapshot().swap_faults >= 1);
 
         let mut completed = false;
@@ -618,22 +400,23 @@ mod tests {
         }
 
         assert!(completed, "swap event did not complete in time");
-        assert!(!mem.is_pid_waiting_for_memory(1));
+        assert!(!mem.is_pid_parked(1));
+        server_handle.join().expect("join mock swap server");
 
         let snap = mem.snapshot();
         assert!(snap.swap_count >= 1);
+        assert_eq!(snap.parked_pids, 0);
+        assert_eq!(
+            paths.lock().expect("lock paths").as_slice(),
+            &["/slots/1?action=save"]
+        );
 
         let _ = std::fs::remove_dir_all(swap_dir);
     }
 
     #[test]
     fn configure_async_swap_rejects_outside_workspace() {
-        let mut mem = NeuralMemory::new(MemoryConfig {
-            block_size: 4,
-            hidden_dim: 4,
-            total_memory_mb: 1,
-        })
-        .expect("memory init");
+        let mut mem = NeuralMemory::new().expect("memory init");
 
         let outside = std::env::temp_dir().join("agenticos_swap_outside");
         let err = mem
@@ -644,12 +427,7 @@ mod tests {
 
     #[test]
     fn configure_async_swap_rejects_relative_traversal() {
-        let mut mem = NeuralMemory::new(MemoryConfig {
-            block_size: 4,
-            hidden_dim: 4,
-            total_memory_mb: 1,
-        })
-        .expect("memory init");
+        let mut mem = NeuralMemory::new().expect("memory init");
 
         let err = mem
             .configure_async_swap(true, Some(PathBuf::from("../swap_escape")))
@@ -658,9 +436,11 @@ mod tests {
     }
 
     #[test]
-    fn persist_swap_payload_is_atomic_and_cleans_tmp() {
+    fn persist_swap_payload_uses_backend_slot_snapshot_for_resident_runtime() {
         use crate::memory::swap::SwapManager;
 
+        let (endpoint, paths, server_handle) = spawn_mock_slot_save_server(1);
+        let _endpoint = TestExternalEndpointOverrideGuard::set(&endpoint);
         let now_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -668,17 +448,40 @@ mod tests {
         let base = PathBuf::from(format!("workspace/test_swap_io_{}", now_ns));
         fs::create_dir_all(&base).expect("create base dir");
 
-        let final_path =
-            SwapManager::persist_payload(&base, 7, 11, "candle.quantized_llama", b"abc123")
+        let (final_path, persistence_kind) =
+            SwapManager::persist_payload(&base, 7, 11, "external-llamacpp")
                 .expect("persist payload");
-        assert!(final_path.exists());
+        server_handle.join().expect("join mock swap server");
+        assert_eq!(persistence_kind, SlotPersistenceKind::BackendSlotSnapshot);
+        assert!(!final_path.exists());
 
         let tmp_path = final_path.with_extension("tmp");
         assert!(!tmp_path.exists());
-
-        let body = fs::read(&final_path).expect("read final swap file");
-        assert_eq!(body, b"abc123");
+        assert_eq!(
+            paths.lock().expect("lock paths").as_slice(),
+            &["/slots/11?action=save"]
+        );
 
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn restore_backend_slot_snapshot_does_not_require_local_file() {
+        let mut mem = NeuralMemory::new().expect("memory init");
+
+        mem.set_token_slot_quota_per_pid(32);
+        let slot_id = mem.register_process(5, 16).expect("register pid");
+
+        let detail = mem
+            .restore_swapped_pid(
+                5,
+                slot_id,
+                SlotPersistenceKind::BackendSlotSnapshot,
+                Some(Path::new("workspace/swap/pid_5_slot_1.swap")),
+            )
+            .expect("backend slot snapshot restore should not read local file");
+
+        assert!(detail.contains("resident backend slot snapshot ready"));
+        assert_eq!(mem.slot_for_pid(5), Some(slot_id));
     }
 }

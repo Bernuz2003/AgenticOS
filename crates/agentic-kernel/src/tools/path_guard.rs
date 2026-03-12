@@ -3,8 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use crate::config::ensure_workspace_root;
 
 pub(crate) fn workspace_root() -> Result<PathBuf, String> {
-    ensure_workspace_root()
-        .map_err(|e| format!("SysCall Error: {}", e))
+    ensure_workspace_root().map_err(|e| format!("SysCall Error: {}", e))
 }
 
 pub(crate) fn normalize_relative_path(root: &Path, input: &str) -> Result<PathBuf, String> {

@@ -10,7 +10,7 @@ use crate::commands::MetricsState;
 use crate::config;
 use crate::engine::LLMEngine;
 use crate::inference_worker::{self, InferenceCmd, InferenceResult};
-use crate::memory::{MemoryConfig, NeuralMemory};
+use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::runtime::syscalls::{self, SyscallCmd, SyscallCompletion};
@@ -55,7 +55,6 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         %addr,
-        memory_active = config.memory.active,
         memory_swap_async = config.memory.swap_async,
         swap_dir = %config.memory.swap_dir.display(),
         checkpoint_interval_secs,
@@ -97,13 +96,7 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
 }
 
 fn build_memory(config: &config::KernelConfig) -> io::Result<NeuralMemory> {
-    let mem_config = MemoryConfig {
-        block_size: config.memory.block_size,
-        hidden_dim: config.memory.hidden_dim,
-        total_memory_mb: config.memory.total_memory_mb,
-    };
-    let mut memory = NeuralMemory::new(mem_config).map_err(|e| io::Error::other(e.to_string()))?;
-    memory.set_active(config.memory.active);
+    let mut memory = NeuralMemory::new().map_err(|e| io::Error::other(e.to_string()))?;
     memory.set_token_slot_quota_per_pid(config.memory.token_slot_quota_per_pid);
     if let Err(e) = memory.configure_async_swap(
         config.memory.swap_async,

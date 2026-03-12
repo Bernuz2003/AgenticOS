@@ -212,6 +212,15 @@ pub(super) fn checkout_active_processes(
                     tokens: process.tokens.len(),
                     index_pos: process.index_pos,
                     max_tokens: process.max_tokens,
+                    context_slot_id: process.context_slot_id,
+                    resident_slot_policy: process.resident_slot_policy_label(),
+                    resident_slot_state: process.resident_slot_state_label(),
+                    resident_slot_snapshot_path: process
+                        .resident_slot_snapshot_path()
+                        .map(|path| path.display().to_string()),
+                    backend_id: Some(process.model.backend_id().to_string()),
+                    backend_class: Some(process.model.backend_class().as_str().to_string()),
+                    backend_capabilities: Some(process.model.backend_capabilities()),
                     context: process.context_status_snapshot(),
                 },
             );

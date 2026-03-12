@@ -226,7 +226,10 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
                 ctx.request_id,
                 ControlErrorCode::SendInputInvalid,
                 protocol::schema::ERROR,
-                &format!("SEND_INPUT expects JSON payload {{\"pid\":...,\"prompt\":\"...\"}}: {}", detail),
+                &format!(
+                    "SEND_INPUT expects JSON payload {{\"pid\":...,\"prompt\":\"...\"}}: {}",
+                    detail
+                ),
             );
         }
     };
@@ -322,7 +325,10 @@ pub(crate) fn handle_continue_output(ctx: ProcessCommandContext<'_>, payload: &[
                 ctx.request_id,
                 ControlErrorCode::ContinueOutputInvalid,
                 protocol::schema::ERROR,
-                &format!("CONTINUE_OUTPUT expects JSON payload {{\"pid\":...}}: {}", detail),
+                &format!(
+                    "CONTINUE_OUTPUT expects JSON payload {{\"pid\":...}}: {}",
+                    detail
+                ),
             );
         }
     };
@@ -408,7 +414,10 @@ pub(crate) fn handle_stop_output(ctx: ProcessCommandContext<'_>, payload: &[u8])
                 ctx.request_id,
                 ControlErrorCode::StopOutputInvalid,
                 protocol::schema::ERROR,
-                &format!("STOP_OUTPUT expects JSON payload {{\"pid\":...}}: {}", detail),
+                &format!(
+                    "STOP_OUTPUT expects JSON payload {{\"pid\":...}}: {}",
+                    detail
+                ),
             );
         }
     };

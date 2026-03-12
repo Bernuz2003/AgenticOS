@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agentic_control_models::{
-    ControlMessage, LoadModelResult, ModelCatalogSnapshot, OrchStatusResponse,
-    OrchSummaryResponse, OrchestrateResult, PidStatusResponse, SelectModelResult,
-    SendInputResult, StatusResponse, TurnControlResult,
+    ControlMessage, LoadModelResult, ModelCatalogSnapshot, OrchStatusResponse, OrchSummaryResponse,
+    OrchestrateResult, PidStatusResponse, SelectModelResult, SendInputResult, StatusResponse,
+    TurnControlResult,
 };
 use agentic_protocol::OpCode;
 
@@ -253,7 +253,10 @@ impl KernelBridge {
             ));
         }
 
-        self.decode_response(&response.payload, &[agentic_protocol::schema::CONTINUE_OUTPUT])
+        self.decode_response(
+            &response.payload,
+            &[agentic_protocol::schema::CONTINUE_OUTPUT],
+        )
     }
 
     pub fn stop_output(&mut self, pid: u64) -> KernelBridgeResult<TurnControlResult> {
@@ -380,7 +383,7 @@ fn load_token(workspace_root: &Path) -> KernelBridgeResult<String> {
 fn map_process_to_session(process: PidStatusResponse) -> AgentSessionSummary {
     let status = match process.state.as_str() {
         "Running" | "WaitingForSyscall" | "InFlight" => "running",
-        "WaitingForMemory" => "swapped",
+        "Parked" => "swapped",
         _ => "idle",
     }
     .to_string();
@@ -393,16 +396,36 @@ fn map_process_to_session(process: PidStatusResponse) -> AgentSessionSummary {
 
     let prompt_preview = if let Some(context) = process.context.as_ref() {
         format!(
-            "workload={} | context={}/{} tokens | strategy={}",
+            "workload={} | backend={} | slot={} [{} / {}] | context={}/{} tokens | strategy={}",
             process.workload,
+            process.backend_class.as_deref().unwrap_or("unknown"),
+            process
+                .context_slot_id
+                .map(|slot_id| slot_id.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            process
+                .resident_slot_policy
+                .as_deref()
+                .unwrap_or("unmanaged"),
+            process.resident_slot_state.as_deref().unwrap_or("unbound"),
             context.context_tokens_used,
             context.context_window_size,
             context.context_strategy
         )
     } else {
         format!(
-            "workload={} | no context snapshot available",
-            process.workload
+            "workload={} | backend={} | slot={} [{} / {}] | no context snapshot available",
+            process.workload,
+            process.backend_class.as_deref().unwrap_or("unknown"),
+            process
+                .context_slot_id
+                .map(|slot_id| slot_id.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            process
+                .resident_slot_policy
+                .as_deref()
+                .unwrap_or("unmanaged"),
+            process.resident_slot_state.as_deref().unwrap_or("unbound"),
         )
     };
 
@@ -486,12 +509,67 @@ fn map_pid_status_to_workspace_snapshot(
         "runtime",
         "Runtime state",
         humanize_kernel_event(&format!(
-            "workload={} state={} elapsed={}s",
+            "workload={} state={} elapsed={}s slot={} backend={} class={}",
             process.workload,
             process.state,
-            process.elapsed_secs.max(0.0).round() as u64
+            process.elapsed_secs.max(0.0).round() as u64,
+            process
+                .context_slot_id
+                .map(|slot_id| slot_id.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            process.backend_id.as_deref().unwrap_or("unknown"),
+            process.backend_class.as_deref().unwrap_or("unknown"),
         )),
     ));
+    if let Some(slot_state) = process.resident_slot_state.as_ref() {
+        let snapshot_path = process
+            .resident_slot_snapshot_path
+            .as_deref()
+            .unwrap_or("none");
+        let slot_policy = process
+            .resident_slot_policy
+            .as_deref()
+            .unwrap_or("unmanaged");
+        audit_events.push(make_audit_event(
+            "runtime",
+            "Resident slot lifecycle",
+            format!(
+                "slot_policy={} slot_state={} slot_snapshot_path={}",
+                slot_policy, slot_state, snapshot_path
+            ),
+        ));
+    }
+    if let Some(capabilities) = process.backend_capabilities.as_ref() {
+        audit_events.push(make_audit_event(
+            "runtime",
+            "Backend capabilities",
+            format!(
+                "resident_kv={} persistent_slots={} save_restore_slots={} prompt_cache_reuse={} tool_pause_resume={}",
+                capabilities.resident_kv,
+                capabilities.persistent_slots,
+                capabilities.save_restore_slots,
+                capabilities.prompt_cache_reuse,
+                capabilities.tool_pause_resume,
+            ),
+        ));
+        if capabilities.tool_pause_resume && process.state == "WaitingForSyscall" {
+            audit_events.push(make_audit_event(
+                "tool",
+                "Streaming tool turn",
+                format!(
+                    "kernel_paused_generation=true awaiting_syscall_result=true slot={} slot_policy={}",
+                    process
+                        .context_slot_id
+                        .map(|slot_id| slot_id.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    process
+                        .resident_slot_policy
+                        .as_deref()
+                        .unwrap_or("unmanaged"),
+                ),
+            ));
+        }
+    }
     if let (Some(orch_id), Some(task_id)) = (
         process.orchestration_id,
         process.orchestration_task_id.as_ref(),
@@ -515,6 +593,13 @@ fn map_pid_status_to_workspace_snapshot(
         pid: process.pid,
         state: process.state,
         workload: process.workload,
+        context_slot_id: process.context_slot_id,
+        resident_slot_policy: process.resident_slot_policy,
+        resident_slot_state: process.resident_slot_state,
+        resident_slot_snapshot_path: process.resident_slot_snapshot_path,
+        backend_id: process.backend_id,
+        backend_class: process.backend_class,
+        backend_capabilities: process.backend_capabilities,
         tokens_generated: process.tokens_generated,
         syscalls_used: process.syscalls_used,
         elapsed_secs: process.elapsed_secs,

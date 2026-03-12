@@ -1,8 +1,8 @@
-//! Async swap manager for NeuralMemory.
+//! Async swap manager for the logical residency layer.
 //!
 //! Owns the swap worker thread, job queue, and waiting-PID tracking.
-//! Extracted from `core.rs` (M13) to keep the allocator focused on
-//! block management and process bookkeeping.
+//! Extracted from `core.rs` (M13) and now used by `LogicalResidencyManager`
+//! so parking and persistence stay backend-neutral.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -12,6 +12,7 @@ use std::thread;
 use super::swap_io;
 use super::swap_io::PreparedSwapTarget;
 use super::types::ContextSlotId;
+use super::types::SlotPersistenceKind;
 use super::types::SwapEvent;
 use crate::backend;
 use crate::errors::MemoryError;
@@ -23,7 +24,7 @@ pub(super) struct SwapJob {
     pub slot_id: ContextSlotId,
     pub backend_id: String,
     pub target: PreparedSwapTarget,
-    pub payload: Vec<u8>,
+    pub pressure_bytes: usize,
 }
 
 struct SwapResult {
@@ -31,6 +32,7 @@ struct SwapResult {
     slot_id: ContextSlotId,
     success: bool,
     detail: String,
+    persistence_kind: SlotPersistenceKind,
     final_path: PathBuf,
 }
 
@@ -108,27 +110,30 @@ impl SwapManager {
                     let result = backend::persist_context_slot_payload_for_backend(
                         &job.backend_id,
                         job.slot_id,
-                        &job.target.tmp_path,
                         &job.target.final_path,
-                        &job.payload,
                     )
-                    .map(|_| {
-                        format!(
-                            "swap persisted pid={} slot={} backend={} bytes={} file={}",
-                            job.pid,
-                            job.slot_id,
-                            job.backend_id,
-                            job.payload.len(),
-                            job.target.final_path.display()
+                    .map(|persistence_kind| {
+                        (
+                            format!(
+                                "resident slot parked pid={} slot={} backend={} kind={} hint_bytes={} snapshot={}",
+                                job.pid,
+                                job.slot_id,
+                                job.backend_id,
+                                persistence_kind.as_str(),
+                                job.pressure_bytes,
+                                job.target.final_path.display()
+                            ),
+                            persistence_kind,
                         )
                     });
 
                     let event = match result {
-                        Ok(msg) => SwapResult {
+                        Ok((msg, persistence_kind)) => SwapResult {
                             pid: job.pid,
                             slot_id: job.slot_id,
                             success: true,
                             detail: msg,
+                            persistence_kind,
                             final_path: job.target.final_path.clone(),
                         },
                         Err(err) => SwapResult {
@@ -139,6 +144,7 @@ impl SwapManager {
                                 "swap failed pid={} slot={}: {}",
                                 job.pid, job.slot_id, err
                             ),
+                            persistence_kind: SlotPersistenceKind::Unknown,
                             final_path: job.target.final_path.clone(),
                         },
                     };
@@ -187,7 +193,7 @@ impl SwapManager {
         pid: u64,
         slot_id: ContextSlotId,
         backend_id: &str,
-        payload: Vec<u8>,
+        pressure_bytes: usize,
     ) -> Result<String, MemoryError> {
         let Some(tx) = &self.tx else {
             return Err(MemoryError::Swap("Swap queue is not available".to_string()));
@@ -197,13 +203,12 @@ impl SwapManager {
 
         let target =
             swap_io::prepare_swap_target(&self.dir, pid, slot_id).map_err(MemoryError::Swap)?;
-        let payload_len = payload.len();
         tx.send(SwapJob {
             pid,
             slot_id,
             backend_id: backend_id.to_string(),
             target,
-            payload,
+            pressure_bytes,
         })
         .map_err(|e| {
             self.waiting.remove(&pid);
@@ -211,8 +216,8 @@ impl SwapManager {
         })?;
 
         Ok(format!(
-            "OOM: PID {} slot {} queued for async swap ({} bytes)",
-            pid, slot_id, payload_len
+            "resident slot PID {} slot {} queued for async parking ({} bytes hinted)",
+            pid, slot_id, pressure_bytes
         ))
     }
 
@@ -242,6 +247,7 @@ impl SwapManager {
                         slot_id: result.slot_id,
                         success: result.success,
                         detail: result.detail,
+                        persistence_kind: result.persistence_kind,
                         swap_path: result.success.then_some(result.final_path),
                     });
                 }
@@ -261,6 +267,7 @@ impl SwapManager {
                             slot_id: 0,
                             success: false,
                             detail: format!("swap job lost: worker crash (pid={})", pid),
+                            persistence_kind: SlotPersistenceKind::Unknown,
                             swap_path: None,
                         });
                     }
@@ -295,16 +302,13 @@ impl SwapManager {
         pid: u64,
         slot_id: ContextSlotId,
         backend_id: &str,
-        payload: &[u8],
-    ) -> Result<PathBuf, String> {
+    ) -> Result<(PathBuf, SlotPersistenceKind), String> {
         let target = swap_io::prepare_swap_target(base_dir, pid, slot_id)?;
-        backend::persist_context_slot_payload_for_backend(
+        let persistence_kind = backend::persist_context_slot_payload_for_backend(
             backend_id,
             slot_id,
-            &target.tmp_path,
             &target.final_path,
-            payload,
         )?;
-        Ok(target.final_path)
+        Ok((target.final_path, persistence_kind))
     }
 }

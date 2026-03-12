@@ -38,9 +38,6 @@ pub enum KernelError {
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
-    #[error("OOM: {detail}")]
-    OutOfMemory { detail: String },
-
     #[error("NeuralMemory: PID {pid} requested {requested} token slots > quota {quota}")]
     QuotaExceeded {
         pid: u64,
@@ -53,12 +50,6 @@ pub enum MemoryError {
 
     #[error("NeuralMemory: PID {0} is not registered")]
     PidNotRegistered(u64),
-
-    #[error("Tensor ID {0} not found")]
-    TensorNotFound(u64),
-
-    #[error("MEMW payload length {bytes} is not aligned to 4 bytes (required for f32 payloads)")]
-    MisalignedPayload { bytes: usize },
 
     #[error("Swap error: {0}")]
     Swap(String),

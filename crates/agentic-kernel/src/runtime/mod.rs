@@ -44,15 +44,60 @@ pub fn run_engine_tick(
                 match memory.restore_swapped_pid(
                     event.pid,
                     event.slot_id,
+                    event.persistence_kind,
                     event.swap_path.as_deref(),
                 ) {
                     Ok(detail) => {
-                        if let Some(path) = event.swap_path.as_deref() {
-                            if let Err(err) = engine.load_context_slot(event.slot_id, path) {
-                                tracing::debug!(pid = event.pid, slot_id = event.slot_id, %err, "MEMORY: backend swap restore unavailable");
+                        if event.persistence_kind.requires_backend_restore() {
+                            let Some(path) = event.swap_path.as_deref() else {
+                                pending_events.push(KernelEvent::WorkspaceChanged {
+                                    pid: event.pid,
+                                    reason: "swap_restore_failed".to_string(),
+                                });
+                                tracing::error!(
+                                    pid = event.pid,
+                                    slot_id = event.slot_id,
+                                    detail = %event.detail,
+                                    "MEMORY: backend slot restore missing snapshot path"
+                                );
+                                continue;
+                            };
+
+                            if let Err(err) =
+                                engine.mark_process_context_slot_saved(event.pid, path)
+                            {
+                                pending_events.push(KernelEvent::WorkspaceChanged {
+                                    pid: event.pid,
+                                    reason: "swap_restore_failed".to_string(),
+                                });
+                                tracing::error!(
+                                    pid = event.pid,
+                                    slot_id = event.slot_id,
+                                    persistence_kind = event.persistence_kind.as_str(),
+                                    detail = %event.detail,
+                                    %err,
+                                    "MEMORY: resident slot save bookkeeping failed"
+                                );
+                                continue;
+                            }
+
+                            if let Err(err) = engine.load_process_context_slot(event.pid, path) {
+                                pending_events.push(KernelEvent::WorkspaceChanged {
+                                    pid: event.pid,
+                                    reason: "swap_restore_failed".to_string(),
+                                });
+                                tracing::error!(
+                                    pid = event.pid,
+                                    slot_id = event.slot_id,
+                                    persistence_kind = event.persistence_kind.as_str(),
+                                    detail = %event.detail,
+                                    %err,
+                                    "MEMORY: backend slot restore failed"
+                                );
+                                continue;
                             }
                         }
-                        let resumed = engine.set_process_ready_if_waiting(event.pid);
+                        let resumed = engine.set_process_ready_if_parked(event.pid);
                         pending_events.push(KernelEvent::WorkspaceChanged {
                             pid: event.pid,
                             reason: "swap_restored".to_string(),
@@ -63,6 +108,7 @@ pub fn run_engine_tick(
                         tracing::info!(
                             pid = event.pid,
                             slot_id = event.slot_id,
+                            persistence_kind = event.persistence_kind.as_str(),
                             resumed,
                             detail = %detail,
                             "MEMORY: swap complete"
@@ -76,6 +122,7 @@ pub fn run_engine_tick(
                         tracing::error!(
                             pid = event.pid,
                             slot_id = event.slot_id,
+                            persistence_kind = event.persistence_kind.as_str(),
                             detail = %event.detail,
                             %err,
                             "MEMORY: swap restore failed"
@@ -83,7 +130,7 @@ pub fn run_engine_tick(
                     }
                 }
             } else {
-                let resumed = engine.set_process_ready_if_waiting(event.pid);
+                let resumed = engine.set_process_ready_if_parked(event.pid);
                 pending_events.push(KernelEvent::WorkspaceChanged {
                     pid: event.pid,
                     reason: "swap_failed".to_string(),
@@ -94,6 +141,7 @@ pub fn run_engine_tick(
                 tracing::error!(
                     pid = event.pid,
                     slot_id = event.slot_id,
+                    persistence_kind = event.persistence_kind.as_str(),
                     resumed,
                     detail = %event.detail,
                     "MEMORY: swap failed"
@@ -184,5 +232,32 @@ mod tests {
         let result = scan_syscall_buffer(&mut buf);
         assert!(result.is_none());
         assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn scan_finds_complete_bare_tool_command() {
+        let mut buf = "Prelude\nTOOL:python {\"code\":\"print(1)\"}".to_string();
+        let result = scan_syscall_buffer(&mut buf);
+        assert_eq!(
+            result,
+            Some("TOOL:python {\"code\":\"print(1)\"}".to_string())
+        );
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn scan_waits_for_complete_bare_tool_json() {
+        let mut buf = "TOOL:python {\"code\":\"print(1)\"".to_string();
+        let result = scan_syscall_buffer(&mut buf);
+        assert!(result.is_none());
+        assert!(!buf.is_empty());
+
+        buf.push('}');
+        let result = scan_syscall_buffer(&mut buf);
+        assert_eq!(
+            result,
+            Some("TOOL:python {\"code\":\"print(1)\"}".to_string())
+        );
+        assert!(buf.is_empty());
     }
 }

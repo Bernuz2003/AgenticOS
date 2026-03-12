@@ -64,6 +64,7 @@ pub(super) fn drain_worker_results(
                     };
                 }
 
+                process.mark_resident_prompt_checkpoint();
                 engine.processes.insert(pid, process);
 
                 if pending_kills.contains(&pid) {
@@ -89,7 +90,12 @@ pub(super) fn drain_worker_results(
                 }
 
                 if let Some(full_command) = pending_syscall {
-                    let content = full_command[2..full_command.len() - 2].trim().to_string();
+                    let content = full_command
+                        .trim()
+                        .trim_start_matches("[[")
+                        .trim_end_matches("]]")
+                        .trim()
+                        .to_string();
                     tracing::info!(pid, owner_id, command = %full_command, "OS: SysCall intercepted");
                     dispatch_process_syscall(
                         engine,

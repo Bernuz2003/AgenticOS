@@ -5,8 +5,11 @@ use std::path::Path;
 use crate::memory::ContextSlotId;
 use crate::prompting::PromptFamily;
 
-use super::http::{HttpEndpoint, HttpJsonResponse};
-use super::remote_adapter::{build_completion_request, decode_completion_response};
+use super::http::{HttpEndpoint, HttpJsonResponse, HttpRequestOptions, HttpStreamControl};
+use super::remote_adapter::{
+    build_completion_request, decode_completion_response, drain_json_objects,
+    select_completion_prompt_transport, tool_invocation_end, PromptTransportStrategy,
+};
 use super::{
     ContextSlotPersistence, InferenceBackend, InferenceFinishReason, InferenceStepRequest,
     InferenceStepResult, ModelBackend,
@@ -82,6 +85,35 @@ impl ExternalLlamaCppBackend {
             .ok_or_else(|| E::msg("External RPC returned invalid JSON."))
     }
 
+    fn post_streaming_completion(
+        &self,
+        payload: serde_json::Value,
+        tokenizer: &tokenizers::Tokenizer,
+    ) -> Result<StreamingCompletion> {
+        let mut accumulator = StreamingCompletionAccumulator::default();
+        let response = self.endpoint.request_stream_with_options(
+            "POST",
+            &self.endpoint.joined_path("/completion"),
+            Some(&payload),
+            HttpRequestOptions {
+                timeout_ms: self.timeout_ms,
+                max_request_bytes: usize::MAX,
+                max_response_bytes: usize::MAX,
+                extra_headers: None,
+            },
+            |fragment| accumulator.push(fragment, tokenizer),
+        )?;
+        if response.status_code != 200 {
+            return Err(E::msg(format!(
+                "External RPC request failed with status '{}': {}",
+                response.status_line,
+                response.body.trim()
+            )));
+        }
+
+        accumulator.finish(tokenizer)
+    }
+
     fn slot_filename(path: &Path) -> Result<String> {
         let filename = path
             .file_name()
@@ -132,12 +164,12 @@ impl InferenceBackend for ExternalLlamaCppBackend {
         let InferenceStepRequest {
             context_slot_id,
             tokens,
+            rendered_prompt,
+            resident_prompt_suffix,
             index_pos,
             remaining_generation_budget,
-            logits_processor: _,
             tokenizer,
             generation,
-            device: _,
             eos_token_id: _,
             eot_token_id: _,
         } = request;
@@ -152,17 +184,30 @@ impl InferenceBackend for ExternalLlamaCppBackend {
         }
 
         let chunk_tokens = remaining_generation_budget.min(self.chunk_tokens);
-        let prompt = tokenizer.decode(tokens, false).map_err(|e| {
-            E::msg(format!(
-                "Failed to decode prompt tokens for RPC backend: {}",
-                e
-            ))
-        })?;
-        let raw = self.post_json(
-            &self.endpoint.joined_path("/completion"),
-            build_completion_request(&prompt, chunk_tokens, context_slot_id, generation),
+        let prompt_transport =
+            select_completion_prompt_transport(rendered_prompt, resident_prompt_suffix, false);
+        if matches!(
+            prompt_transport.strategy,
+            PromptTransportStrategy::FullPrompt
+        ) && !resident_prompt_suffix.is_empty()
+        {
+            tracing::debug!(
+                slot_id = context_slot_id,
+                full_prompt_bytes = rendered_prompt.len(),
+                suffix_bytes = resident_prompt_suffix.len(),
+                "LLAMACPP: append-only transport unavailable, falling back to full prompt reuse"
+            );
+        }
+        let decoded = self.post_streaming_completion(
+            build_completion_request(
+                prompt_transport.prompt,
+                chunk_tokens,
+                context_slot_id,
+                generation,
+                true,
+            ),
+            tokenizer,
         )?;
-        let decoded = decode_completion_response(raw, tokenizer)?;
 
         let finished_due_to_budget =
             !decoded.finished && decoded.appended_tokens.len() >= remaining_generation_budget;
@@ -201,4 +246,69 @@ impl ContextSlotPersistence for ExternalLlamaCppBackend {
     fn free_context_slot(&mut self, slot_id: ContextSlotId) -> Result<()> {
         self.slot_action(slot_id, "erase", json!({}))
     }
+}
+
+#[derive(Debug, Default)]
+struct StreamingCompletionAccumulator {
+    body_buffer: Vec<u8>,
+    emitted_text: String,
+    finished: bool,
+    stopped_on_tool_marker: bool,
+}
+
+impl StreamingCompletionAccumulator {
+    fn push(
+        &mut self,
+        fragment: &[u8],
+        tokenizer: &tokenizers::Tokenizer,
+    ) -> Result<HttpStreamControl> {
+        self.body_buffer.extend_from_slice(fragment);
+        for object in drain_json_objects(&mut self.body_buffer)? {
+            let decoded = decode_completion_response(object, tokenizer)?;
+            self.emitted_text.push_str(&decoded.emitted_text);
+            self.finished = decoded.finished;
+
+            if let Some(end) = tool_invocation_end(&self.emitted_text) {
+                self.emitted_text.truncate(end);
+                self.stopped_on_tool_marker = true;
+                self.finished = false;
+                return Ok(HttpStreamControl::Stop);
+            }
+
+            if self.finished {
+                return Ok(HttpStreamControl::Stop);
+            }
+        }
+
+        Ok(HttpStreamControl::Continue)
+    }
+
+    fn finish(self, tokenizer: &tokenizers::Tokenizer) -> Result<StreamingCompletion> {
+        let appended_tokens = if self.emitted_text.is_empty() {
+            Vec::new()
+        } else {
+            tokenizer
+                .encode(self.emitted_text.as_str(), false)
+                .map_err(|e| {
+                    E::msg(format!(
+                        "Failed to tokenize streamed RPC completion chunk: {}",
+                        e
+                    ))
+                })?
+                .get_ids()
+                .to_vec()
+        };
+
+        Ok(StreamingCompletion {
+            emitted_text: self.emitted_text,
+            appended_tokens,
+            finished: self.finished && !self.stopped_on_tool_marker,
+        })
+    }
+}
+
+struct StreamingCompletion {
+    emitted_text: String,
+    appended_tokens: Vec<u32>,
+    finished: bool,
 }

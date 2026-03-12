@@ -51,9 +51,26 @@ pub(crate) fn diagnose_external_backend() -> Result<serde_json::Value> {
 
     let props_json = props_entry.get("json");
     let slots_json = slots_entry.get("json").and_then(|value| value.as_array());
+    let descriptor = super::driver_descriptor("external-llamacpp")
+        .ok_or_else(|| E::msg("Backend registry is missing external-llamacpp."))?;
+    let capabilities = descriptor.capabilities;
 
     Ok(json!({
         "backend": "external-llamacpp",
+        "backend_class": descriptor.class.as_str(),
+        "backend_capabilities": {
+            "resident_kv": capabilities.resident_kv,
+            "persistent_slots": capabilities.persistent_slots,
+            "save_restore_slots": capabilities.save_restore_slots,
+            "prompt_cache_reuse": capabilities.prompt_cache_reuse,
+            "streaming_generation": capabilities.streaming_generation,
+            "structured_output": capabilities.structured_output,
+            "cancel_generation": capabilities.cancel_generation,
+            "memory_telemetry": capabilities.memory_telemetry,
+            "tool_pause_resume": capabilities.tool_pause_resume,
+            "context_compaction_reset": capabilities.context_compaction_reset,
+            "parallel_sessions": capabilities.parallel_sessions,
+        },
         "endpoint": endpoint_raw,
         "timeout_ms": timeout_ms,
         "health": health_entry,

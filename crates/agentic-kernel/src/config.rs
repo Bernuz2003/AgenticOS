@@ -100,24 +100,16 @@ impl Default for PathsConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct MemoryRuntimeConfig {
-    pub active: bool,
     pub swap_async: bool,
     pub swap_dir: PathBuf,
-    pub block_size: usize,
-    pub hidden_dim: usize,
-    pub total_memory_mb: usize,
     pub token_slot_quota_per_pid: usize,
 }
 
 impl Default for MemoryRuntimeConfig {
     fn default() -> Self {
         Self {
-            active: true,
             swap_async: true,
             swap_dir: repository_path("workspace/swap"),
-            block_size: 16,
-            hidden_dim: 256,
-            total_memory_mb: 64,
             token_slot_quota_per_pid: 4096,
         }
     }
@@ -169,7 +161,7 @@ impl Default for ExternalLlamaCppConfig {
     fn default() -> Self {
         Self {
             endpoint: String::new(),
-            timeout_ms: 120_000,
+            timeout_ms: 300_000,
             chunk_tokens: 1,
         }
     }
@@ -406,8 +398,13 @@ pub fn repository_path(relative: impl AsRef<Path>) -> PathBuf {
 
 pub fn ensure_workspace_root() -> Result<PathBuf, String> {
     let workspace_dir = &kernel_config().paths.workspace_dir;
-    fs::create_dir_all(workspace_dir)
-        .map_err(|e| format!("Failed to create workspace root '{}': {}", workspace_dir.display(), e))?;
+    fs::create_dir_all(workspace_dir).map_err(|e| {
+        format!(
+            "Failed to create workspace root '{}': {}",
+            workspace_dir.display(),
+            e
+        )
+    })?;
 
     fs::canonicalize(workspace_dir).map_err(|e| {
         format!(
@@ -470,9 +467,6 @@ fn apply_env_overrides(config: &mut KernelConfig) {
         if !capabilities.is_empty() {
             config.protocol.enabled_capabilities = capabilities;
         }
-    }
-    if let Some(value) = env_bool_opt("AGENTIC_MEMORY_ACTIVE") {
-        config.memory.active = value;
     }
     if let Some(value) = env_bool_opt("AGENTIC_MEMORY_SWAP_ASYNC") {
         config.memory.swap_async = value;

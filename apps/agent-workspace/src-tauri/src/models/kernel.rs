@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use agentic_control_models::BackendCapabilitiesView;
+
 #[derive(Debug, Serialize, Clone)]
 pub struct KernelBootstrapState {
     pub kernel_addr: String,
@@ -52,6 +54,13 @@ pub struct WorkspaceSnapshot {
     pub pid: u64,
     pub state: String,
     pub workload: String,
+    pub context_slot_id: Option<u64>,
+    pub resident_slot_policy: Option<String>,
+    pub resident_slot_state: Option<String>,
+    pub resident_slot_snapshot_path: Option<String>,
+    pub backend_id: Option<String>,
+    pub backend_class: Option<String>,
+    pub backend_capabilities: Option<BackendCapabilitiesView>,
     pub tokens_generated: usize,
     pub syscalls_used: usize,
     pub elapsed_secs: f64,

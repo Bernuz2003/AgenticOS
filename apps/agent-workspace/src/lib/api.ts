@@ -51,6 +51,13 @@ export interface WorkspaceSnapshot {
   pid: number;
   state: string;
   workload: string;
+  contextSlotId: number | null;
+  residentSlotPolicy: string | null;
+  residentSlotState: string | null;
+  residentSlotSnapshotPath: string | null;
+  backendId: string | null;
+  backendClass: string | null;
+  backendCapabilities: BackendCapabilities | null;
   tokensGenerated: number;
   syscallsUsed: number;
   elapsedSecs: number;
@@ -97,6 +104,20 @@ export interface OrchestrateResult {
   spawned: number;
 }
 
+export interface BackendCapabilities {
+  residentKv: boolean;
+  persistentSlots: boolean;
+  saveRestoreSlots: boolean;
+  promptCacheReuse: boolean;
+  streamingGeneration: boolean;
+  structuredOutput: boolean;
+  cancelGeneration: boolean;
+  memoryTelemetry: boolean;
+  toolPauseResume: boolean;
+  contextCompactionReset: boolean;
+  parallelSessions: boolean;
+}
+
 export interface ModelCatalogEntry {
   id: string;
   family: string;
@@ -107,6 +128,8 @@ export interface ModelCatalogEntry {
   metadataSource: string | null;
   backendPreference: string | null;
   resolvedBackend: string | null;
+  resolvedBackendClass: string | null;
+  resolvedBackendCapabilities: BackendCapabilities | null;
   driverResolutionSource: string;
   driverResolutionRationale: string;
   driverAvailable: boolean | null;
@@ -121,6 +144,8 @@ export interface ModelRoutingRecommendation {
   family: string | null;
   backendPreference: string | null;
   resolvedBackend: string | null;
+  resolvedBackendClass: string | null;
+  resolvedBackendCapabilities: BackendCapabilities | null;
   driverResolutionSource: string;
   driverResolutionRationale: string;
   driverAvailable: boolean | null;
@@ -146,6 +171,8 @@ export interface SelectModelResult {
 export interface LoadModelResult {
   family: string;
   backend: string;
+  backendClass: string;
+  backendCapabilities: BackendCapabilities;
   driverSource: string;
   driverRationale: string;
   path: string;
@@ -226,6 +253,25 @@ export interface WorkspaceSnapshotDto {
   pid: number;
   state: string;
   workload: string;
+  context_slot_id: number | null;
+  resident_slot_policy: string | null;
+  resident_slot_state: string | null;
+  resident_slot_snapshot_path: string | null;
+  backend_id: string | null;
+  backend_class: string | null;
+  backend_capabilities: {
+    resident_kv: boolean;
+    persistent_slots: boolean;
+    save_restore_slots: boolean;
+    prompt_cache_reuse: boolean;
+    streaming_generation: boolean;
+    structured_output: boolean;
+    cancel_generation: boolean;
+    memory_telemetry: boolean;
+    tool_pause_resume: boolean;
+    context_compaction_reset: boolean;
+    parallel_sessions: boolean;
+  } | null;
   tokens_generated: number;
   syscalls_used: number;
   elapsed_secs: number;
@@ -321,6 +367,13 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
     pid: snapshot.pid,
     state: snapshot.state,
     workload: snapshot.workload,
+    contextSlotId: snapshot.context_slot_id,
+    residentSlotPolicy: snapshot.resident_slot_policy,
+    residentSlotState: snapshot.resident_slot_state,
+    residentSlotSnapshotPath: snapshot.resident_slot_snapshot_path,
+    backendId: snapshot.backend_id,
+    backendClass: snapshot.backend_class,
+    backendCapabilities: mapBackendCapabilities(snapshot.backend_capabilities),
     tokensGenerated: snapshot.tokens_generated,
     syscallsUsed: snapshot.syscalls_used,
     elapsedSecs: snapshot.elapsed_secs,
@@ -376,6 +429,40 @@ export function normalizeTimelineSnapshot(snapshot: TimelineSnapshotDto): Timeli
     fallbackNotice: snapshot.fallback_notice,
     error: snapshot.error,
     items: snapshot.items,
+  };
+}
+
+function mapBackendCapabilities(
+  capabilities: {
+    resident_kv: boolean;
+    persistent_slots: boolean;
+    save_restore_slots: boolean;
+    prompt_cache_reuse: boolean;
+    streaming_generation: boolean;
+    structured_output: boolean;
+    cancel_generation: boolean;
+    memory_telemetry: boolean;
+    tool_pause_resume: boolean;
+    context_compaction_reset: boolean;
+    parallel_sessions: boolean;
+  } | null,
+): BackendCapabilities | null {
+  if (!capabilities) {
+    return null;
+  }
+
+  return {
+    residentKv: capabilities.resident_kv,
+    persistentSlots: capabilities.persistent_slots,
+    saveRestoreSlots: capabilities.save_restore_slots,
+    promptCacheReuse: capabilities.prompt_cache_reuse,
+    streamingGeneration: capabilities.streaming_generation,
+    structuredOutput: capabilities.structured_output,
+    cancelGeneration: capabilities.cancel_generation,
+    memoryTelemetry: capabilities.memory_telemetry,
+    toolPauseResume: capabilities.tool_pause_resume,
+    contextCompactionReset: capabilities.context_compaction_reset,
+    parallelSessions: capabilities.parallel_sessions,
   };
 }
 
@@ -436,6 +523,20 @@ export async function listModels(): Promise<ModelCatalogSnapshot> {
       metadata_source: string | null;
       backend_preference: string | null;
       resolved_backend: string | null;
+      resolved_backend_class: string | null;
+      resolved_backend_capabilities: {
+        resident_kv: boolean;
+        persistent_slots: boolean;
+        save_restore_slots: boolean;
+        prompt_cache_reuse: boolean;
+        streaming_generation: boolean;
+        structured_output: boolean;
+        cancel_generation: boolean;
+        memory_telemetry: boolean;
+        tool_pause_resume: boolean;
+        context_compaction_reset: boolean;
+        parallel_sessions: boolean;
+      } | null;
       driver_resolution_source: string;
       driver_resolution_rationale: string;
       driver_available: boolean | null;
@@ -449,6 +550,20 @@ export async function listModels(): Promise<ModelCatalogSnapshot> {
       family: string | null;
       backend_preference: string | null;
       resolved_backend: string | null;
+      resolved_backend_class: string | null;
+      resolved_backend_capabilities: {
+        resident_kv: boolean;
+        persistent_slots: boolean;
+        save_restore_slots: boolean;
+        prompt_cache_reuse: boolean;
+        streaming_generation: boolean;
+        structured_output: boolean;
+        cancel_generation: boolean;
+        memory_telemetry: boolean;
+        tool_pause_resume: boolean;
+        context_compaction_reset: boolean;
+        parallel_sessions: boolean;
+      } | null;
       driver_resolution_source: string;
       driver_resolution_rationale: string;
       driver_available: boolean | null;
@@ -474,6 +589,10 @@ export async function listModels(): Promise<ModelCatalogSnapshot> {
       metadataSource: model.metadata_source,
       backendPreference: model.backend_preference,
       resolvedBackend: model.resolved_backend,
+      resolvedBackendClass: model.resolved_backend_class,
+      resolvedBackendCapabilities: mapBackendCapabilities(
+        model.resolved_backend_capabilities,
+      ),
       driverResolutionSource: model.driver_resolution_source,
       driverResolutionRationale: model.driver_resolution_rationale,
       driverAvailable: model.driver_available,
@@ -487,6 +606,10 @@ export async function listModels(): Promise<ModelCatalogSnapshot> {
       family: entry.family,
       backendPreference: entry.backend_preference,
       resolvedBackend: entry.resolved_backend,
+      resolvedBackendClass: entry.resolved_backend_class,
+      resolvedBackendCapabilities: mapBackendCapabilities(
+        entry.resolved_backend_capabilities,
+      ),
       driverResolutionSource: entry.driver_resolution_source,
       driverResolutionRationale: entry.driver_resolution_rationale,
       driverAvailable: entry.driver_available,
@@ -514,6 +637,20 @@ export async function loadModel(selector = ""): Promise<LoadModelResult> {
   const result = await invoke<{
     family: string;
     backend: string;
+    backend_class: string;
+    backend_capabilities: {
+      resident_kv: boolean;
+      persistent_slots: boolean;
+      save_restore_slots: boolean;
+      prompt_cache_reuse: boolean;
+      streaming_generation: boolean;
+      structured_output: boolean;
+      cancel_generation: boolean;
+      memory_telemetry: boolean;
+      tool_pause_resume: boolean;
+      context_compaction_reset: boolean;
+      parallel_sessions: boolean;
+    };
     driver_source: string;
     driver_rationale: string;
     path: string;
@@ -524,6 +661,8 @@ export async function loadModel(selector = ""): Promise<LoadModelResult> {
   return {
     family: result.family,
     backend: result.backend,
+    backendClass: result.backend_class,
+    backendCapabilities: mapBackendCapabilities(result.backend_capabilities)!,
     driverSource: result.driver_source,
     driverRationale: result.driver_rationale,
     path: result.path,

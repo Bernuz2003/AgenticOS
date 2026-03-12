@@ -1,6 +1,6 @@
-use candle_transformers::generation::LogitsProcessor;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
 use crate::backend::RuntimeModel;
@@ -13,9 +13,49 @@ pub enum ProcessState {
     Running,
     AwaitingTurnDecision,
     WaitingForInput,
-    WaitingForMemory,
+    Parked,
     WaitingForSyscall,
     Finished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResidentSlotState {
+    #[default]
+    Unbound,
+    Allocated,
+    ParkRequested,
+    SnapshotSaved,
+    Restoring,
+}
+
+impl ResidentSlotState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unbound => "unbound",
+            Self::Allocated => "allocated",
+            Self::ParkRequested => "park_requested",
+            Self::SnapshotSaved => "snapshot_saved",
+            Self::Restoring => "restoring",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResidentSlotPolicy {
+    #[default]
+    Unmanaged,
+    ParkAndResume,
+}
+
+impl ResidentSlotPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unmanaged => "unmanaged",
+            Self::ParkAndResume => "park_and_resume",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,12 +226,14 @@ pub struct InitialContextSeed {
 pub struct AgentProcess {
     pub owner_id: usize,
     pub context_slot_id: Option<ContextSlotId>,
+    pub resident_slot_policy: ResidentSlotPolicy,
+    pub resident_slot_state: ResidentSlotState,
+    pub resident_slot_snapshot_path: Option<PathBuf>,
     pub state: ProcessState,
     pub lifecycle_policy: ProcessLifecyclePolicy,
     pub model: RuntimeModel,
     pub tokenizer: Tokenizer,
     pub generation: GenerationConfig,
-    pub logits_processor: LogitsProcessor,
     pub tokens: Vec<u32>,
     pub index_pos: usize,
     pub turn_start_index: usize,
@@ -199,11 +241,13 @@ pub struct AgentProcess {
     pub syscall_buffer: String,
     pub context_policy: ContextPolicy,
     pub context_state: ContextState,
+    rendered_prompt_cache: String,
+    resident_prompt_checkpoint_bytes: usize,
 }
 
 impl AgentProcess {
     pub fn new(
-        id: u64,
+        _id: u64,
         owner_id: usize,
         lifecycle_policy: ProcessLifecyclePolicy,
         model: RuntimeModel,
@@ -213,19 +257,18 @@ impl AgentProcess {
         context_seed: InitialContextSeed,
     ) -> Self {
         let initial_token_count = prompt_tokens.len();
+        let initial_segment_text = context_seed.initial_segment_text;
         AgentProcess {
             owner_id,
             context_slot_id: None,
+            resident_slot_policy: ResidentSlotPolicy::Unmanaged,
+            resident_slot_state: ResidentSlotState::Unbound,
+            resident_slot_snapshot_path: None,
             state: ProcessState::Ready,
             lifecycle_policy,
             model,
             tokenizer,
             generation,
-            logits_processor: LogitsProcessor::new(
-                generation.seed + id,
-                Some(generation.temperature),
-                Some(generation.top_p),
-            ),
             tokens: prompt_tokens,
             index_pos: 0,
             turn_start_index: initial_token_count,
@@ -241,10 +284,12 @@ impl AgentProcess {
                 segments: vec![ContextSegment::new(
                     ContextSegmentKind::UserTurn,
                     initial_token_count,
-                    context_seed.initial_segment_text,
+                    initial_segment_text.clone(),
                 )],
                 episodic_segments: Vec::new(),
             },
+            rendered_prompt_cache: initial_segment_text,
+            resident_prompt_checkpoint_bytes: 0,
         }
     }
 
@@ -267,6 +312,78 @@ impl AgentProcess {
 
     pub fn context_status_snapshot(&self) -> ContextStatusSnapshot {
         ContextStatusSnapshot::from_parts(&self.context_policy, &self.context_state)
+    }
+
+    pub fn prompt_text(&self) -> &str {
+        &self.rendered_prompt_cache
+    }
+
+    pub fn pending_resident_prompt_suffix(&self) -> &str {
+        let start = self
+            .resident_prompt_checkpoint_bytes
+            .min(self.rendered_prompt_cache.len());
+        &self.rendered_prompt_cache[start..]
+    }
+
+    pub fn mark_resident_prompt_checkpoint(&mut self) {
+        self.resident_prompt_checkpoint_bytes = self.rendered_prompt_cache.len();
+    }
+
+    pub fn reset_resident_prompt_checkpoint(&mut self) {
+        self.resident_prompt_checkpoint_bytes = 0;
+    }
+
+    pub fn bind_context_slot(&mut self, slot_id: ContextSlotId, policy: ResidentSlotPolicy) {
+        self.context_slot_id = Some(slot_id);
+        self.resident_slot_policy = policy;
+        self.resident_slot_state = ResidentSlotState::Allocated;
+        self.reset_resident_prompt_checkpoint();
+    }
+
+    pub fn mark_resident_slot_park_requested(&mut self) {
+        if self.context_slot_id.is_none() {
+            return;
+        }
+        self.resident_slot_state = ResidentSlotState::ParkRequested;
+    }
+
+    pub fn mark_resident_slot_snapshot_saved(&mut self, path: PathBuf) {
+        if self.context_slot_id.is_none() {
+            return;
+        }
+        self.resident_slot_state = ResidentSlotState::SnapshotSaved;
+        self.resident_slot_snapshot_path = Some(path);
+    }
+
+    pub fn mark_resident_slot_restoring(&mut self, path: PathBuf) {
+        if self.context_slot_id.is_none() {
+            return;
+        }
+        self.resident_slot_state = ResidentSlotState::Restoring;
+        self.resident_slot_snapshot_path = Some(path);
+    }
+
+    pub fn mark_resident_slot_allocated(&mut self) {
+        if self.context_slot_id.is_none() {
+            self.resident_slot_policy = ResidentSlotPolicy::Unmanaged;
+            self.resident_slot_state = ResidentSlotState::Unbound;
+            return;
+        }
+        self.resident_slot_state = ResidentSlotState::Allocated;
+    }
+
+    pub fn resident_slot_policy_label(&self) -> Option<String> {
+        self.context_slot_id
+            .map(|_| self.resident_slot_policy.as_str().to_string())
+    }
+
+    pub fn resident_slot_state_label(&self) -> Option<String> {
+        self.context_slot_id
+            .map(|_| self.resident_slot_state.as_str().to_string())
+    }
+
+    pub fn resident_slot_snapshot_path(&self) -> Option<&Path> {
+        self.resident_slot_snapshot_path.as_deref()
     }
 
     pub fn generated_tokens_in_current_turn(&self) -> usize {
@@ -400,6 +517,7 @@ impl AgentProcess {
 
         self.index_pos = 0;
         self.context_state.tokens_used = self.tokens.len();
+        self.rebuild_rendered_prompt_cache();
         let reason = format!(
             "retrieve_archived_segments={} archived_tokens={} retrieval_hits={}",
             archived_count, archived_tokens, retrieval_hits
@@ -449,6 +567,7 @@ impl AgentProcess {
         self.index_pos = 0;
         self.context_state.tokens_used = self.tokens.len();
         self.context_state.context_compressions += 1;
+        self.rebuild_rendered_prompt_cache();
 
         let reason = format!(
             "sliding_window_dropped_segments={} dropped_tokens={}",
@@ -536,6 +655,7 @@ impl AgentProcess {
         self.context_state.tokens_used = self.tokens.len();
         self.context_state.context_compressions += 1;
         self.context_state.last_summary_ts = Some(crate::checkpoint::now_timestamp());
+        self.rebuild_rendered_prompt_cache();
 
         let reason = format!(
             "summarize_compacted_segments={} replaced_tokens={}",
@@ -560,6 +680,8 @@ impl AgentProcess {
                 return None;
             }
         }
+
+        self.reset_resident_prompt_checkpoint();
 
         Some(())
     }
@@ -659,6 +781,7 @@ impl AgentProcess {
                 if last.kind == kind {
                     last.token_count += token_count;
                     last.text.push_str(text);
+                    self.rendered_prompt_cache.push_str(text);
                     self.context_state.tokens_used = self.tokens.len();
                     return;
                 }
@@ -668,7 +791,18 @@ impl AgentProcess {
         self.context_state
             .segments
             .push(ContextSegment::new(kind, token_count, text.to_string()));
+        self.rendered_prompt_cache.push_str(text);
         self.context_state.tokens_used = self.tokens.len();
+    }
+
+    fn rebuild_rendered_prompt_cache(&mut self) {
+        self.rendered_prompt_cache.clear();
+        for segment in &self.context_state.segments {
+            self.rendered_prompt_cache.push_str(&segment.text);
+        }
+        self.resident_prompt_checkpoint_bytes = self
+            .resident_prompt_checkpoint_bytes
+            .min(self.rendered_prompt_cache.len());
     }
 }
 
@@ -753,7 +887,7 @@ fn lexical_overlap_score(query_terms: &HashSet<String>, candidate_text: &str) ->
 mod tests {
     use super::{
         AgentProcess, ContextPolicy, ContextSegment, ContextSegmentKind, ContextStrategy,
-        InitialContextSeed, ProcessLifecyclePolicy,
+        InitialContextSeed, ProcessLifecyclePolicy, ResidentSlotPolicy,
     };
     use crate::backend::{
         ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult,
@@ -762,7 +896,7 @@ mod tests {
     use crate::memory::ContextSlotId;
     use crate::prompting::GenerationConfig;
     use anyhow::Result;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use tokenizers::models::wordlevel::WordLevel;
     use tokenizers::pre_tokenizers::whitespace::Whitespace;
@@ -877,13 +1011,14 @@ mod tests {
             text.to_string(),
         ));
         process.context_state.tokens_used = process.tokens.len();
+        process.rebuild_rendered_prompt_cache();
     }
 
     #[test]
     fn sliding_window_drops_complete_segments_and_resets_backend_slot() {
         let policy = ContextPolicy::new(ContextStrategy::SlidingWindow, 8, 7, 5, 3);
         let (mut process, frees) = test_process(policy);
-        process.context_slot_id = Some(11);
+        process.bind_context_slot(11, ResidentSlotPolicy::ParkAndResume);
         process.tokens.extend([5, 6, 3, 4, 4, 4]);
         process.record_injected_context("system note", 2);
         process.record_model_output("assistant reply reply reply", 4);
@@ -903,7 +1038,41 @@ mod tests {
             process.context_state.segments[0].kind,
             ContextSegmentKind::AssistantTurn
         );
+        assert_eq!(process.prompt_text(), "assistant reply reply reply");
         assert_eq!(*frees.lock().expect("lock frees"), vec![11]);
+    }
+
+    #[test]
+    fn rendered_prompt_cache_tracks_append_only_turn_updates() {
+        let policy = ContextPolicy::new(ContextStrategy::SlidingWindow, 32, 24, 16, 2);
+        let (mut process, _frees) = test_process(policy);
+
+        assert_eq!(process.prompt_text(), "user turn user");
+
+        process.record_injected_context("\nsystem note\n", 2);
+        process.record_model_output("assistant reply", 2);
+        process.record_user_input("\nuser followup\n", 2);
+
+        assert_eq!(
+            process.prompt_text(),
+            "user turn user\nsystem note\nassistant reply\nuser followup\n"
+        );
+    }
+
+    #[test]
+    fn resident_prompt_suffix_only_tracks_post_checkpoint_reinjection() {
+        let policy = ContextPolicy::new(ContextStrategy::SlidingWindow, 32, 24, 16, 2);
+        let (mut process, _frees) = test_process(policy);
+
+        process.bind_context_slot(9, ResidentSlotPolicy::ParkAndResume);
+        process.record_model_output("assistant reply", 2);
+        process.mark_resident_prompt_checkpoint();
+
+        assert_eq!(process.pending_resident_prompt_suffix(), "");
+
+        process.record_injected_context("\nOutput:\n2\n", 3);
+
+        assert_eq!(process.pending_resident_prompt_suffix(), "\nOutput:\n2\n");
     }
 
     #[test]
@@ -928,7 +1097,7 @@ mod tests {
     fn summarize_replaces_old_segments_with_summary_segment() {
         let policy = ContextPolicy::new(ContextStrategy::Summarize, 8, 7, 5, 3);
         let (mut process, frees) = test_process(policy);
-        process.context_slot_id = Some(9);
+        process.bind_context_slot(9, ResidentSlotPolicy::ParkAndResume);
         process.tokens.extend([5, 6, 3, 4, 4, 4]);
         process.record_injected_context("system note", 2);
         process.record_model_output("assistant reply reply reply", 4);
@@ -952,7 +1121,7 @@ mod tests {
     fn retrieve_archives_old_segments_and_reinjects_top_k_context() {
         let policy = ContextPolicy::new(ContextStrategy::Retrieve, 8, 7, 5, 2);
         let (mut process, frees) = test_process(policy);
-        process.context_slot_id = Some(13);
+        process.bind_context_slot(13, ResidentSlotPolicy::ParkAndResume);
         process.tokens.extend([5, 6, 3, 4, 4, 4]);
         process.record_injected_context("system note", 2);
         process.record_model_output("assistant reply reply reply", 4);
@@ -1019,7 +1188,7 @@ mod tests {
         for (offset, strategy) in strategies.into_iter().enumerate() {
             let policy = ContextPolicy::new(strategy, 12, 10, 8, 2);
             let (mut process, frees) = test_process(policy);
-            process.context_slot_id = Some((offset as u64) + 21);
+            process.bind_context_slot((offset as u64) + 21, ResidentSlotPolicy::ParkAndResume);
 
             for turn in 0..8 {
                 append_segment_tokens(
@@ -1070,5 +1239,50 @@ mod tests {
             }
             assert!(!frees.lock().expect("lock frees").is_empty());
         }
+    }
+
+    #[test]
+    fn resident_slot_state_tracks_snapshot_lifecycle() {
+        let policy = ContextPolicy::new(ContextStrategy::SlidingWindow, 8, 7, 5, 3);
+        let (mut process, _frees) = test_process(policy);
+
+        assert_eq!(
+            process.resident_slot_state,
+            super::ResidentSlotState::Unbound
+        );
+        assert_eq!(process.resident_slot_state_label(), None);
+
+        process.bind_context_slot(17, ResidentSlotPolicy::ParkAndResume);
+        assert_eq!(
+            process.resident_slot_state,
+            super::ResidentSlotState::Allocated
+        );
+        assert_eq!(
+            process.resident_slot_state_label().as_deref(),
+            Some("allocated")
+        );
+
+        process
+            .mark_resident_slot_snapshot_saved(PathBuf::from("workspace/swap/pid_17_slot_17.swap"));
+        assert_eq!(
+            process.resident_slot_state,
+            super::ResidentSlotState::SnapshotSaved
+        );
+        assert_eq!(
+            process.resident_slot_snapshot_path(),
+            Some(Path::new("workspace/swap/pid_17_slot_17.swap"))
+        );
+
+        process.mark_resident_slot_restoring(PathBuf::from("workspace/swap/pid_17_slot_17.swap"));
+        assert_eq!(
+            process.resident_slot_state,
+            super::ResidentSlotState::Restoring
+        );
+
+        process.mark_resident_slot_allocated();
+        assert_eq!(
+            process.resident_slot_state,
+            super::ResidentSlotState::Allocated
+        );
     }
 }

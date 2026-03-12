@@ -38,6 +38,13 @@ pub(super) fn format_list_json(catalog: &ModelCatalog) -> String {
                 resolved_backend: picked
                     .map(driver_view_for_entry)
                     .and_then(|driver| driver.resolved_backend),
+                resolved_backend_class: picked
+                    .map(driver_view_for_entry)
+                    .and_then(|driver| driver.resolved_backend_class),
+                resolved_backend_capabilities: picked
+                    .map(driver_view_for_entry)
+                    .and_then(|driver| driver.resolved_backend_capabilities)
+                    .map(Into::into),
                 driver_resolution_source: picked
                     .map(driver_view_for_entry)
                     .map(|driver| driver.driver_resolution_source)
@@ -93,6 +100,8 @@ pub(super) fn format_info_json(
             .as_ref()
             .and_then(|meta| meta.backend_preference.clone()),
         resolved_backend: driver.resolved_backend,
+        resolved_backend_class: driver.resolved_backend_class,
+        resolved_backend_capabilities: driver.resolved_backend_capabilities.map(Into::into),
         driver_resolution_source: driver.driver_resolution_source,
         driver_resolution_rationale: driver.driver_resolution_rationale,
         driver_available: driver.driver_available,
@@ -144,6 +153,8 @@ fn format_list_entry(entry: &ModelEntry, selected: Option<&str>) -> ModelCatalog
             .as_ref()
             .and_then(|meta| meta.backend_preference.clone()),
         resolved_backend: driver.resolved_backend,
+        resolved_backend_class: driver.resolved_backend_class,
+        resolved_backend_capabilities: driver.resolved_backend_capabilities.map(Into::into),
         driver_resolution_source: driver.driver_resolution_source,
         driver_resolution_rationale: driver.driver_resolution_rationale,
         driver_available: driver.driver_available,

@@ -2,6 +2,21 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackendCapabilitiesView {
+    pub resident_kv: bool,
+    pub persistent_slots: bool,
+    pub save_restore_slots: bool,
+    pub prompt_cache_reuse: bool,
+    pub streaming_generation: bool,
+    pub structured_output: bool,
+    pub cancel_generation: bool,
+    pub memory_telemetry: bool,
+    pub tool_pause_resume: bool,
+    pub context_compaction_reset: bool,
+    pub parallel_sessions: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlMessage {
     pub message: String,
@@ -45,6 +60,9 @@ pub struct ModelStatus {
     pub loaded_family: String,
     pub loaded_model_path: String,
     pub selected_model_id: String,
+    pub loaded_backend: Option<String>,
+    pub loaded_backend_class: Option<String>,
+    pub loaded_backend_capabilities: Option<BackendCapabilitiesView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,7 +86,7 @@ pub struct MemoryStatus {
     pub swap_faults: u64,
     pub swap_failures: u64,
     pub pending_swaps: usize,
-    pub waiting_pids: usize,
+    pub parked_pids: usize,
     pub oom_events: u64,
     pub swap_worker_crashes: u64,
 }
@@ -85,7 +103,7 @@ pub struct SchedulerStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessesStatus {
     pub active_pids: Vec<u64>,
-    pub waiting_pids: Vec<u64>,
+    pub parked_pids: Vec<u64>,
     pub in_flight_pids: Vec<u64>,
     pub active_processes: Vec<PidStatusResponse>,
 }
@@ -126,6 +144,13 @@ pub struct PidStatusResponse {
     pub tokens_generated: usize,
     pub syscalls_used: usize,
     pub elapsed_secs: f64,
+    pub context_slot_id: Option<u64>,
+    pub resident_slot_policy: Option<String>,
+    pub resident_slot_state: Option<String>,
+    pub resident_slot_snapshot_path: Option<String>,
+    pub backend_id: Option<String>,
+    pub backend_class: Option<String>,
+    pub backend_capabilities: Option<BackendCapabilitiesView>,
     pub context: Option<ContextStatusSnapshot>,
 }
 
@@ -186,6 +211,8 @@ pub struct ModelCatalogEntry {
     pub metadata_source: Option<String>,
     pub backend_preference: Option<String>,
     pub resolved_backend: Option<String>,
+    pub resolved_backend_class: Option<String>,
+    pub resolved_backend_capabilities: Option<BackendCapabilitiesView>,
     pub driver_resolution_source: String,
     pub driver_resolution_rationale: String,
     pub driver_available: Option<bool>,
@@ -201,6 +228,8 @@ pub struct ModelRoutingRecommendation {
     pub family: Option<String>,
     pub backend_preference: Option<String>,
     pub resolved_backend: Option<String>,
+    pub resolved_backend_class: Option<String>,
+    pub resolved_backend_capabilities: Option<BackendCapabilitiesView>,
     pub driver_resolution_source: String,
     pub driver_resolution_rationale: String,
     pub driver_available: Option<bool>,
@@ -223,6 +252,8 @@ pub struct ModelInfoResponse {
     pub metadata_source: Option<String>,
     pub backend_preference: Option<String>,
     pub resolved_backend: Option<String>,
+    pub resolved_backend_class: Option<String>,
+    pub resolved_backend_capabilities: Option<BackendCapabilitiesView>,
     pub driver_resolution_source: String,
     pub driver_resolution_rationale: String,
     pub driver_available: Option<bool>,
@@ -244,6 +275,8 @@ pub struct SelectModelResult {
 pub struct LoadModelResult {
     pub family: String,
     pub backend: String,
+    pub backend_class: String,
+    pub backend_capabilities: BackendCapabilitiesView,
     pub driver_source: String,
     pub driver_rationale: String,
     pub path: String,

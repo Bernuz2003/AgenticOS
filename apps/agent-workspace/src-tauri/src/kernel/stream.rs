@@ -297,25 +297,46 @@ pub fn augment_timeline_with_tool_results(
     mut timeline: TimelineSnapshot,
     audit_entries: &[AuditLogEntry],
 ) -> TimelineSnapshot {
-    if audit_entries.is_empty() {
+    let total_tool_calls = timeline
+        .items
+        .iter()
+        .filter(|item| matches!(item.kind, TimelineItemKind::ToolCall))
+        .count();
+
+    if audit_entries.is_empty() && total_tool_calls == 0 {
         return timeline;
     }
 
     let mut augmented = Vec::new();
-    let mut tool_results = audit_entries.iter();
+    let mut tool_results = audit_entries.iter().peekable();
     let mut trailing = Vec::new();
+    let mut tool_call_ordinal = 0usize;
 
-    for item in timeline.items {
-        let is_tool_call = matches!(item.kind, TimelineItemKind::ToolCall);
-        augmented.push(item);
-        if is_tool_call {
+    for mut item in timeline.items {
+        if matches!(item.kind, TimelineItemKind::ToolCall) {
+            tool_call_ordinal += 1;
+            let is_last_tool_call = tool_call_ordinal == total_tool_calls;
+            let has_audit_result = tool_results.peek().is_some();
+
+            if timeline.running && is_last_tool_call && !has_audit_result {
+                item.status = "dispatching".to_string();
+            }
+
+            augmented.push(item);
             if let Some(entry) = tool_results.next() {
                 augmented.push(tool_result_item(
                     &timeline.session_id,
                     augmented.len() + 1,
                     entry,
                 ));
+            } else if timeline.running && is_last_tool_call {
+                augmented.push(tool_dispatch_item(
+                    &timeline.session_id,
+                    augmented.len() + 1,
+                ));
             }
+        } else {
+            augmented.push(item);
         }
     }
 
@@ -433,13 +454,13 @@ fn parse_stream_segments(item_prefix: &str, stream: &str, running: bool) -> Vec<
 
         match next_marker {
             None => {
-                    push_timeline_text_item(
-                        &mut items,
-                        item_prefix,
-                        &mut item_index,
-                        TimelineItemKind::AssistantMessage,
-                        remaining,
-                        if running { "streaming" } else { "complete" },
+                push_timeline_text_item(
+                    &mut items,
+                    item_prefix,
+                    &mut item_index,
+                    TimelineItemKind::AssistantMessage,
+                    remaining,
+                    if running { "streaming" } else { "complete" },
                 );
                 break;
             }
@@ -687,6 +708,15 @@ fn tool_result_item(session_id: &str, item_index: usize, entry: &AuditLogEntry) 
     }
 }
 
+fn tool_dispatch_item(session_id: &str, item_index: usize) -> TimelineItem {
+    TimelineItem {
+        id: format!("{}-tool-dispatch-{}", session_id, item_index),
+        kind: TimelineItemKind::SystemEvent,
+        text: "Tool dispatch in progress: il kernel ha intercettato la syscall e sta aspettando il risultato del worker.".to_string(),
+        status: "streaming".to_string(),
+    }
+}
+
 fn authenticate(stream: &mut TcpStream, workspace_root: &Path) -> Result<(), String> {
     let token = load_token(workspace_root)?;
     if token.is_empty() {
@@ -714,7 +744,9 @@ fn load_token(workspace_root: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_stream_segments, TimelineItemKind};
+    use super::{augment_timeline_with_tool_results, parse_stream_segments, TimelineItemKind};
+    use crate::kernel::audit::AuditLogEntry;
+    use crate::models::kernel::TimelineSnapshot;
 
     #[test]
     fn parse_stream_segments_splits_thinking_tool_and_answer() {
@@ -776,5 +808,70 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert!(matches!(items[0].kind, TimelineItemKind::AssistantMessage));
         assert_eq!(items[0].text, stream);
+    }
+
+    #[test]
+    fn augment_timeline_marks_last_tool_call_as_dispatching_when_audit_is_pending() {
+        let timeline = TimelineSnapshot {
+            session_id: "pid-7".to_string(),
+            pid: 7,
+            running: true,
+            workload: "code".to_string(),
+            source: "live_exec".to_string(),
+            fallback_notice: None,
+            error: None,
+            items: parse_stream_segments(
+                "pid-7-turn-1",
+                "TOOL:calc {\"expression\":\"1+1\"}\n",
+                true,
+            ),
+        };
+
+        let augmented = augment_timeline_with_tool_results(timeline, &[]);
+        assert_eq!(augmented.items.len(), 2);
+        assert!(matches!(
+            augmented.items[0].kind,
+            TimelineItemKind::ToolCall
+        ));
+        assert_eq!(augmented.items[0].status, "dispatching");
+        assert!(matches!(
+            augmented.items[1].kind,
+            TimelineItemKind::SystemEvent
+        ));
+        assert_eq!(augmented.items[1].status, "streaming");
+    }
+
+    #[test]
+    fn augment_timeline_pairs_completed_tool_calls_with_audit_results() {
+        let timeline = TimelineSnapshot {
+            session_id: "pid-8".to_string(),
+            pid: 8,
+            running: false,
+            workload: "code".to_string(),
+            source: "live_exec".to_string(),
+            fallback_notice: None,
+            error: None,
+            items: parse_stream_segments("pid-8-turn-1", "[[CALC: 2 + 2]]\n", false),
+        };
+        let audit_entries = vec![AuditLogEntry {
+            pid: 8,
+            success: true,
+            should_kill: false,
+            duration_ms: 4,
+            command: "[[CALC: 2 + 2]]".to_string(),
+            detail: "Output:\n4".to_string(),
+        }];
+
+        let augmented = augment_timeline_with_tool_results(timeline, &audit_entries);
+        assert_eq!(augmented.items.len(), 2);
+        assert!(matches!(
+            augmented.items[0].kind,
+            TimelineItemKind::ToolCall
+        ));
+        assert!(matches!(
+            augmented.items[1].kind,
+            TimelineItemKind::ToolResult
+        ));
+        assert_eq!(augmented.items[1].status, "success");
     }
 }

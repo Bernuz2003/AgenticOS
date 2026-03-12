@@ -33,7 +33,7 @@ mod tests {
 
     use crate::commands::MetricsState;
     use crate::engine::LLMEngine;
-    use crate::memory::{MemoryConfig, NeuralMemory};
+    use crate::memory::NeuralMemory;
     use crate::model_catalog::ModelCatalog;
     use crate::model_catalog::WorkloadClass;
     use crate::orchestrator::Orchestrator;
@@ -234,12 +234,7 @@ mod tests {
         Vec<u64>,
         MetricsState,
     ) {
-        let memory = NeuralMemory::new(MemoryConfig {
-            block_size: 16,
-            hidden_dim: 256,
-            total_memory_mb: 64,
-        })
-        .expect("memory init");
+        let memory = NeuralMemory::new().expect("memory init");
         let engine_state: Option<LLMEngine> = None;
         let catalog = ModelCatalog::discover(repository_path("models")).expect("catalog discover");
         let shutdown_requested = Arc::new(AtomicBool::new(false));
@@ -257,9 +252,7 @@ mod tests {
     }
 
     #[allow(clippy::type_complexity)]
-    fn setup_shared_state_with_memory_mb(
-        total_memory_mb: usize,
-    ) -> (
+    fn setup_shared_state_for_swap_pressure() -> (
         NeuralMemory,
         Option<LLMEngine>,
         ModelCatalog,
@@ -270,12 +263,7 @@ mod tests {
         Vec<u64>,
         MetricsState,
     ) {
-        let memory = NeuralMemory::new(MemoryConfig {
-            block_size: 16,
-            hidden_dim: 256,
-            total_memory_mb,
-        })
-        .expect("memory init");
+        let memory = NeuralMemory::new().expect("memory init");
         let engine_state: Option<LLMEngine> = None;
         let catalog = ModelCatalog::discover(repository_path("models")).expect("catalog discover");
         let shutdown_requested = Arc::new(AtomicBool::new(false));
@@ -1415,7 +1403,7 @@ mod tests {
             in_flight,
             mut pending_kills,
             mut metrics,
-        ) = setup_shared_state_with_memory_mb(0);
+        ) = setup_shared_state_for_swap_pressure();
 
         let swap_dir = format!(
             "workspace/test_transport_swap_{}",

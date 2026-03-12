@@ -167,6 +167,15 @@ export function TimelinePane({
             }
 
             if (item.kind === "tool_call") {
+              const renderedToolCall = item.text.trim().startsWith("TOOL:")
+                ? item.text
+                : `[[${item.text}]]`;
+              const liveBadge =
+                item.status === "streaming"
+                  ? "streaming"
+                  : item.status === "dispatching"
+                    ? "dispatching"
+                    : null;
               return (
                 <div
                   key={item.id}
@@ -175,14 +184,14 @@ export function TimelinePane({
                   <div className="flex items-center gap-3 font-semibold">
                     <Wrench className="h-5 w-5" />
                     Tool Call
-                    {item.status === "streaming" ? (
+                    {liveBadge ? (
                       <span className="rounded-full bg-cyan-100 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-cyan-700">
-                        streaming
+                        {liveBadge}
                       </span>
                     ) : null}
                   </div>
                   <div className="mt-3 rounded-2xl bg-slate-950 px-4 py-3 font-mono text-[13px] text-cyan-50">
-                    [[{item.text}]]
+                    {renderedToolCall}
                   </div>
                 </div>
               );

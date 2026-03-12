@@ -1,8 +1,7 @@
-use super::metadata::{parse_gguf_metadata_map, parse_tokenizer_metadata_json};
+use super::metadata::parse_tokenizer_metadata_json;
 use super::*;
+use crate::backend::TestExternalEndpointOverrideGuard;
 use agentic_control_models::{ModelCatalogSnapshot, ModelInfoResponse};
-use candle_core::quantized::gguf_file;
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -99,27 +98,6 @@ fn metadata_sidecar_overrides_family_and_exposes_capabilities() {
         .ends_with("metadata.json"));
 
     let _ = fs::remove_dir_all(base);
-}
-
-#[test]
-fn parse_gguf_metadata_extracts_architecture_and_template() {
-    let mut metadata_map = HashMap::new();
-    metadata_map.insert(
-        "general.architecture".to_string(),
-        gguf_file::Value::String("qwen2".to_string()),
-    );
-    metadata_map.insert(
-        "tokenizer.chat_template".to_string(),
-        gguf_file::Value::String("<{role}>{content}</{role}>".to_string()),
-    );
-
-    let parsed = parse_gguf_metadata_map(&metadata_map).expect("gguf metadata parsed");
-    assert_eq!(parsed.family.as_deref(), Some("Qwen"));
-    assert_eq!(parsed.architecture.as_deref(), Some("qwen2"));
-    assert_eq!(
-        parsed.chat_template.as_deref(),
-        Some("<{role}>{content}</{role}>")
-    );
 }
 
 #[test]
@@ -220,6 +198,7 @@ fn metadata_capabilities_drive_routing_before_family_heuristics() {
 
 #[test]
 fn resolve_load_target_prefers_model_id_even_if_contains_slash() {
+    let _endpoint = TestExternalEndpointOverrideGuard::set("http://127.0.0.1:18080");
     let base = mk_temp_dir("agenticos_catalog_id");
     let models = base.join("models");
     let qwen_dir = models.join("qwen2.5-14b");
@@ -261,6 +240,7 @@ fn parse_and_infer_workload() {
 
 #[test]
 fn format_list_json_exposes_models_and_routing() {
+    let _endpoint = TestExternalEndpointOverrideGuard::set("http://127.0.0.1:18080");
     let base = mk_temp_dir("agenticos_catalog_json");
     let models = base.join("models");
     let llama_dir = models.join("llama3.1-8b");
@@ -281,12 +261,17 @@ fn format_list_json_exposes_models_and_routing() {
     assert_eq!(payload.total_models, 2);
     assert!(!payload.models.is_empty());
     assert!(!payload.routing_recommendations.is_empty());
+    assert!(payload
+        .models
+        .iter()
+        .all(|entry| entry.resolved_backend_class.is_some()));
 
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn format_list_json_exposes_routing_source_and_score() {
+    let _endpoint = TestExternalEndpointOverrideGuard::set("http://127.0.0.1:18080");
     let base = mk_temp_dir("agenticos_catalog_routing_meta_json");
     let models = base.join("models");
     let qwen_dir = models.join("future-model");
@@ -320,12 +305,20 @@ fn format_list_json_exposes_routing_source_and_score() {
     );
     assert_eq!(
         code_route.resolved_backend.as_deref(),
-        Some("candle.quantized_qwen2")
+        Some("external-llamacpp")
     );
     assert_eq!(
-        code_route.driver_resolution_source,
-        "metadata-preference-fallback"
+        code_route.resolved_backend_class.as_deref(),
+        Some("resident_local")
     );
+    assert_eq!(
+        code_route
+            .resolved_backend_capabilities
+            .as_ref()
+            .map(|caps| caps.tool_pause_resume),
+        Some(true)
+    );
+    assert_eq!(code_route.driver_resolution_source, "metadata-preference");
     assert_eq!(code_route.capability_score, Some(0.93));
 
     let _ = fs::remove_dir_all(base);
@@ -333,6 +326,7 @@ fn format_list_json_exposes_routing_source_and_score() {
 
 #[test]
 fn format_info_json_exposes_unresolved_driver_when_no_loadable_backend_exists() {
+    let _endpoint = TestExternalEndpointOverrideGuard::clear();
     let base = mk_temp_dir("agenticos_catalog_driver_info");
     let models = base.join("models");
     let mistral_dir = models.join("mistral-7b");
@@ -354,6 +348,8 @@ fn format_info_json_exposes_unresolved_driver_when_no_loadable_backend_exists() 
     .expect("json info");
 
     assert_eq!(info.resolved_backend, None);
+    assert_eq!(info.resolved_backend_class, None);
+    assert_eq!(info.resolved_backend_capabilities, None);
     assert_eq!(info.driver_resolution_source, "unresolved");
     assert!(info
         .driver_resolution_rationale
@@ -364,6 +360,7 @@ fn format_info_json_exposes_unresolved_driver_when_no_loadable_backend_exists() 
 
 #[test]
 fn format_info_json_exposes_unresolved_driver_for_unsupported_architecture() {
+    let _endpoint = TestExternalEndpointOverrideGuard::clear();
     let base = mk_temp_dir("agenticos_catalog_qwen35_driver_info");
     let models = base.join("models");
     let qwen_dir = models.join("qwen3.5-9b");
@@ -386,6 +383,8 @@ fn format_info_json_exposes_unresolved_driver_for_unsupported_architecture() {
 
     assert_eq!(info.architecture.as_deref(), Some("qwen35"));
     assert_eq!(info.resolved_backend, None);
+    assert_eq!(info.resolved_backend_class, None);
+    assert_eq!(info.resolved_backend_capabilities, None);
     assert_eq!(info.driver_resolution_source, "unresolved");
     assert!(info.driver_resolution_rationale.contains("qwen35"));
 

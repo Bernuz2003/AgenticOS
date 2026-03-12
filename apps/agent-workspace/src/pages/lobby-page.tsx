@@ -257,7 +257,7 @@ export function LobbyPage() {
           ) : null}
           {actionLoading === "load" ? (
             <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
-              Loading model... il kernel continua a lavorare finche' non arriva la risposta reale.
+              Loading model...
             </div>
           ) : null}
           {actionError ? (

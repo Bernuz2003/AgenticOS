@@ -119,8 +119,12 @@ pub async fn fetch_timeline_snapshot(
         let snapshot = bridge
             .fetch_workspace_snapshot(pid)
             .map_err(|err| err.to_string())?;
-        if stream::hydrate_session_from_disk(&timeline_store, &workspace_root, pid, Some(&snapshot))?
-        {
+        if stream::hydrate_session_from_disk(
+            &timeline_store,
+            &workspace_root,
+            pid,
+            Some(&snapshot),
+        )? {
             if let Some(timeline) = timeline_store
                 .lock()
                 .map_err(|_| "Timeline store lock poisoned".to_string())?
@@ -224,7 +228,9 @@ pub async fn send_session_input(
         let mut bridge = bridge
             .lock()
             .map_err(|_| "Bridge state lock poisoned".to_string())?;
-        let result = bridge.send_input(pid, &prompt).map_err(|err| err.to_string())?;
+        let result = bridge
+            .send_input(pid, &prompt)
+            .map_err(|err| err.to_string())?;
 
         if let Ok(mut store) = timeline_store.lock() {
             store.append_user_turn(pid, prompt);

@@ -1,11 +1,13 @@
 use std::collections::HashSet;
 
 use agentic_control_models::{
-    ContextStatusSnapshot as ControlContextStatusSnapshot, GenerationStatus, MemoryStatus,
-    ModelStatus, OrchStatusResponse, OrchSummaryResponse, OrchTaskEntry, OrchestrationsStatus,
-    PidStatusResponse, ProcessesStatus, SchedulerStatus, StatusResponse,
+    BackendCapabilitiesView, ContextStatusSnapshot as ControlContextStatusSnapshot,
+    GenerationStatus, MemoryStatus, ModelStatus, OrchStatusResponse, OrchSummaryResponse,
+    OrchTaskEntry, OrchestrationsStatus, PidStatusResponse, ProcessesStatus, SchedulerStatus,
+    StatusResponse,
 };
 
+use crate::backend::{BackendCapabilities, RuntimeModel};
 use crate::commands::MetricsState;
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
@@ -51,6 +53,18 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                     loaded_family: format!("{:?}", loaded_family),
                     loaded_model_path: loaded_path,
                     selected_model_id: selected_model_id.clone(),
+                    loaded_backend: Some(engine.backend_id.clone()),
+                    loaded_backend_class: Some(
+                        engine
+                            .master_model
+                            .as_ref()
+                            .map(|model| model.backend_class().as_str().to_string())
+                            .unwrap_or_else(|| "unknown".to_string()),
+                    ),
+                    loaded_backend_capabilities: engine
+                        .master_model
+                        .as_ref()
+                        .map(|model| model.backend_capabilities().into()),
                 },
                 Some(GenerationStatus {
                     temperature: cfg.temperature,
@@ -60,14 +74,14 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                 }),
                 {
                     let active_pids = engine.list_active_pids();
-                    let waiting_pids = engine.list_waiting_pids();
+                    let parked_pids = engine.list_parked_pids();
                     let in_flight_pids: Vec<u64> = deps.in_flight.iter().copied().collect();
                     let restored_pids = deps.scheduler.restored_pids();
                     let live_pids: Vec<u64> = engine.processes.keys().copied().collect();
                     let all_pids = collect_unique_pids([
                         live_pids.as_slice(),
                         active_pids.as_slice(),
-                        waiting_pids.as_slice(),
+                        parked_pids.as_slice(),
                         in_flight_pids.as_slice(),
                         restored_pids.as_slice(),
                     ]);
@@ -77,7 +91,7 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                         .collect();
                     ProcessesStatus {
                         active_pids,
-                        waiting_pids,
+                        parked_pids,
                         in_flight_pids,
                         active_processes,
                     }
@@ -91,11 +105,14 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                     loaded_family: "Unknown".to_string(),
                     loaded_model_path: String::new(),
                     selected_model_id: selected_model_id.clone(),
+                    loaded_backend: None,
+                    loaded_backend_class: None,
+                    loaded_backend_capabilities: None,
                 },
                 None,
                 ProcessesStatus {
                     active_pids: vec![],
-                    waiting_pids: vec![],
+                    parked_pids: vec![],
                     in_flight_pids: vec![],
                     active_processes: deps
                         .scheduler
@@ -127,7 +144,7 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
             swap_faults: mem.swap_faults,
             swap_failures: mem.swap_failures,
             pending_swaps: mem.pending_swaps,
-            waiting_pids: mem.waiting_pids,
+            parked_pids: mem.parked_pids,
             oom_events: mem.oom_events,
             swap_worker_crashes: mem.swap_worker_crashes,
         },
@@ -238,6 +255,13 @@ fn build_pid_status_or_placeholder(
         tokens_generated: 0,
         syscalls_used: 0,
         elapsed_secs: 0.0,
+        context_slot_id: None,
+        resident_slot_policy: None,
+        resident_slot_state: None,
+        resident_slot_snapshot_path: None,
+        backend_id: None,
+        backend_class: None,
+        backend_capabilities: None,
         context: None,
     })
 }
@@ -252,6 +276,8 @@ fn build_pid_status_response_checked(
 
     if let Some(engine) = engine {
         if let Some(process) = engine.processes.get(&pid) {
+            let (backend_id, backend_class, backend_capabilities) =
+                runtime_backend_status(&process.model);
             return Some(PidStatusResponse {
                 pid,
                 owner_id: process.owner_id,
@@ -282,6 +308,15 @@ fn build_pid_status_response_checked(
                 tokens_generated: sched.as_ref().map(|s| s.tokens_generated).unwrap_or(0),
                 syscalls_used: sched.as_ref().map(|s| s.syscalls_used).unwrap_or(0),
                 elapsed_secs: sched.as_ref().map(|s| s.elapsed_secs).unwrap_or(0.0),
+                context_slot_id: process.context_slot_id,
+                resident_slot_policy: process.resident_slot_policy_label(),
+                resident_slot_state: process.resident_slot_state_label(),
+                resident_slot_snapshot_path: process
+                    .resident_slot_snapshot_path()
+                    .map(|path| path.display().to_string()),
+                backend_id,
+                backend_class,
+                backend_capabilities,
                 context: Some(map_context_snapshot(process.context_status_snapshot())),
             });
         }
@@ -327,6 +362,13 @@ fn checked_out_pid_status_response(
         tokens_generated: sched.map(|s| s.tokens_generated).unwrap_or(0),
         syscalls_used: sched.map(|s| s.syscalls_used).unwrap_or(0),
         elapsed_secs: sched.map(|s| s.elapsed_secs).unwrap_or(0.0),
+        context_slot_id: metadata.context_slot_id,
+        resident_slot_policy: metadata.resident_slot_policy.clone(),
+        resident_slot_state: metadata.resident_slot_state.clone(),
+        resident_slot_snapshot_path: metadata.resident_slot_snapshot_path.clone(),
+        backend_id: metadata.backend_id.clone(),
+        backend_class: metadata.backend_class.clone(),
+        backend_capabilities: map_backend_capabilities(metadata.backend_capabilities),
         context: Some(map_context_snapshot(metadata.context.clone())),
     }
 }
@@ -354,6 +396,13 @@ fn restored_pid_status_response(
         tokens_generated: sched.map(|s| s.tokens_generated).unwrap_or(0),
         syscalls_used: sched.map(|s| s.syscalls_used).unwrap_or(0),
         elapsed_secs: sched.map(|s| s.elapsed_secs).unwrap_or(0.0),
+        context_slot_id: metadata.context_slot_id,
+        resident_slot_policy: metadata.resident_slot_policy.clone(),
+        resident_slot_state: metadata.resident_slot_state.clone(),
+        resident_slot_snapshot_path: metadata.resident_slot_snapshot_path.clone(),
+        backend_id: metadata.backend_id.clone(),
+        backend_class: metadata.backend_class.clone(),
+        backend_capabilities: map_backend_capabilities(metadata.backend_capabilities),
         context: Some(map_context_snapshot(
             crate::process::ContextStatusSnapshot::from_parts(
                 &metadata.context_policy,
@@ -361,6 +410,26 @@ fn restored_pid_status_response(
             ),
         )),
     }
+}
+
+fn runtime_backend_status(
+    model: &RuntimeModel,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<BackendCapabilitiesView>,
+) {
+    (
+        Some(model.backend_id().to_string()),
+        Some(model.backend_class().as_str().to_string()),
+        Some(model.backend_capabilities().into()),
+    )
+}
+
+fn map_backend_capabilities(
+    capabilities: Option<BackendCapabilities>,
+) -> Option<BackendCapabilitiesView> {
+    capabilities.map(Into::into)
 }
 
 fn map_context_snapshot(
@@ -403,11 +472,157 @@ fn build_orchestration_summaries(deps: &StatusSnapshotDeps<'_>) -> Vec<OrchSumma
 
 #[cfg(test)]
 mod tests {
-    use super::collect_unique_pids;
+    use super::{
+        checked_out_pid_status_response, collect_unique_pids, restored_pid_status_response,
+        runtime_backend_status,
+    };
+    use crate::backend::{
+        ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult,
+        RuntimeModel,
+    };
+    use crate::process::{ContextPolicy, ContextState, ContextStatusSnapshot, ContextStrategy};
+    use crate::prompting::PromptFamily;
+    use crate::scheduler::{CheckedOutProcessMetadata, RestoredProcessMetadata};
+    use anyhow::Result;
 
     #[test]
     fn collect_unique_pids_preserves_first_seen_order() {
         let unique = collect_unique_pids([&[1, 2, 3], &[3, 4], &[2, 5], &[]]);
         assert_eq!(unique, vec![1, 2, 3, 4, 5]);
+    }
+
+    struct FakeResidentBackend;
+
+    impl InferenceBackend for FakeResidentBackend {
+        fn backend_id(&self) -> &'static str {
+            "external-llamacpp"
+        }
+
+        fn family(&self) -> PromptFamily {
+            PromptFamily::Qwen
+        }
+
+        fn generate_step(
+            &mut self,
+            _request: InferenceStepRequest<'_>,
+        ) -> Result<InferenceStepResult> {
+            panic!("generate_step should not be called in status snapshot tests");
+        }
+
+        fn duplicate_boxed(&self) -> Option<Box<dyn crate::backend::ModelBackend>> {
+            None
+        }
+    }
+
+    impl ContextSlotPersistence for FakeResidentBackend {}
+
+    #[test]
+    fn runtime_backend_status_reports_resident_backend_capabilities() {
+        let model = RuntimeModel::from_boxed_backend(Box::new(FakeResidentBackend));
+
+        let (backend_id, backend_class, backend_capabilities) = runtime_backend_status(&model);
+
+        assert_eq!(backend_id.as_deref(), Some("external-llamacpp"));
+        assert_eq!(backend_class.as_deref(), Some("resident_local"));
+        assert_eq!(
+            backend_capabilities
+                .as_ref()
+                .map(|capabilities| capabilities.persistent_slots),
+            Some(true)
+        );
+        assert_eq!(
+            backend_capabilities
+                .as_ref()
+                .map(|capabilities| capabilities.resident_kv),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn checked_out_status_preserves_backend_slot_metadata() {
+        let policy = ContextPolicy::new(ContextStrategy::SlidingWindow, 256, 256, 128, 4);
+        let context = ContextStatusSnapshot::from_parts(&policy, &ContextState::default());
+        let response = checked_out_pid_status_response(
+            42,
+            None,
+            None,
+            &CheckedOutProcessMetadata {
+                owner_id: 7,
+                state: "InFlight".to_string(),
+                tokens: 128,
+                index_pos: 64,
+                max_tokens: 512,
+                context_slot_id: Some(9),
+                resident_slot_policy: Some("park_and_resume".to_string()),
+                resident_slot_state: Some("allocated".to_string()),
+                resident_slot_snapshot_path: Some("workspace/swap/pid_42_slot_9.swap".to_string()),
+                backend_id: Some("external-llamacpp".to_string()),
+                backend_class: Some("resident_local".to_string()),
+                backend_capabilities: Some(crate::backend::BackendCapabilities {
+                    resident_kv: true,
+                    persistent_slots: true,
+                    save_restore_slots: true,
+                    prompt_cache_reuse: true,
+                    streaming_generation: false,
+                    structured_output: false,
+                    cancel_generation: false,
+                    memory_telemetry: false,
+                    tool_pause_resume: true,
+                    context_compaction_reset: true,
+                    parallel_sessions: true,
+                }),
+                context,
+            },
+        );
+
+        assert_eq!(response.context_slot_id, Some(9));
+        assert_eq!(
+            response.resident_slot_policy.as_deref(),
+            Some("park_and_resume")
+        );
+        assert_eq!(response.resident_slot_state.as_deref(), Some("allocated"));
+        assert_eq!(
+            response.resident_slot_snapshot_path.as_deref(),
+            Some("workspace/swap/pid_42_slot_9.swap")
+        );
+        assert_eq!(response.backend_id.as_deref(), Some("external-llamacpp"));
+        assert_eq!(response.backend_class.as_deref(), Some("resident_local"));
+        assert_eq!(
+            response
+                .backend_capabilities
+                .as_ref()
+                .map(|capabilities| capabilities.save_restore_slots),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn restored_status_can_surface_absent_backend_slot_metadata() {
+        let response = restored_pid_status_response(
+            77,
+            None,
+            &RestoredProcessMetadata {
+                owner_id: 3,
+                state: "Restored".to_string(),
+                token_count: 32,
+                max_tokens: 256,
+                context_slot_id: None,
+                resident_slot_policy: None,
+                resident_slot_state: None,
+                resident_slot_snapshot_path: None,
+                backend_id: None,
+                backend_class: None,
+                backend_capabilities: None,
+                context_policy: ContextPolicy::new(ContextStrategy::Summarize, 512, 384, 192, 4),
+                context_state: ContextState::default(),
+            },
+        );
+
+        assert_eq!(response.context_slot_id, None);
+        assert_eq!(response.resident_slot_state, None);
+        assert_eq!(response.resident_slot_snapshot_path, None);
+        assert_eq!(response.backend_id, None);
+        assert_eq!(response.backend_class, None);
+        assert_eq!(response.backend_capabilities, None);
     }
 }

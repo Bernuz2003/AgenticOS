@@ -54,9 +54,10 @@ pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u
                     reason: "model_loaded".to_string(),
                 });
                 let message = format!(
-                        "Master Model Loaded. family={:?} backend={} driver_source={} rationale={} path={}",
+                        "Master Model Loaded. family={:?} backend={} backend_class={} driver_source={} rationale={} path={}",
                         loaded.family,
                         loaded.backend_id,
+                        loaded.backend_class.as_str(),
                         loaded.driver_source,
                         loaded.driver_rationale,
                         loaded.path.display()
@@ -69,6 +70,8 @@ pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u
                     &LoadModelResult {
                         family: format!("{:?}", loaded.family),
                         backend: loaded.backend_id,
+                        backend_class: loaded.backend_class.as_str().to_string(),
+                        backend_capabilities: loaded.backend_capabilities.into(),
                         driver_source: loaded.driver_source,
                         driver_rationale: loaded.driver_rationale,
                         path: loaded.path.display().to_string(),

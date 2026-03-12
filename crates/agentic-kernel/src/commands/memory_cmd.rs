@@ -19,13 +19,13 @@ pub(crate) fn handle_memory_write(ctx: MemoryCommandContext<'_>, payload: &[u8])
             let backend_id = engine_state
                 .as_ref()
                 .map(|engine| engine.loaded_backend_id())
-                .or(Some("candle.slot-compat"));
+                .or(Some("external-llamacpp"));
             match memory.write_for_pid_bytes_with_backend(pid, &raw, backend_id) {
                 Ok(msg) => {
-                    let is_waiting = memory.is_pid_waiting_for_memory(pid);
+                    let is_parked = memory.is_pid_parked(pid);
                     pending_events.push(KernelEvent::WorkspaceChanged {
                         pid,
-                        reason: if is_waiting {
+                        reason: if is_parked {
                             "memory_queued".to_string()
                         } else {
                             "memory_written".to_string()
@@ -35,9 +35,9 @@ pub(crate) fn handle_memory_write(ctx: MemoryCommandContext<'_>, payload: &[u8])
                         reason: "memory_updated".to_string(),
                     });
 
-                    if is_waiting {
+                    if is_parked {
                         if let Some(engine) = engine_state.as_mut() {
-                            let _ = engine.set_process_waiting_for_memory(pid);
+                            let _ = engine.park_process(pid);
                         }
                         protocol::response_protocol_ok(
                             client,

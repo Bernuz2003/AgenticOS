@@ -3,7 +3,6 @@ use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub(super) struct PreparedSwapTarget {
-    pub tmp_path: PathBuf,
     pub final_path: PathBuf,
 }
 
@@ -63,15 +62,11 @@ pub(super) fn prepare_swap_target(
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let file_stem = format!("pid_{}_slot_{}_{}", pid, slot_id, now_ns);
-    let tmp_path = base_dir.join(format!("{}.tmp", file_stem));
     let final_path = base_dir.join(format!("{}.swap", file_stem));
 
-    if tmp_path.parent() != Some(base_dir) || final_path.parent() != Some(base_dir) {
+    if final_path.parent() != Some(base_dir) {
         return Err("Swap path safety violation: computed file path escaped base dir".to_string());
     }
 
-    Ok(PreparedSwapTarget {
-        tmp_path,
-        final_path,
-    })
+    Ok(PreparedSwapTarget { final_path })
 }

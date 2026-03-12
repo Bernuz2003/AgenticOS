@@ -11,12 +11,8 @@ checkpoint_path = "workspace/checkpoint.json"
 kernel_token_path = "workspace/.kernel_token"
 
 [memory]
-active = true
 swap_async = true
 swap_dir = "workspace/swap"
-block_size = 16
-hidden_dim = 256
-total_memory_mb = 64
 token_slot_quota_per_pid = 4096
 
 [checkpoint]
@@ -27,7 +23,7 @@ disabled = false
 
 [external_llamacpp]
 endpoint = "http://127.0.0.1:8080"
-timeout_ms = 120000
+timeout_ms = 6000000
 chunk_tokens = 1
 
 [exec]
