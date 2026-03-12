@@ -1,15 +1,94 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, LoaderCircle, Power } from "lucide-react";
+import { CheckCircle2, LoaderCircle, Power, Cloud } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   listModels,
   loadModel,
   shutdownKernel,
+  type BackendCapabilities,
+  type BackendTelemetry,
   type ModelCatalogSnapshot,
+  type RemoteRuntimeModel,
 } from "../lib/api";
+import {
+  isLoadedLocalCatalogModel,
+  matchesLoadedRemoteTarget,
+  selectRemoteCatalogTarget,
+} from "../lib/remote-catalog";
 import { NewAgentCard } from "../components/lobby/new-agent-card";
 import { SessionCard } from "../components/lobby/session-card";
 import { useSessionsStore } from "../store/sessions-store";
+
+const CLOUD_BACKEND_STORAGE_KEY = "agenticos.cloudBackendId";
+const CLOUD_MODEL_STORAGE_KEY = "agenticos.cloudModelId";
+
+function loadStoredDraft(key: string, fallback: string): string {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+
+  const value = window.localStorage.getItem(key)?.trim();
+  return value ? value : fallback;
+}
+
+function summarizeBackendCapabilities(capabilities: BackendCapabilities | null): string {
+  if (!capabilities) {
+    return "capabilities n/a";
+  }
+
+  const enabled: string[] = [];
+  if (capabilities.streamingGeneration) {
+    enabled.push("streaming");
+  }
+  if (capabilities.structuredOutput) {
+    enabled.push("structured-output");
+  }
+  if (capabilities.toolPauseResume) {
+    enabled.push("tool-pause");
+  }
+  if (capabilities.memoryTelemetry) {
+    enabled.push("memory-telemetry");
+  }
+
+  return enabled.length > 0 ? enabled.join(" · ") : "no advanced capabilities";
+}
+
+function summarizeBackendTelemetry(telemetry: BackendTelemetry | null): string {
+  if (!telemetry) {
+    return "telemetry n/a";
+  }
+
+  return [
+    `${telemetry.requestsTotal} req`,
+    `${telemetry.inputTokensTotal}/${telemetry.outputTokensTotal} tok`,
+    `$${telemetry.estimatedCostUsd.toFixed(6)}`,
+  ].join(" · ");
+}
+
+function summarizeRemoteRuntimeModel(model: RemoteRuntimeModel | null): string {
+  if (!model) {
+    return "remote model n/a";
+  }
+
+  return [
+    `${model.providerLabel} · ${model.modelLabel}`,
+    model.contextWindowTokens ? `${model.contextWindowTokens.toLocaleString()} ctx` : "ctx n/a",
+    model.maxOutputTokens ? `${model.maxOutputTokens.toLocaleString()} max out` : "out n/a",
+    model.supportsStructuredOutput ? "structured output" : "plain output",
+  ].join(" · ");
+}
+
+function summarizeCloudPricing(model: RemoteRuntimeModel | null): string {
+  if (!model) {
+    return "pricing n/a";
+  }
+
+  const input =
+    model.inputPriceUsdPerMtok === null ? "in n/a" : `in $${model.inputPriceUsdPerMtok}/Mt`;
+  const output =
+    model.outputPriceUsdPerMtok === null ? "out n/a" : `out $${model.outputPriceUsdPerMtok}/Mt`;
+  return `${input} · ${output}`;
+}
 
 export function LobbyPage() {
   const location = useLocation();
@@ -19,6 +98,18 @@ export function LobbyPage() {
   const connected = useSessionsStore((state) => state.connected);
   const selectedModelId = useSessionsStore((state) => state.selectedModelId);
   const loadedModelId = useSessionsStore((state) => state.loadedModelId);
+  const loadedTargetKind = useSessionsStore((state) => state.loadedTargetKind);
+  const loadedProviderId = useSessionsStore((state) => state.loadedProviderId);
+  const loadedRemoteModelId = useSessionsStore((state) => state.loadedRemoteModelId);
+  const loadedBackendId = useSessionsStore((state) => state.loadedBackendId);
+  const loadedBackendClass = useSessionsStore((state) => state.loadedBackendClass);
+  const loadedBackendCapabilities = useSessionsStore(
+    (state) => state.loadedBackendCapabilities,
+  );
+  const loadedBackendTelemetry = useSessionsStore(
+    (state) => state.loadedBackendTelemetry,
+  );
+  const loadedRemoteModel = useSessionsStore((state) => state.loadedRemoteModel);
   const loading = useSessionsStore((state) => state.loading);
   const error = useSessionsStore((state) => state.error);
   const refresh = useSessionsStore((state) => state.refresh);
@@ -28,9 +119,29 @@ export function LobbyPage() {
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectedDraft, setSelectedDraft] = useState("");
+  const [cloudBackendDraft, setCloudBackendDraft] = useState(() =>
+    loadStoredDraft(CLOUD_BACKEND_STORAGE_KEY, "openai-responses"),
+  );
+  const [cloudModelDraft, setCloudModelDraft] = useState(() =>
+    loadStoredDraft(CLOUD_MODEL_STORAGE_KEY, "gpt-4.1-mini"),
+  );
   const [actionLoading, setActionLoading] = useState<"load" | "shutdown" | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  const remoteProviders = catalog?.remoteProviders ?? [];
+  const {
+    provider: selectedCloudBackend,
+    model: selectedCloudModel,
+    selector: cloudSelector,
+  } = selectRemoteCatalogTarget(remoteProviders, cloudBackendDraft, cloudModelDraft);
+  const loadedSelectedCloudTarget = matchesLoadedRemoteTarget(
+    loadedTargetKind,
+    loadedProviderId,
+    loadedRemoteModelId,
+    selectedCloudBackend?.id,
+    selectedCloudModel?.id,
+  );
 
   async function refreshCatalog() {
     setCatalogLoading(true);
@@ -58,6 +169,48 @@ export function LobbyPage() {
   useEffect(() => {
     void refreshCatalog();
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(CLOUD_BACKEND_STORAGE_KEY, cloudBackendDraft);
+  }, [cloudBackendDraft]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(CLOUD_MODEL_STORAGE_KEY, cloudModelDraft);
+  }, [cloudModelDraft]);
+
+  useEffect(() => {
+    if (remoteProviders.length === 0) {
+      return;
+    }
+    if (!selectedCloudBackend) {
+      setCloudBackendDraft(remoteProviders[0].id);
+    }
+  }, [remoteProviders, selectedCloudBackend]);
+
+  useEffect(() => {
+    if (!selectedCloudBackend) {
+      if (cloudModelDraft) {
+        setCloudModelDraft("");
+      }
+      return;
+    }
+
+    const availableModels = selectedCloudBackend.models;
+    const fallbackModelId =
+      availableModels.find((model) => model.id === selectedCloudBackend.defaultModelId)?.id ??
+      availableModels[0]?.id ??
+      "";
+
+    if (!availableModels.some((model) => model.id === cloudModelDraft)) {
+      setCloudModelDraft(fallbackModelId);
+    }
+  }, [selectedCloudBackend, cloudModelDraft]);
 
   useEffect(() => {
     const state = location.state as { focusComposer?: boolean } | null;
@@ -108,6 +261,31 @@ export function LobbyPage() {
     }
   }
 
+  async function handleLoadCloudTarget() {
+    if (!selectedCloudBackend) {
+      setActionError("Nessun provider cloud configurato.");
+      return;
+    }
+
+    setActionLoading("load");
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const result = await loadModel(cloudSelector);
+      setActionMessage(
+        `Target cloud caricato: ${cloudSelector} via ${result.backend} [${result.backendClass}]${result.remoteModel ? ` · ${result.remoteModel.modelLabel}` : ""}`,
+      );
+      await syncLobbyAndCatalog();
+    } catch (loadError) {
+      setActionMessage(null);
+      setActionError(
+        loadError instanceof Error ? loadError.message : "Failed to load cloud target",
+      );
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function handleShutdownKernel() {
     setActionLoading("shutdown");
     setActionError(null);
@@ -119,6 +297,14 @@ export function LobbyPage() {
         connected: false,
         selectedModelId: "",
         loadedModelId: "",
+        loadedTargetKind: null,
+        loadedProviderId: null,
+        loadedRemoteModelId: null,
+        loadedBackendId: null,
+        loadedBackendClass: null,
+        loadedBackendCapabilities: null,
+        loadedBackendTelemetry: null,
+        loadedRemoteModel: null,
         orchestrations: [],
         sessions: [],
         error: null,
@@ -169,6 +355,51 @@ export function LobbyPage() {
             <div className="flex items-center justify-between rounded-2xl bg-slate-950/[0.04] px-4 py-3">
               <dt>Loaded model</dt>
               <dd className="font-semibold text-slate-950">{loadedModelId || "—"}</dd>
+            </div>
+            <div className="flex items-center justify-between rounded-2xl bg-slate-950/[0.04] px-4 py-3">
+              <dt>Loaded target</dt>
+              <dd className="font-semibold text-slate-950">{loadedTargetKind || "—"}</dd>
+            </div>
+            <div className="flex items-center justify-between rounded-2xl bg-slate-950/[0.04] px-4 py-3">
+              <dt>Loaded provider</dt>
+              <dd className="font-semibold text-slate-950">
+                {loadedProviderId || "—"}
+                {loadedRemoteModelId ? ` · ${loadedRemoteModelId}` : ""}
+              </dd>
+            </div>
+            <div className="flex items-center justify-between rounded-2xl bg-slate-950/[0.04] px-4 py-3">
+              <dt>Loaded backend</dt>
+              <dd className="font-semibold text-slate-950">
+                {loadedBackendId || "—"}
+                {loadedBackendClass ? ` · ${loadedBackendClass}` : ""}
+              </dd>
+            </div>
+            <div className="rounded-2xl bg-slate-950/[0.04] px-4 py-3">
+              <dt className="text-slate-700">Backend caps</dt>
+              <dd className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                {summarizeBackendCapabilities(loadedBackendCapabilities)}
+              </dd>
+            </div>
+            <div className="rounded-2xl bg-slate-950/[0.04] px-4 py-3">
+              <dt className="text-slate-700">Cloud telemetry</dt>
+              <dd className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                {summarizeBackendTelemetry(loadedBackendTelemetry)}
+              </dd>
+              {loadedBackendTelemetry?.lastError ? (
+                <div className="mt-2 text-xs leading-5 text-rose-700">
+                  last error: {loadedBackendTelemetry.lastError}
+                </div>
+              ) : null}
+            </div>
+            <div className="rounded-2xl bg-slate-950/[0.04] px-4 py-3">
+              <dt className="text-slate-700">Loaded remote model</dt>
+              <dd className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                {summarizeRemoteRuntimeModel(loadedRemoteModel)}
+              </dd>
+              <div className="mt-2 text-xs leading-5 text-slate-600">
+                {summarizeCloudPricing(loadedRemoteModel)}
+                {loadedRemoteModel ? ` · adapter ${loadedRemoteModel.adapterKind}` : ""}
+              </div>
             </div>
           </dl>
           <div className="mt-4 flex items-center gap-3">
@@ -225,7 +456,9 @@ export function LobbyPage() {
                   <option key={model.id} value={model.id}>
                     {model.id}
                     {model.selected ? " · selected" : ""}
-                    {loadedModelId === model.id ? " · loaded" : ""}
+                    {isLoadedLocalCatalogModel(loadedTargetKind, loadedModelId, model.id)
+                      ? " · loaded"
+                      : ""}
                   </option>
                 ))}
               </select>
@@ -283,10 +516,13 @@ export function LobbyPage() {
                       {model.id}
                     </div>
                   </div>
-                  {model.selected || loadedModelId === model.id ? (
+                  {model.selected ||
+                  isLoadedLocalCatalogModel(loadedTargetKind, loadedModelId, model.id) ? (
                     <span className="status-pill border-emerald-600/20 bg-emerald-50 text-emerald-700">
                       <CheckCircle2 className="h-3.5 w-3.5" />
-                      {loadedModelId === model.id ? "loaded" : "selected"}
+                      {isLoadedLocalCatalogModel(loadedTargetKind, loadedModelId, model.id)
+                        ? "loaded"
+                        : "selected"}
                     </span>
                   ) : null}
                 </div>
@@ -342,6 +578,170 @@ export function LobbyPage() {
                 Nessuna raccomandazione disponibile.
               </div>
             )}
+          </div>
+        </section>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+        <section className="panel-surface p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
+                Cloud runtime
+              </p>
+              <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">
+                Test target remoto
+              </h3>
+            </div>
+            <span className="status-pill border-sky-700/15 bg-sky-50 text-sky-700">
+              <Cloud className="h-3.5 w-3.5" />
+              remote_stateless
+            </span>
+          </div>
+
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
+            Questo pannello costruisce un selector esplicito `cloud:&lt;backend&gt;:&lt;model&gt;`
+            e invia `LOAD` al kernel. Endpoint, API key e default model restano configurati lato
+            kernel tramite `config/kernel/base.toml`, `config/kernel/local.toml` oppure
+            environment variables caricate da `config/env/agenticos.env`.
+          </p>
+
+          <div className="mt-5 grid gap-4 lg:grid-cols-[0.42fr_0.58fr_auto]">
+            <div className="space-y-2">
+              <label
+                htmlFor="cloud-backend"
+                className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500"
+              >
+                Backend
+              </label>
+              <select
+                id="cloud-backend"
+                value={selectedCloudBackend?.id ?? ""}
+                onChange={(event) => setCloudBackendDraft(event.target.value)}
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                disabled={actionLoading !== null || remoteProviders.length === 0}
+              >
+                {remoteProviders.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label
+                htmlFor="cloud-model"
+                className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500"
+              >
+                Remote model
+              </label>
+              <select
+                id="cloud-model"
+                value={cloudModelDraft}
+                onChange={(event) => setCloudModelDraft(event.target.value)}
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+                disabled={actionLoading !== null || !selectedCloudBackend}
+              >
+                {selectedCloudBackend?.models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-end">
+              <button
+                onClick={() => void handleLoadCloudTarget()}
+                disabled={actionLoading !== null || !selectedCloudBackend}
+                className="rounded-full bg-sky-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {actionLoading === "load" ? "Loading..." : "Load Cloud"}
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-[24px] border border-slate-200 bg-slate-50 px-4 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+              Selector preview
+            </div>
+            <div className="mt-2 font-mono text-sm text-slate-900">{cloudSelector}</div>
+          </div>
+          <div className="mt-4 rounded-[24px] border border-slate-200 bg-white px-4 py-4">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+              Selected remote model
+            </div>
+            <div className="mt-2 text-sm font-semibold text-slate-950">
+              {selectedCloudModel?.label ?? "Nessun modello remoto selezionato"}
+            </div>
+            <div className="mt-2 text-xs uppercase tracking-[0.16em] text-slate-500">
+              {selectedCloudBackend
+                ? `${selectedCloudBackend.label} · adapter ${selectedCloudBackend.adapterKind}`
+                : "provider n/a"}
+            </div>
+            <div className="mt-2 text-xs leading-5 text-slate-600">
+              {loadedSelectedCloudTarget
+                ? "Attualmente caricato nel runtime."
+                : loadedTargetKind === "remote_provider"
+                  ? `Runtime attivo: ${loadedProviderId || "provider n/a"} · ${loadedRemoteModelId || "model n/a"}`
+                  : "Nessun target cloud attualmente caricato."}
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <div className="rounded-2xl bg-slate-950/[0.04] px-3 py-2 text-sm text-slate-700">
+                Context window:{" "}
+                <span className="font-semibold text-slate-950">
+                  {selectedCloudModel?.contextWindowTokens?.toLocaleString() ?? "n/a"}
+                </span>
+              </div>
+              <div className="rounded-2xl bg-slate-950/[0.04] px-3 py-2 text-sm text-slate-700">
+                Max output:{" "}
+                <span className="font-semibold text-slate-950">
+                  {selectedCloudModel?.maxOutputTokens?.toLocaleString() ?? "n/a"}
+                </span>
+              </div>
+              <div className="rounded-2xl bg-slate-950/[0.04] px-3 py-2 text-sm text-slate-700">
+                Structured output:{" "}
+                <span className="font-semibold text-slate-950">
+                  {selectedCloudModel?.supportsStructuredOutput ? "yes" : "no"}
+                </span>
+              </div>
+              <div className="rounded-2xl bg-slate-950/[0.04] px-3 py-2 text-sm text-slate-700">
+                Pricing:{" "}
+                <span className="font-semibold text-slate-950">
+                  {selectedCloudModel
+                    ? `${selectedCloudModel.inputPriceUsdPerMtok ?? "n/a"} / ${selectedCloudModel.outputPriceUsdPerMtok ?? "n/a"}`
+                    : "n/a"}
+                </span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="panel-surface p-6">
+          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
+            Test notes
+          </p>
+          <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">
+            Prima di provare
+          </h3>
+          <div className="mt-5 space-y-3 text-sm leading-6 text-slate-600">
+            <div className="rounded-[24px] bg-slate-950/[0.04] p-4">
+              Credenziali richieste:{" "}
+              {selectedCloudBackend?.credentialHint ??
+                "Configura le credenziali del provider nel kernel."}
+            </div>
+            <div className="rounded-[24px] bg-slate-950/[0.04] p-4">
+              Se non passi un tokenizer hint locale, il kernel usera' il fallback tokenizer per il backend `remote_stateless`.
+            </div>
+            <div className="rounded-[24px] bg-slate-950/[0.04] p-4">
+              Profilo selezionato:{" "}
+              {selectedCloudBackend?.note ??
+                "I provider remoti arrivano dal catalogo remoto del kernel."}
+            </div>
+            <div className="rounded-[24px] bg-slate-950/[0.04] p-4">
+              Dopo il `LOAD` puoi aprire una nuova sessione come sempre e verificare dal control plane che il backend caricato sia `{selectedCloudBackend?.id ?? "n/a"}`.
+            </div>
           </div>
         </section>
       </div>

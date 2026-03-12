@@ -17,6 +17,35 @@ pub struct BackendCapabilitiesView {
     pub parallel_sessions: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackendTelemetryView {
+    pub requests_total: u64,
+    pub stream_requests_total: u64,
+    pub input_tokens_total: u64,
+    pub output_tokens_total: u64,
+    pub estimated_cost_usd: f64,
+    pub rate_limit_errors: u64,
+    pub auth_errors: u64,
+    pub transport_errors: u64,
+    pub last_model: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RemoteModelRuntimeView {
+    pub provider_id: String,
+    pub provider_label: String,
+    pub backend_id: String,
+    pub adapter_kind: String,
+    pub model_id: String,
+    pub model_label: String,
+    pub context_window_tokens: Option<usize>,
+    pub max_output_tokens: Option<usize>,
+    pub supports_structured_output: bool,
+    pub input_price_usd_per_mtok: Option<f64>,
+    pub output_price_usd_per_mtok: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlMessage {
     pub message: String,
@@ -60,9 +89,14 @@ pub struct ModelStatus {
     pub loaded_family: String,
     pub loaded_model_path: String,
     pub selected_model_id: String,
+    pub loaded_target_kind: Option<String>,
+    pub loaded_provider_id: Option<String>,
+    pub loaded_remote_model_id: Option<String>,
     pub loaded_backend: Option<String>,
     pub loaded_backend_class: Option<String>,
     pub loaded_backend_capabilities: Option<BackendCapabilitiesView>,
+    pub loaded_backend_telemetry: Option<BackendTelemetryView>,
+    pub loaded_remote_model: Option<RemoteModelRuntimeView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,6 +232,31 @@ pub struct ModelCatalogSnapshot {
     pub total_models: usize,
     pub models: Vec<ModelCatalogEntry>,
     pub routing_recommendations: Vec<ModelRoutingRecommendation>,
+    #[serde(default)]
+    pub remote_providers: Vec<RemoteProviderCatalogEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteProviderCatalogEntry {
+    pub id: String,
+    pub backend_id: String,
+    pub adapter_kind: String,
+    pub label: String,
+    pub note: Option<String>,
+    pub credential_hint: Option<String>,
+    pub default_model_id: String,
+    pub models: Vec<RemoteModelCatalogEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteModelCatalogEntry {
+    pub id: String,
+    pub label: String,
+    pub context_window_tokens: Option<usize>,
+    pub max_output_tokens: Option<usize>,
+    pub supports_structured_output: bool,
+    pub input_price_usd_per_mtok: Option<f64>,
+    pub output_price_usd_per_mtok: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,6 +333,10 @@ pub struct SelectModelResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoadModelResult {
     pub family: String,
+    pub loaded_model_id: String,
+    pub loaded_target_kind: String,
+    pub loaded_provider_id: Option<String>,
+    pub loaded_remote_model_id: Option<String>,
     pub backend: String,
     pub backend_class: String,
     pub backend_capabilities: BackendCapabilitiesView,
@@ -282,6 +345,7 @@ pub struct LoadModelResult {
     pub path: String,
     pub architecture: Option<String>,
     pub load_mode: String,
+    pub remote_model: Option<RemoteModelRuntimeView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

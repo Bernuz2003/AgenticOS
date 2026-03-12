@@ -134,4 +134,10 @@ pub enum CatalogError {
 
     #[error("Model driver resolution failed: {0}")]
     DriverResolutionFailed(String),
+
+    #[error("Remote provider catalog read failed '{path}': {detail}")]
+    RemoteProviderCatalogRead { path: String, detail: String },
+
+    #[error("Remote provider catalog invalid '{path}': {detail}")]
+    RemoteProviderCatalogInvalid { path: String, detail: String },
 }

@@ -5,12 +5,12 @@ use std::path::Path;
 use crate::memory::ContextSlotId;
 use crate::prompting::PromptFamily;
 
-use super::http::{HttpEndpoint, HttpJsonResponse, HttpRequestOptions, HttpStreamControl};
-use super::remote_adapter::{
+use crate::backend::http::{HttpEndpoint, HttpJsonResponse, HttpRequestOptions, HttpStreamControl};
+use crate::backend::remote_adapter::{
     build_completion_request, decode_completion_response, drain_json_objects,
     select_completion_prompt_transport, tool_invocation_end, PromptTransportStrategy,
 };
-use super::{
+use crate::backend::{
     ContextSlotPersistence, InferenceBackend, InferenceFinishReason, InferenceStepRequest,
     InferenceStepResult, ModelBackend,
 };
@@ -25,7 +25,7 @@ pub(crate) struct ExternalLlamaCppBackend {
 
 impl ExternalLlamaCppBackend {
     pub(crate) fn from_env(family: PromptFamily) -> Result<Self> {
-        let endpoint = super::external_llamacpp_endpoint().ok_or_else(|| {
+        let endpoint = super::endpoint().ok_or_else(|| {
             E::msg(
                 "External llama.cpp RPC backend requested, but AGENTIC_LLAMACPP_ENDPOINT is not configured.",
             )

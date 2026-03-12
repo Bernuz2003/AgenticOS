@@ -1,6 +1,7 @@
 use super::metadata::parse_tokenizer_metadata_json;
 use super::*;
-use crate::backend::TestExternalEndpointOverrideGuard;
+use crate::backend::{TestExternalEndpointOverrideGuard, TestOpenAIConfigOverrideGuard};
+use crate::config::OpenAIResponsesConfig;
 use agentic_control_models::{ModelCatalogSnapshot, ModelInfoResponse};
 use std::fs;
 use std::path::PathBuf;
@@ -96,6 +97,101 @@ fn metadata_sidecar_overrides_family_and_exposes_capabilities() {
         .as_deref()
         .unwrap_or_default()
         .ends_with("metadata.json"));
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn resolve_load_target_accepts_explicit_cloud_selector() {
+    let base = mk_temp_dir("agenticos_catalog_cloud_selector");
+    let models = base.join("models");
+    fs::create_dir_all(&models).expect("create models dir");
+    let _openai = TestOpenAIConfigOverrideGuard::set(OpenAIResponsesConfig {
+        endpoint: "http://127.0.0.1:19090/v1".to_string(),
+        api_key: "test-key".to_string(),
+        default_model: "gpt-4.1-mini".to_string(),
+        timeout_ms: 5_000,
+        max_request_bytes: 256 * 1024,
+        max_response_bytes: 256 * 1024,
+        stream: true,
+        tokenizer_path: None,
+        input_price_usd_per_mtok: 0.0,
+        output_price_usd_per_mtok: 0.0,
+        http_referer: String::new(),
+        app_title: String::new(),
+    });
+
+    let catalog = ModelCatalog::discover(&models).expect("discover empty catalog");
+    let target = catalog
+        .resolve_load_target("cloud:openai-responses:gpt-4.1-mini")
+        .expect("resolve cloud target");
+
+    assert_eq!(target.family(), PromptFamily::Unknown);
+    assert_eq!(
+        target.display_path(),
+        PathBuf::from("cloud/openai-responses/gpt-4.1-mini")
+    );
+    assert_eq!(target.runtime_reference(), "gpt-4.1-mini");
+    assert_eq!(target.remote_model_id(), Some("gpt-4.1-mini"));
+    assert_eq!(target.provider_id(), Some("openai-responses"));
+    assert_eq!(
+        target.driver_resolution().resolved_backend_id,
+        "openai-responses"
+    );
+    assert_eq!(
+        target.driver_resolution().backend_class.as_str(),
+        "remote_stateless"
+    );
+    match &target {
+        ResolvedModelTarget::Remote(remote) => {
+            assert_eq!(remote.backend_id, "openai-responses");
+            assert_eq!(remote.provider_label, "OpenAI");
+            assert_eq!(remote.model_spec.label, "GPT-4.1 mini");
+            assert_eq!(
+                remote.runtime_config.adapter_kind.as_str(),
+                "openai_compatible"
+            );
+        }
+        ResolvedModelTarget::Local(_) => panic!("expected remote target"),
+    }
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn resolve_load_target_uses_remote_provider_default_model() {
+    let base = mk_temp_dir("agenticos_catalog_cloud_default_model");
+    let models = base.join("models");
+    fs::create_dir_all(&models).expect("create models dir");
+    let _openai = TestOpenAIConfigOverrideGuard::set(OpenAIResponsesConfig {
+        endpoint: "http://127.0.0.1:19090/v1".to_string(),
+        api_key: "test-key".to_string(),
+        default_model: String::new(),
+        timeout_ms: 5_000,
+        max_request_bytes: 256 * 1024,
+        max_response_bytes: 256 * 1024,
+        stream: true,
+        tokenizer_path: None,
+        input_price_usd_per_mtok: 0.0,
+        output_price_usd_per_mtok: 0.0,
+        http_referer: String::new(),
+        app_title: String::new(),
+    });
+
+    let catalog = ModelCatalog::discover(&models).expect("discover empty catalog");
+    let target = catalog
+        .resolve_load_target("cloud:openai-responses")
+        .expect("resolve cloud target with provider default");
+
+    assert_eq!(
+        target.display_path(),
+        PathBuf::from("cloud/openai-responses/gpt-4.1-mini")
+    );
+    assert_eq!(target.runtime_reference(), "gpt-4.1-mini");
+    assert_eq!(
+        target.driver_resolution().resolved_backend_id,
+        "openai-responses"
+    );
 
     let _ = fs::remove_dir_all(base);
 }
@@ -217,9 +313,10 @@ fn resolve_load_target_prefers_model_id_even_if_contains_slash() {
     let target = catalog
         .resolve_load_target(&qwen.id)
         .expect("resolve by id with slash");
-    assert_eq!(target.path, qwen_model);
-    assert_eq!(target.family, PromptFamily::Qwen);
-    assert_eq!(target.model_id.as_deref(), Some(qwen.id.as_str()));
+    assert_eq!(target.display_path(), qwen_model.as_path());
+    assert_eq!(target.runtime_reference(), qwen_model.to_string_lossy());
+    assert_eq!(target.family(), PromptFamily::Qwen);
+    assert_eq!(target.local_model_id(), Some(qwen.id.as_str()));
 
     let _ = fs::remove_dir_all(base);
 }
@@ -261,6 +358,11 @@ fn format_list_json_exposes_models_and_routing() {
     assert_eq!(payload.total_models, 2);
     assert!(!payload.models.is_empty());
     assert!(!payload.routing_recommendations.is_empty());
+    assert!(!payload.remote_providers.is_empty());
+    assert!(payload
+        .remote_providers
+        .iter()
+        .any(|provider| provider.id == "openai-responses"));
     assert!(payload
         .models
         .iter()

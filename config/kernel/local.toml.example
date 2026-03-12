@@ -1,0 +1,9 @@
+# Copy this file to config/kernel/local.toml for machine-local overrides that should not be pushed.
+# Keep secrets in config/env/agenticos.env whenever possible.
+
+[external_llamacpp]
+endpoint = "http://127.0.0.1:8080"
+
+[openrouter]
+http_referer = "http://localhost"
+app_title = "AgenticOS"

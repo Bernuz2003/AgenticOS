@@ -1,9 +1,11 @@
+use crate::backend::BackendClass;
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;
 use crate::process::{ContextPolicy, ProcessLifecyclePolicy};
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 
+#[derive(Debug)]
 pub struct ManagedProcessSpawn {
     pub pid: u64,
 }
@@ -12,6 +14,7 @@ pub struct ManagedProcessRequest {
     pub prompt: String,
     pub owner_id: usize,
     pub workload: WorkloadClass,
+    pub required_backend_class: Option<BackendClass>,
     pub priority: ProcessPriority,
     pub lifecycle_policy: ProcessLifecyclePolicy,
     pub context_policy: Option<ContextPolicy>,
@@ -62,6 +65,11 @@ pub fn spawn_managed_process(
     scheduler: &mut ProcessScheduler,
     request: ManagedProcessRequest,
 ) -> Result<ManagedProcessSpawn, String> {
+    validate_backend_class_policy(
+        engine.loaded_backend_class(),
+        request.required_backend_class,
+    )?;
+
     let context_policy = request
         .context_policy
         .unwrap_or_else(ContextPolicy::from_kernel_defaults);
@@ -75,22 +83,267 @@ pub fn spawn_managed_process(
         )
         .map_err(|e| e.to_string())?;
 
-    if let Some(token_slots) = engine.process_max_tokens(pid) {
-        match memory.register_process(pid, token_slots) {
-            Ok(slot_id) => {
-                if let Err(err) = engine.set_process_context_slot(pid, slot_id) {
-                    let _ = memory.release_process(pid);
+    let backend_capabilities = engine.loaded_backend_capabilities();
+    let should_bind_resident_slot = backend_capabilities.resident_kv
+        || backend_capabilities.persistent_slots
+        || backend_capabilities.save_restore_slots;
+
+    if should_bind_resident_slot {
+        if let Some(token_slots) = engine.process_max_tokens(pid) {
+            match memory.register_process(pid, token_slots) {
+                Ok(slot_id) => {
+                    if let Err(err) = engine.set_process_context_slot(pid, slot_id) {
+                        let _ = memory.release_process(pid);
+                        engine.kill_process(pid);
+                        return Err(err.to_string());
+                    }
+                }
+                Err(err) => {
                     engine.kill_process(pid);
                     return Err(err.to_string());
                 }
             }
-            Err(err) => {
-                engine.kill_process(pid);
-                return Err(err.to_string());
-            }
         }
+    } else {
+        tracing::info!(
+            pid,
+            backend_class = engine.loaded_backend_class().as_str(),
+            "PROCESS_RUNTIME: skipping resident slot allocation for non-resident backend"
+        );
     }
 
     scheduler.register(pid, request.workload, request.priority);
     Ok(ManagedProcessSpawn { pid })
+}
+
+fn validate_backend_class_policy(
+    loaded_backend_class: BackendClass,
+    required_backend_class: Option<BackendClass>,
+) -> Result<(), String> {
+    let Some(required_backend_class) = required_backend_class else {
+        return Ok(());
+    };
+
+    if loaded_backend_class == required_backend_class {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Process routing requires backend class '{}' but the loaded engine is '{}'.",
+        required_backend_class.as_str(),
+        loaded_backend_class.as_str()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{spawn_managed_process, ManagedProcessRequest};
+    use crate::backend::{
+        resolve_driver_for_model, BackendClass, TestExternalEndpointOverrideGuard,
+        TestOpenAIConfigOverrideGuard,
+    };
+    use crate::config::OpenAIResponsesConfig;
+    use crate::engine::LLMEngine;
+    use crate::memory::NeuralMemory;
+    use crate::model_catalog::{RemoteModelEntry, ResolvedModelTarget, WorkloadClass};
+    use crate::process::ProcessLifecyclePolicy;
+    use crate::prompting::PromptFamily;
+    use crate::scheduler::{ProcessPriority, ProcessScheduler};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokenizers::models::wordlevel::WordLevel;
+    use tokenizers::Tokenizer;
+
+    fn test_openai_config() -> OpenAIResponsesConfig {
+        OpenAIResponsesConfig {
+            endpoint: "http://127.0.0.1:19090/v1".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-4.1-mini".to_string(),
+            timeout_ms: 5_000,
+            max_request_bytes: 256 * 1024,
+            max_response_bytes: 256 * 1024,
+            stream: true,
+            tokenizer_path: None,
+            input_price_usd_per_mtok: 1.0,
+            output_price_usd_per_mtok: 2.0,
+            http_referer: String::new(),
+            app_title: String::new(),
+        }
+    }
+
+    fn test_tokenizer() -> Tokenizer {
+        let vocab = [
+            ("<unk>".to_string(), 0),
+            ("hello".to_string(), 1),
+            ("</s>".to_string(), 2),
+        ]
+        .into_iter()
+        .collect();
+
+        let model = WordLevel::builder()
+            .vocab(vocab)
+            .unk_token("<unk>".to_string())
+            .build()
+            .expect("build wordlevel tokenizer");
+
+        Tokenizer::new(model)
+    }
+
+    fn write_test_tokenizer() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("agenticos-process-runtime-{unique}.json"));
+        test_tokenizer().save(&path, false).expect("save tokenizer");
+        path
+    }
+
+    #[test]
+    fn remote_stateless_processes_skip_resident_slot_binding() {
+        let _openai = TestOpenAIConfigOverrideGuard::set(test_openai_config());
+        let driver_resolution =
+            resolve_driver_for_model(PromptFamily::Unknown, None, Some("openai-responses"))
+                .expect("resolve openai backend");
+        let target = ResolvedModelTarget::remote(
+            "openai-responses",
+            "OpenAI",
+            "openai-responses",
+            "gpt-4.1-mini",
+            RemoteModelEntry {
+                id: "gpt-4.1-mini".to_string(),
+                label: "GPT-4.1 mini".to_string(),
+                context_window_tokens: None,
+                max_output_tokens: None,
+                supports_structured_output: true,
+                input_price_usd_per_mtok: None,
+                output_price_usd_per_mtok: None,
+            },
+            test_openai_config().into(),
+            None,
+            driver_resolution,
+        );
+
+        let mut engine = LLMEngine::load_target(&target).expect("load remote stateless engine");
+        let mut memory = NeuralMemory::new().expect("memory init");
+        let mut scheduler = ProcessScheduler::new();
+
+        let spawned = spawn_managed_process(
+            &mut engine,
+            &mut memory,
+            &mut scheduler,
+            ManagedProcessRequest {
+                prompt: "ping cloud backend".to_string(),
+                owner_id: 7,
+                workload: WorkloadClass::Fast,
+                required_backend_class: Some(BackendClass::RemoteStateless),
+                priority: ProcessPriority::Normal,
+                lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+                context_policy: None,
+            },
+        )
+        .expect("spawn managed process");
+
+        let process = engine
+            .processes
+            .get(&spawned.pid)
+            .expect("spawned process present");
+
+        assert_eq!(engine.loaded_backend_class().as_str(), "remote_stateless");
+        assert_eq!(process.context_slot_id, None);
+        assert_eq!(process.resident_slot_policy_label(), None);
+        assert_eq!(process.resident_slot_state_label(), None);
+        assert_eq!(memory.slot_for_pid(spawned.pid), None);
+    }
+
+    #[test]
+    fn remote_stateless_engine_rejects_resident_local_task_policy() {
+        let _openai = TestOpenAIConfigOverrideGuard::set(test_openai_config());
+        let driver_resolution =
+            resolve_driver_for_model(PromptFamily::Unknown, None, Some("openai-responses"))
+                .expect("resolve openai backend");
+        let target = ResolvedModelTarget::remote(
+            "openai-responses",
+            "OpenAI",
+            "openai-responses",
+            "gpt-4.1-mini",
+            RemoteModelEntry {
+                id: "gpt-4.1-mini".to_string(),
+                label: "GPT-4.1 mini".to_string(),
+                context_window_tokens: None,
+                max_output_tokens: None,
+                supports_structured_output: true,
+                input_price_usd_per_mtok: None,
+                output_price_usd_per_mtok: None,
+            },
+            test_openai_config().into(),
+            None,
+            driver_resolution,
+        );
+
+        let mut engine = LLMEngine::load_target(&target).expect("load remote stateless engine");
+        let mut memory = NeuralMemory::new().expect("memory init");
+        let mut scheduler = ProcessScheduler::new();
+
+        let err = spawn_managed_process(
+            &mut engine,
+            &mut memory,
+            &mut scheduler,
+            ManagedProcessRequest {
+                prompt: "this task expects residency".to_string(),
+                owner_id: 7,
+                workload: WorkloadClass::Code,
+                required_backend_class: Some(BackendClass::ResidentLocal),
+                priority: ProcessPriority::Normal,
+                lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+                context_policy: None,
+            },
+        )
+        .expect_err("remote stateless engine should reject resident-local routing");
+
+        assert!(err.contains("resident_local"));
+        assert!(err.contains("remote_stateless"));
+    }
+
+    #[test]
+    fn resident_local_engine_rejects_remote_stateless_task_policy() {
+        let _endpoint = TestExternalEndpointOverrideGuard::set("http://127.0.0.1:18080");
+        let tokenizer_path = write_test_tokenizer();
+        let driver_resolution =
+            resolve_driver_for_model(PromptFamily::Mistral, None, Some("external-llamacpp"))
+                .expect("resolve resident backend");
+        let target = ResolvedModelTarget::local(
+            None,
+            PathBuf::from("ignored.gguf"),
+            PromptFamily::Mistral,
+            Some(tokenizer_path.clone()),
+            None,
+            driver_resolution,
+        );
+
+        let mut engine = LLMEngine::load_target(&target).expect("load resident local engine");
+        let mut memory = NeuralMemory::new().expect("memory init");
+        let mut scheduler = ProcessScheduler::new();
+
+        let err = spawn_managed_process(
+            &mut engine,
+            &mut memory,
+            &mut scheduler,
+            ManagedProcessRequest {
+                prompt: "this task expects cloud execution".to_string(),
+                owner_id: 7,
+                workload: WorkloadClass::Fast,
+                required_backend_class: Some(BackendClass::RemoteStateless),
+                priority: ProcessPriority::Normal,
+                lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+                context_policy: None,
+            },
+        )
+        .expect_err("resident local engine should reject remote-stateless routing");
+
+        let _ = std::fs::remove_file(tokenizer_path);
+
+        assert!(err.contains("remote_stateless"));
+        assert!(err.contains("resident_local"));
+    }
 }

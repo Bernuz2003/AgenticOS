@@ -627,7 +627,14 @@ Se `AGENTIC_CHECKPOINT_INTERVAL_SECS > 0`, il kernel salva automaticamente ogni 
 
 ## 12. Configurazione
 
-La configurazione primaria vive in `agenticos.toml`, con override opzionali via variabili d'ambiente.
+La configurazione runtime e' stratificata:
+
+- `config/kernel/base.toml` contiene i default pubblici versionati;
+- `config/kernel/local.toml` contiene eventuali override locali non versionati;
+- `config/env/agenticos.env` contiene i segreti locali caricati all'avvio;
+- `agenticos.toml` resta solo come fallback legacy/compatibilita'.
+
+Le variabili d'ambiente esplicite del processo continuano ad avere precedenza sugli altri layer.
 
 | Variabile | Default | Descrizione |
 |-----------|---------|-------------|

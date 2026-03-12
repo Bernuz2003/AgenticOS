@@ -130,6 +130,7 @@ pub(super) fn dispatch_process_syscall(
                 prompt: prompt.to_string(),
                 owner_id,
                 workload,
+                required_backend_class: None,
                 priority,
                 lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
                 context_policy: inherited_context_policy,

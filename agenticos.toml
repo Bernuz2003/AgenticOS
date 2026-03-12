@@ -1,104 +1,11 @@
-[network]
-host = "127.0.0.1"
-port = 6380
-poll_timeout_ms = 5
-log_connections = false
-
-[paths]
-models_dir = "models"
-workspace_dir = "workspace"
-checkpoint_path = "workspace/checkpoint.json"
-kernel_token_path = "workspace/.kernel_token"
-
-[memory]
-swap_async = true
-swap_dir = "workspace/swap"
-token_slot_quota_per_pid = 4096
-
-[checkpoint]
-interval_secs = 0
-
-[auth]
-disabled = false
-
-[external_llamacpp]
-endpoint = "http://127.0.0.1:8080"
-timeout_ms = 6000000
-chunk_tokens = 1
-
-[exec]
-auto_switch = false
-
-[orchestrator]
-max_output_chars = 4096
-
-[tools]
-sandbox_mode = "host"
-allow_host_fallback = true
-timeout_s = 8
-max_calls_per_window = 12
-window_s = 10
-error_burst_kill = 3
-output_truncate_len = 2000
-audit_log_file = "syscall_audit.log"
-temp_script_prefix = "agent_script_"
-
-[generation.llama]
-temperature = 0.7
-top_p = 0.9
-seed = 299792458
-max_tokens = 500
-
-[generation.qwen]
-temperature = 0.7
-top_p = 0.9
-seed = 299792458
-max_tokens = 500
-
-[generation.mistral]
-temperature = 0.7
-top_p = 0.92
-seed = 299792458
-max_tokens = 500
-
-[generation.unknown]
-temperature = 0.7
-top_p = 0.9
-seed = 299792458
-max_tokens = 500
-
-[scheduler.fast]
-max_tokens = 512
-max_syscalls = 2
-
-[scheduler.code]
-max_tokens = 4096
-max_syscalls = 16
-
-[scheduler.reasoning]
-max_tokens = 8192
-max_syscalls = 8
-
-[scheduler.general]
-max_tokens = 2048
-max_syscalls = 8
-
-[evaluation.llama3]
-model_path = "models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
-inactivity_timeout = 6.0
-first_byte_timeout = 60.0
-max_total = 180.0
-ping_timeout = 3.0
-ping_inactivity = 1.0
-load_timeout = 90.0
-load_inactivity = 3.0
-threshold_first_chunk = 55.0
-threshold_min_bytes = 25
-threshold_total = 180.0
-threshold_failed_runs = 2
-report_path = "reports/llama3_eval_report.json"
-run_count = 1
-
-[evaluation.swarm]
-report_path = "reports/swarm_benchmark.json"
-repeat = 1
+# Legacy compatibility placeholder.
+#
+# The tracked runtime configuration now lives under:
+# - config/kernel/base.toml
+# - config/providers/remote_providers.toml
+#
+# Machine-local overrides should live in:
+# - config/kernel/local.toml
+# - config/env/agenticos.env
+#
+# Keep secrets out of tracked files.

@@ -1,23 +1,31 @@
-use agentic_control_models::BackendCapabilitiesView;
+use agentic_control_models::{BackendCapabilitiesView, BackendTelemetryView};
 use anyhow::{Error as E, Result};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokenizers::Tokenizer;
 
 use crate::memory::{ContextSlotId, SlotPersistenceKind};
+use crate::model_catalog::ResolvedModelTarget;
 use crate::prompting::{GenerationConfig, PromptFamily};
 
-mod diagnostics;
-mod external_llamacpp;
 pub(crate) mod http;
+mod local;
+mod remote;
 mod remote_adapter;
 
-pub(crate) use diagnostics::diagnose_external_backend;
-use external_llamacpp::ExternalLlamaCppBackend;
+pub(crate) use local::diagnose_external_backend;
+use local::ExternalLlamaCppBackend;
+use remote::RemoteOpenAICompatibleBackend;
 
+#[cfg(test)]
+pub(crate) use local::TestExternalEndpointOverrideGuard;
+#[cfg(test)]
+pub(crate) use remote::{TestOpenAIConfigOverrideGuard, TestRemoteOpenAIConfigOverrideGuard};
 #[cfg(test)]
 use remote_adapter::{combine_completion_text, completion_is_finished, CompletionResponse};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BackendClass {
     ResidentLocal,
     #[allow(dead_code)]
@@ -48,6 +56,16 @@ pub struct BackendCapabilities {
     pub parallel_sessions: bool,
 }
 
+pub fn runtime_backend_telemetry(backend_id: &str) -> Option<BackendTelemetryView> {
+    remote::runtime_backend_telemetry(backend_id)
+}
+
+pub(crate) fn remote_runtime_config_for_backend(
+    backend_id: &str,
+) -> Option<crate::config::RemoteProviderRuntimeConfig> {
+    remote::runtime_config(backend_id)
+}
+
 impl From<BackendCapabilities> for BackendCapabilitiesView {
     fn from(value: BackendCapabilities) -> Self {
         Self {
@@ -66,6 +84,7 @@ impl From<BackendCapabilities> for BackendCapabilitiesView {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct DriverDescriptor {
     pub id: &'static str,
     pub kind: &'static str,
@@ -122,38 +141,12 @@ pub struct InferenceStepRequest<'a> {
     pub eot_token_id: u32,
 }
 
-const FAMILIES_COMMON: [PromptFamily; 3] = [
-    PromptFamily::Llama,
-    PromptFamily::Qwen,
-    PromptFamily::Mistral,
+const DRIVER_REGISTRY: [DriverDescriptor; 4] = [
+    local::EXTERNAL_LLAMACPP_DRIVER,
+    remote::OPENAI_RESPONSES_DRIVER,
+    remote::GROQ_RESPONSES_DRIVER,
+    remote::OPENROUTER_DRIVER,
 ];
-const ARCH_ANY: [&str; 0] = [];
-const CAP_EXTERNAL_LLAMACPP: BackendCapabilities = BackendCapabilities {
-    resident_kv: true,
-    persistent_slots: true,
-    save_restore_slots: true,
-    prompt_cache_reuse: true,
-    streaming_generation: true,
-    structured_output: false,
-    cancel_generation: false,
-    memory_telemetry: true,
-    tool_pause_resume: true,
-    context_compaction_reset: true,
-    parallel_sessions: true,
-};
-const DEFAULT_RESIDENT_BACKEND_ID: &str = "external-llamacpp";
-
-const DRIVER_REGISTRY: [DriverDescriptor; 1] = [DriverDescriptor {
-    id: "external-llamacpp",
-    kind: "resident-adapter",
-    class: BackendClass::ResidentLocal,
-    capabilities: CAP_EXTERNAL_LLAMACPP,
-    available: false,
-    load_supported: false,
-    note: "Resident local llama.cpp adapter exposed through llama-server.",
-    families: &FAMILIES_COMMON,
-    architectures: &ARCH_ANY,
-}];
 
 pub fn driver_registry() -> &'static [DriverDescriptor] {
     &DRIVER_REGISTRY
@@ -165,90 +158,10 @@ pub fn driver_descriptor(backend_id: &str) -> Option<&'static DriverDescriptor> 
         .find(|driver| driver.id == backend_id)
 }
 
-fn external_llamacpp_endpoint() -> Option<String> {
-    #[cfg(test)]
-    {
-        test_external_endpoint_override_get()
-    }
-
-    #[cfg(not(test))]
-    {
-        let endpoint = crate::config::kernel_config()
-            .external_llamacpp
-            .endpoint
-            .trim()
-            .to_string();
-        (!endpoint.is_empty()).then_some(endpoint)
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn test_external_endpoint_override_get() -> Option<String> {
-    let cell = test_external_endpoint_override_cell();
-    cell.lock()
-        .expect("lock external endpoint override")
-        .clone()
-}
-
-#[cfg(test)]
-pub(crate) fn test_external_endpoint_override_set(value: Option<String>) {
-    let cell = test_external_endpoint_override_cell();
-    *cell.lock().expect("lock external endpoint override") = value;
-}
-
-#[cfg(test)]
-fn test_external_endpoint_override_cell() -> &'static std::sync::Mutex<Option<String>> {
-    static TEST_EXTERNAL_ENDPOINT_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
-        std::sync::OnceLock::new();
-    TEST_EXTERNAL_ENDPOINT_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
-}
-
-#[cfg(test)]
-fn test_external_endpoint_override_lock() -> &'static std::sync::Mutex<()> {
-    static TEST_EXTERNAL_ENDPOINT_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
-        std::sync::OnceLock::new();
-    TEST_EXTERNAL_ENDPOINT_LOCK.get_or_init(|| std::sync::Mutex::new(()))
-}
-
-#[cfg(test)]
-pub(crate) struct TestExternalEndpointOverrideGuard {
-    _lock: std::sync::MutexGuard<'static, ()>,
-    previous: Option<String>,
-}
-
-#[cfg(test)]
-impl TestExternalEndpointOverrideGuard {
-    pub(crate) fn set(value: &str) -> Self {
-        Self::set_option(Some(value.to_string()))
-    }
-
-    pub(crate) fn clear() -> Self {
-        Self::set_option(None)
-    }
-
-    fn set_option(value: Option<String>) -> Self {
-        let lock = test_external_endpoint_override_lock()
-            .lock()
-            .expect("lock external endpoint override guard");
-        let previous = test_external_endpoint_override_get();
-        test_external_endpoint_override_set(value);
-        Self {
-            _lock: lock,
-            previous,
-        }
-    }
-}
-
-#[cfg(test)]
-impl Drop for TestExternalEndpointOverrideGuard {
-    fn drop(&mut self) {
-        test_external_endpoint_override_set(self.previous.clone());
-    }
-}
-
 fn is_driver_runtime_loadable(driver: &DriverDescriptor) -> bool {
     match driver.id {
-        "external-llamacpp" => external_llamacpp_endpoint().is_some(),
+        "external-llamacpp" => local::runtime_ready(),
+        "openai-responses" | "groq-responses" | "openrouter" => remote::runtime_ready(driver.id),
         _ => driver.available && driver.load_supported,
     }
 }
@@ -256,7 +169,11 @@ fn is_driver_runtime_loadable(driver: &DriverDescriptor) -> bool {
 fn runtime_driver_flags(driver: &DriverDescriptor) -> (bool, bool) {
     match driver.id {
         "external-llamacpp" => {
-            let ready = external_llamacpp_endpoint().is_some();
+            let ready = local::runtime_ready();
+            (ready, ready)
+        }
+        "openai-responses" | "groq-responses" | "openrouter" => {
+            let ready = remote::runtime_ready(driver.id);
             (ready, ready)
         }
         _ => (driver.available, driver.load_supported),
@@ -268,7 +185,7 @@ fn default_runtime_driver_for_model(
     architecture: Option<&str>,
 ) -> Option<&'static DriverDescriptor> {
     if let Some(driver) = DRIVER_REGISTRY.iter().find(|driver| {
-        driver.id == DEFAULT_RESIDENT_BACKEND_ID
+        driver.id == local::DEFAULT_RESIDENT_BACKEND_ID
             && driver.supports_model(family, architecture)
             && is_driver_runtime_loadable(driver)
     }) {
@@ -276,7 +193,8 @@ fn default_runtime_driver_for_model(
     }
 
     DRIVER_REGISTRY.iter().find(|driver| {
-        driver.id != DEFAULT_RESIDENT_BACKEND_ID
+        driver.class == BackendClass::ResidentLocal
+            && driver.id != local::DEFAULT_RESIDENT_BACKEND_ID
             && driver.supports_model(family, architecture)
             && is_driver_runtime_loadable(driver)
     })
@@ -287,25 +205,7 @@ pub(crate) fn persist_context_slot_payload_for_backend(
     slot_id: ContextSlotId,
     final_path: &Path,
 ) -> Result<SlotPersistenceKind, String> {
-    match backend_id {
-        "external-llamacpp" => persist_external_context_slot_snapshot(slot_id, final_path),
-        other => Err(format!(
-            "Backend '{}' is not a supported resident inference backend.",
-            other
-        )),
-    }
-}
-
-fn persist_external_context_slot_snapshot(
-    slot_id: ContextSlotId,
-    final_path: &Path,
-) -> Result<SlotPersistenceKind, String> {
-    let backend =
-        ExternalLlamaCppBackend::from_env(PromptFamily::Unknown).map_err(|e| e.to_string())?;
-    backend
-        .save_context_slot(slot_id, final_path)
-        .map_err(|e| e.to_string())?;
-    Ok(SlotPersistenceKind::BackendSlotSnapshot)
+    local::persist_context_slot_payload_for_backend(backend_id, slot_id, final_path)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -321,8 +221,11 @@ pub fn resolve_driver_for_model(
     architecture: Option<&str>,
     backend_preference: Option<&str>,
 ) -> std::result::Result<DriverResolution, String> {
-    if matches!(family, PromptFamily::Unknown) {
-        return Err("Cannot resolve driver for unknown model family.".to_string());
+    if matches!(family, PromptFamily::Unknown) && backend_preference.is_none() {
+        return Err(
+            "Cannot resolve driver for unknown model family without an explicit backend."
+                .to_string(),
+        );
     }
 
     let fallback = default_runtime_driver_for_model(family, architecture);
@@ -434,6 +337,9 @@ pub trait InferenceBackend: Send {
     fn family(&self) -> PromptFamily;
     fn generate_step(&mut self, request: InferenceStepRequest<'_>) -> Result<InferenceStepResult>;
     fn duplicate_boxed(&self) -> Option<Box<dyn ModelBackend>>;
+    fn runtime_capabilities(&self) -> Option<BackendCapabilities> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -494,32 +400,64 @@ impl RuntimeModel {
         Self { inner }
     }
 
+    #[allow(dead_code)]
     pub fn load_from_gguf(_path: &str, family: PromptFamily, backend_id: &str) -> Result<Self> {
-        let descriptor = driver_registry()
-            .iter()
-            .find(|driver| driver.id == backend_id)
-            .ok_or_else(|| E::msg(format!("Unknown backend id '{}'.", backend_id)))?;
+        Self::load_from_reference(_path, family, backend_id)
+    }
 
-        if !descriptor.supports_family(family) {
-            return Err(E::msg(format!(
-                "Backend '{}' does not support family {:?}.",
-                backend_id, family
-            )));
-        }
+    pub fn load_target(target: &ResolvedModelTarget) -> Result<Self> {
+        let descriptor = resolve_loadable_driver_descriptor(
+            &target.driver_resolution().resolved_backend_id,
+            target.family(),
+        )?;
 
-        if !is_driver_runtime_loadable(descriptor) {
-            return Err(E::msg(format!(
-                "Backend '{}' is registered as '{}' but is not loadable yet: {}",
-                backend_id, descriptor.kind, descriptor.note
-            )));
-        }
+        let backend: Box<dyn ModelBackend> = match target {
+            ResolvedModelTarget::Local(local) => match descriptor.id {
+                "external-llamacpp" => Box::new(ExternalLlamaCppBackend::from_env(local.family)?),
+                _ => {
+                    return Err(E::msg(format!(
+                        "Backend '{}' is registered but has no typed local loader implementation.",
+                        descriptor.id
+                    )))
+                }
+            },
+            ResolvedModelTarget::Remote(remote) => match (&remote.runtime_config, descriptor.id) {
+                (config, "openai-responses")
+                | (config, "groq-responses")
+                | (config, "openrouter") => Box::new(RemoteOpenAICompatibleBackend::from_runtime(
+                    remote.family,
+                    descriptor.id,
+                    remote.model_spec.clone(),
+                    config.clone(),
+                )?),
+                _ => {
+                    return Err(E::msg(format!(
+                        "Backend '{}' is registered but has no typed remote loader implementation.",
+                        descriptor.id
+                    )))
+                }
+            },
+        };
 
-        let backend: Box<dyn ModelBackend> = match backend_id {
+        Ok(Self { inner: backend })
+    }
+
+    pub fn load_from_reference(
+        reference: &str,
+        family: PromptFamily,
+        backend_id: &str,
+    ) -> Result<Self> {
+        let descriptor = resolve_loadable_driver_descriptor(backend_id, family)?;
+
+        let backend: Box<dyn ModelBackend> = match descriptor.id {
             "external-llamacpp" => Box::new(ExternalLlamaCppBackend::from_env(family)?),
+            "openai-responses" | "groq-responses" | "openrouter" => Box::new(
+                RemoteOpenAICompatibleBackend::from_env(family, descriptor.id, reference)?,
+            ),
             _ => {
                 return Err(E::msg(format!(
                     "Backend '{}' is registered but has no in-process loader implementation.",
-                    backend_id
+                    descriptor.id
                 )))
             }
         };
@@ -542,9 +480,15 @@ impl RuntimeModel {
     }
 
     pub fn backend_capabilities(&self) -> BackendCapabilities {
-        driver_descriptor(self.backend_id())
-            .map(|driver| driver.capabilities)
-            .unwrap_or_default()
+        self.inner.runtime_capabilities().unwrap_or_else(|| {
+            driver_descriptor(self.backend_id())
+                .map(|driver| driver.capabilities)
+                .unwrap_or_default()
+        })
+    }
+
+    pub fn backend_telemetry(&self) -> Option<BackendTelemetryView> {
+        runtime_backend_telemetry(self.backend_id())
     }
 
     pub fn generate_step(
@@ -578,16 +522,45 @@ impl RuntimeModel {
     }
 }
 
+fn resolve_loadable_driver_descriptor(
+    backend_id: &str,
+    family: PromptFamily,
+) -> Result<&'static DriverDescriptor> {
+    let descriptor = driver_registry()
+        .iter()
+        .find(|driver| driver.id == backend_id)
+        .ok_or_else(|| E::msg(format!("Unknown backend id '{}'.", backend_id)))?;
+
+    if !descriptor.supports_family(family) {
+        return Err(E::msg(format!(
+            "Backend '{}' does not support family {:?}.",
+            backend_id, family
+        )));
+    }
+
+    if !is_driver_runtime_loadable(descriptor) {
+        return Err(E::msg(format!(
+            "Backend '{}' is registered as '{}' but is not loadable yet: {}",
+            backend_id, descriptor.kind, descriptor.note
+        )));
+    }
+
+    Ok(descriptor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         combine_completion_text, completion_is_finished, diagnose_external_backend,
         persist_context_slot_payload_for_backend, resolve_driver_for_family,
-        resolve_driver_for_model, BackendClass, CompletionResponse, ContextSlotPersistence,
-        ExternalLlamaCppBackend, InferenceBackend, InferenceStepRequest, InferenceStepResult,
-        PromptFamily, RuntimeModel, TestExternalEndpointOverrideGuard,
+        resolve_driver_for_model, runtime_backend_telemetry, BackendClass, CompletionResponse,
+        ContextSlotPersistence, ExternalLlamaCppBackend, InferenceBackend, InferenceStepRequest,
+        InferenceStepResult, PromptFamily, RuntimeModel, TestExternalEndpointOverrideGuard,
+        TestRemoteOpenAIConfigOverrideGuard,
     };
+    use crate::config::{RemoteAdapterKind, RemoteProviderRuntimeConfig};
     use crate::memory::{ContextSlotId, SlotPersistenceKind};
+    use crate::model_catalog::{RemoteModelEntry, ResolvedModelTarget};
     use crate::prompting::GenerationConfig;
     use anyhow::Result;
     use std::fs;
@@ -614,6 +587,25 @@ mod tests {
             .expect("build wordlevel tokenizer");
 
         Tokenizer::new(model)
+    }
+
+    fn test_remote_openai_config(endpoint: &str) -> RemoteProviderRuntimeConfig {
+        RemoteProviderRuntimeConfig {
+            backend_id: "openai-responses".to_string(),
+            adapter_kind: RemoteAdapterKind::OpenAICompatible,
+            endpoint: endpoint.to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-4.1-mini".to_string(),
+            timeout_ms: 5_000,
+            max_request_bytes: 256 * 1024,
+            max_response_bytes: 256 * 1024,
+            stream: true,
+            tokenizer_path: None,
+            input_price_usd_per_mtok: 1.0,
+            output_price_usd_per_mtok: 2.0,
+            http_referer: String::new(),
+            app_title: String::new(),
+        }
     }
 
     fn spawn_mock_llamacpp_server(
@@ -722,6 +714,85 @@ mod tests {
         (format!("http://{}", address), paths, bodies, handle)
     }
 
+    fn spawn_mock_openai_responses_server(
+    ) -> (String, SharedStringLog, SharedStringLog, MockServerHandle) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind openai mock server");
+        let address = listener.local_addr().expect("openai mock addr");
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let paths_for_thread = Arc::clone(&paths);
+        let bodies_for_thread = Arc::clone(&bodies);
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept openai mock request");
+            let mut request_bytes = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let expected_total = loop {
+                let read = stream.read(&mut buffer).expect("read openai mock request");
+                if read == 0 {
+                    break request_bytes.len();
+                }
+                request_bytes.extend_from_slice(&buffer[..read]);
+
+                let Some(header_end) = request_bytes
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|index| index + 4)
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request_bytes[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                let total = header_end + content_length;
+                if request_bytes.len() >= total {
+                    break total;
+                }
+            };
+            let request = String::from_utf8_lossy(&request_bytes[..expected_total]);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("/")
+                .to_string();
+            let body = request
+                .split("\r\n\r\n")
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            paths_for_thread
+                .lock()
+                .expect("lock openai paths")
+                .push(path);
+            bodies_for_thread
+                .lock()
+                .expect("lock openai bodies")
+                .push(body);
+
+            let chunk_one =
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n";
+            let chunk_two = "data: {\"type\":\"response.completed\"}\n\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:X}\r\n{}\r\n{:X}\r\n{}\r\n0\r\n\r\n",
+                chunk_one.len(),
+                chunk_one,
+                chunk_two.len(),
+                chunk_two,
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        (format!("http://{address}/v1"), paths, bodies, handle)
+    }
+
     fn spawn_mock_diag_server() -> (String, SharedStringLog, MockServerHandle) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock diag server");
         let address = listener.local_addr().expect("mock diag server addr");
@@ -791,6 +862,23 @@ mod tests {
     }
 
     #[test]
+    fn preferred_openai_driver_resolves_unknown_family_when_configured() {
+        let _openai = TestRemoteOpenAIConfigOverrideGuard::set(
+            "openai-responses",
+            test_remote_openai_config("http://127.0.0.1:19090/v1"),
+        );
+
+        let resolution = resolve_driver_for_family(PromptFamily::Unknown, Some("openai-responses"))
+            .expect("openai backend should resolve unknown family with explicit preference");
+
+        assert_eq!(resolution.resolved_backend_id, "openai-responses");
+        assert_eq!(resolution.backend_class, BackendClass::RemoteStateless);
+        assert!(resolution.capabilities.structured_output);
+        assert!(resolution.available);
+        assert!(resolution.load_supported);
+    }
+
+    #[test]
     fn preferred_external_driver_errors_when_endpoint_is_missing() {
         let _endpoint = TestExternalEndpointOverrideGuard::clear();
         let err = resolve_driver_for_family(PromptFamily::Qwen, Some("external-llamacpp"))
@@ -808,6 +896,7 @@ mod tests {
 
     #[test]
     fn architecture_specific_driver_resolution_rejects_qwen35_for_qwen2_backend() {
+        let _endpoint = TestExternalEndpointOverrideGuard::clear();
         let err = resolve_driver_for_model(PromptFamily::Qwen, Some("qwen35"), None)
             .expect_err("qwen35 should not resolve to qwen2 backend");
         assert!(err.contains("qwen35"));
@@ -826,6 +915,277 @@ mod tests {
         assert!(resolution.available);
         assert!(resolution.load_supported);
         assert!(resolution.capabilities.persistent_slots);
+    }
+
+    #[test]
+    fn openai_responses_backend_roundtrips_generation() {
+        let (endpoint, paths, bodies, server_handle) = spawn_mock_openai_responses_server();
+        let _openai = TestRemoteOpenAIConfigOverrideGuard::set(
+            "openai-responses",
+            test_remote_openai_config(&endpoint),
+        );
+        super::remote::openai_compatible::reset_telemetry(Some("openai-responses"));
+
+        let mut model = RuntimeModel::load_from_reference(
+            "gpt-4.1-mini",
+            PromptFamily::Unknown,
+            "openai-responses",
+        )
+        .expect("load openai responses runtime model");
+        let tokenizer = test_tokenizer();
+        let generation = GenerationConfig {
+            temperature: 0.7,
+            top_p: 0.9,
+            seed: 1,
+            max_tokens: 16,
+        };
+
+        let step = model
+            .generate_step(InferenceStepRequest {
+                context_slot_id: None,
+                tokens: &[1],
+                rendered_prompt: "hello",
+                resident_prompt_suffix: "hello",
+                index_pos: 0,
+                remaining_generation_budget: generation.max_tokens,
+                tokenizer: &tokenizer,
+                generation,
+                eos_token_id: 2,
+                eot_token_id: 3,
+            })
+            .expect("generate step through openai backend");
+
+        server_handle.join().expect("join openai mock server");
+
+        assert_eq!(model.backend_class(), BackendClass::RemoteStateless);
+        assert!(!model.backend_capabilities().resident_kv);
+        assert_eq!(step.emitted_text, "hello");
+        assert_eq!(step.appended_tokens, vec![1]);
+        assert_eq!(
+            paths.lock().expect("lock openai paths").as_slice(),
+            &["/v1/responses"]
+        );
+        assert!(
+            bodies
+                .lock()
+                .expect("lock openai bodies")
+                .first()
+                .map(|body| body.contains("\"model\":\"gpt-4.1-mini\""))
+                .unwrap_or(false),
+            "openai backend should send the selected remote model id"
+        );
+        let telemetry =
+            runtime_backend_telemetry("openai-responses").expect("openai telemetry available");
+        assert_eq!(telemetry.requests_total, 1);
+        assert_eq!(telemetry.stream_requests_total, 1);
+        assert_eq!(telemetry.input_tokens_total, 1);
+        assert_eq!(telemetry.output_tokens_total, 1);
+        assert!(telemetry.estimated_cost_usd > 0.0);
+        assert_eq!(telemetry.last_model.as_deref(), Some("gpt-4.1-mini"));
+    }
+
+    #[test]
+    fn groq_responses_backend_roundtrips_generation() {
+        let (endpoint, paths, bodies, server_handle) = spawn_mock_openai_responses_server();
+        let groq_endpoint = endpoint.replace("/v1", "/openai/v1");
+        let _groq = TestRemoteOpenAIConfigOverrideGuard::set(
+            "groq-responses",
+            test_remote_openai_config(&groq_endpoint),
+        );
+        super::remote::openai_compatible::reset_telemetry(Some("groq-responses"));
+
+        let mut model = RuntimeModel::load_from_reference(
+            "llama-3.3-70b-versatile",
+            PromptFamily::Unknown,
+            "groq-responses",
+        )
+        .expect("load groq runtime model");
+        let tokenizer = test_tokenizer();
+        let generation = GenerationConfig {
+            temperature: 0.7,
+            top_p: 0.9,
+            seed: 1,
+            max_tokens: 16,
+        };
+
+        let step = model
+            .generate_step(InferenceStepRequest {
+                context_slot_id: None,
+                tokens: &[1],
+                rendered_prompt: "hello",
+                resident_prompt_suffix: "hello",
+                index_pos: 0,
+                remaining_generation_budget: generation.max_tokens,
+                tokenizer: &tokenizer,
+                generation,
+                eos_token_id: 2,
+                eot_token_id: 3,
+            })
+            .expect("generate step through groq backend");
+
+        server_handle.join().expect("join groq mock server");
+
+        assert_eq!(step.emitted_text, "hello");
+        assert_eq!(
+            paths.lock().expect("lock groq paths").as_slice(),
+            &["/openai/v1/responses"]
+        );
+        assert!(bodies
+            .lock()
+            .expect("lock groq bodies")
+            .first()
+            .map(|body| body.contains("\"model\":\"llama-3.3-70b-versatile\""))
+            .unwrap_or(false));
+        let telemetry =
+            runtime_backend_telemetry("groq-responses").expect("groq telemetry available");
+        assert_eq!(telemetry.requests_total, 1);
+        assert_eq!(
+            telemetry.last_model.as_deref(),
+            Some("llama-3.3-70b-versatile")
+        );
+    }
+
+    #[test]
+    fn typed_remote_target_applies_model_specific_limits_pricing_and_capabilities() {
+        let (endpoint, _paths, bodies, server_handle) = spawn_mock_openai_responses_server();
+        let _openai = TestRemoteOpenAIConfigOverrideGuard::set(
+            "openai-responses",
+            test_remote_openai_config(&endpoint),
+        );
+        super::remote::openai_compatible::reset_telemetry(Some("openai-responses"));
+        let driver_resolution =
+            resolve_driver_for_model(PromptFamily::Unknown, None, Some("openai-responses"))
+                .expect("resolve openai backend");
+        let target = ResolvedModelTarget::remote(
+            "openai-responses",
+            "OpenAI",
+            "openai-responses",
+            "gpt-4.1-mini",
+            RemoteModelEntry {
+                id: "gpt-4.1-mini".to_string(),
+                label: "GPT-4.1 mini".to_string(),
+                context_window_tokens: Some(1_024),
+                max_output_tokens: Some(8),
+                supports_structured_output: false,
+                input_price_usd_per_mtok: Some(10.0),
+                output_price_usd_per_mtok: Some(20.0),
+            },
+            test_remote_openai_config(&endpoint),
+            None,
+            driver_resolution,
+        );
+
+        let mut model = RuntimeModel::load_target(&target).expect("load typed remote target");
+        assert!(!model.backend_capabilities().structured_output);
+
+        let tokenizer = test_tokenizer();
+        let generation = GenerationConfig {
+            temperature: 0.7,
+            top_p: 0.9,
+            seed: 1,
+            max_tokens: 16,
+        };
+
+        let step = model
+            .generate_step(InferenceStepRequest {
+                context_slot_id: None,
+                tokens: &[1],
+                rendered_prompt: "hello",
+                resident_prompt_suffix: "hello",
+                index_pos: 0,
+                remaining_generation_budget: generation.max_tokens,
+                tokenizer: &tokenizer,
+                generation,
+                eos_token_id: 2,
+                eot_token_id: 3,
+            })
+            .expect("generate step through typed remote target");
+
+        server_handle.join().expect("join openai mock server");
+
+        assert_eq!(step.emitted_text, "hello");
+        assert!(
+            bodies
+                .lock()
+                .expect("lock openai bodies")
+                .first()
+                .map(|body| body.contains("\"max_output_tokens\":8"))
+                .unwrap_or(false),
+            "typed remote target should clamp request max_output_tokens to model metadata"
+        );
+        let telemetry =
+            runtime_backend_telemetry("openai-responses").expect("openai telemetry available");
+        assert!((telemetry.estimated_cost_usd - 0.00003).abs() < 1e-9);
+    }
+
+    #[test]
+    fn openrouter_backend_uses_chat_completions_transport() {
+        let (endpoint, paths, bodies, server_handle) = spawn_mock_openai_responses_server();
+        let openrouter_endpoint = endpoint.replace("/v1", "/api/v1");
+        let _openrouter = TestRemoteOpenAIConfigOverrideGuard::set(
+            "openrouter",
+            RemoteProviderRuntimeConfig {
+                backend_id: "openrouter".to_string(),
+                adapter_kind: RemoteAdapterKind::OpenAICompatible,
+                endpoint: openrouter_endpoint,
+                api_key: "test-key".to_string(),
+                default_model: "openai/gpt-4.1-mini".to_string(),
+                timeout_ms: 5_000,
+                max_request_bytes: 256 * 1024,
+                max_response_bytes: 256 * 1024,
+                stream: true,
+                tokenizer_path: None,
+                input_price_usd_per_mtok: 0.0,
+                output_price_usd_per_mtok: 0.0,
+                http_referer: "https://agenticos.local".to_string(),
+                app_title: "AgenticOS".to_string(),
+            },
+        );
+        super::remote::openai_compatible::reset_telemetry(Some("openrouter"));
+
+        let mut model = RuntimeModel::load_from_reference(
+            "openai/gpt-4.1-mini",
+            PromptFamily::Unknown,
+            "openrouter",
+        )
+        .expect("load openrouter runtime model");
+        let tokenizer = test_tokenizer();
+        let generation = GenerationConfig {
+            temperature: 0.7,
+            top_p: 0.9,
+            seed: 1,
+            max_tokens: 16,
+        };
+
+        let _ = model
+            .generate_step(InferenceStepRequest {
+                context_slot_id: None,
+                tokens: &[1],
+                rendered_prompt: "hello",
+                resident_prompt_suffix: "hello",
+                index_pos: 0,
+                remaining_generation_budget: generation.max_tokens,
+                tokenizer: &tokenizer,
+                generation,
+                eos_token_id: 2,
+                eot_token_id: 3,
+            })
+            .expect("generate step through openrouter backend");
+
+        server_handle.join().expect("join openrouter mock server");
+
+        assert_eq!(
+            paths.lock().expect("lock openrouter paths").as_slice(),
+            &["/api/v1/chat/completions"]
+        );
+        let body = bodies
+            .lock()
+            .expect("lock openrouter bodies")
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        assert!(body.contains("\"prompt\":\"hello\""));
+        assert!(body.contains("\"model\":\"openai/gpt-4.1-mini\""));
     }
 
     struct DummyBackend;

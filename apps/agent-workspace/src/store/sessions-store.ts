@@ -1,6 +1,11 @@
 import { create } from "zustand";
 
-import { fetchLobbySnapshot } from "../lib/api";
+import {
+  fetchLobbySnapshot,
+  type BackendCapabilities,
+  type BackendTelemetry,
+  type RemoteRuntimeModel,
+} from "../lib/api";
 
 export type SessionStatus = "idle" | "running" | "swapped";
 
@@ -36,6 +41,14 @@ interface SessionsState {
   connected: boolean;
   selectedModelId: string;
   loadedModelId: string;
+  loadedTargetKind: string | null;
+  loadedProviderId: string | null;
+  loadedRemoteModelId: string | null;
+  loadedBackendId: string | null;
+  loadedBackendClass: string | null;
+  loadedBackendCapabilities: BackendCapabilities | null;
+  loadedBackendTelemetry: BackendTelemetry | null;
+  loadedRemoteModel: RemoteRuntimeModel | null;
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -60,6 +73,14 @@ export const useSessionsStore = create<SessionsState>((set) => ({
   connected: false,
   selectedModelId: "",
   loadedModelId: "",
+  loadedTargetKind: null,
+  loadedProviderId: null,
+  loadedRemoteModelId: null,
+  loadedBackendId: null,
+  loadedBackendClass: null,
+  loadedBackendCapabilities: null,
+  loadedBackendTelemetry: null,
+  loadedRemoteModel: null,
   loading: false,
   error: null,
   applySnapshot: (snapshot) => {
@@ -67,6 +88,14 @@ export const useSessionsStore = create<SessionsState>((set) => ({
       connected: snapshot.connected,
       selectedModelId: snapshot.selectedModelId,
       loadedModelId: snapshot.loadedModelId,
+      loadedTargetKind: snapshot.loadedTargetKind,
+      loadedProviderId: snapshot.loadedProviderId,
+      loadedRemoteModelId: snapshot.loadedRemoteModelId,
+      loadedBackendId: snapshot.loadedBackendId,
+      loadedBackendClass: snapshot.loadedBackendClass,
+      loadedBackendCapabilities: snapshot.loadedBackendCapabilities,
+      loadedBackendTelemetry: snapshot.loadedBackendTelemetry,
+      loadedRemoteModel: snapshot.loadedRemoteModel,
       orchestrations: snapshot.orchestrations,
       error: snapshot.error,
       loading: false,
@@ -102,6 +131,16 @@ export const useSessionsStore = create<SessionsState>((set) => ({
       set({
         connected: false,
         loading: false,
+        selectedModelId: "",
+        loadedModelId: "",
+        loadedTargetKind: null,
+        loadedProviderId: null,
+        loadedRemoteModelId: null,
+        loadedBackendId: null,
+        loadedBackendClass: null,
+        loadedBackendCapabilities: null,
+        loadedBackendTelemetry: null,
+        loadedRemoteModel: null,
         orchestrations: [],
         sessions: [],
         error: error instanceof Error ? error.message : "Failed to fetch lobby snapshot",

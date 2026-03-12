@@ -40,13 +40,13 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
     if can_scheduler_switch {
         match model_catalog.resolve_workload_target(workload) {
             Ok(Some(target)) => {
-                let selected_path = target.path.to_string_lossy().to_string();
+                let selected_path = target.display_path().to_string_lossy().to_string();
                 let should_reload = match engine_state.as_ref() {
                     Some(engine) => {
                         engine.loaded_model_path() != selected_path
-                            || engine.loaded_family() != target.family
+                            || engine.loaded_family() != target.family()
                             || engine.loaded_backend_id()
-                                != target.driver_resolution.resolved_backend_id
+                                != target.driver_resolution().resolved_backend_id
                     }
                     None => true,
                 };
@@ -80,10 +80,10 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                                     "workload={:?} model_id={} family={:?} backend={}",
                                     workload,
                                     target
-                                        .model_id
-                                        .clone()
-                                        .unwrap_or_else(|| "<external-path>".to_string()),
-                                    target.family,
+                                        .local_model_id()
+                                        .or_else(|| target.remote_model_id())
+                                        .unwrap_or("<external-path>"),
+                                    target.family(),
                                     loaded.backend_id
                                 ),
                             );
@@ -126,6 +126,7 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                 prompt: prompt.clone(),
                 owner_id: client_id,
                 workload,
+                required_backend_class: None,
                 priority: ProcessPriority::Normal,
                 lifecycle_policy: ProcessLifecyclePolicy::Interactive,
                 context_policy: Some(resolved.context_policy.clone()),

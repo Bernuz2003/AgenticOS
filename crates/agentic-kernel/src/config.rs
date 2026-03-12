@@ -2,10 +2,26 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use toml::Value as TomlValue;
 
 static KERNEL_CONFIG: OnceLock<KernelConfig> = OnceLock::new();
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone)]
+struct ConfigBootstrapPaths {
+    config_files: Vec<PathBuf>,
+    env_file: PathBuf,
+}
+
+impl ConfigBootstrapPaths {
+    fn primary_config_path(&self) -> PathBuf {
+        self.config_files
+            .first()
+            .cloned()
+            .unwrap_or_else(|| repository_path("config/kernel/base.toml"))
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct KernelConfig {
     pub network: NetworkConfig,
@@ -16,11 +32,37 @@ pub struct KernelConfig {
     pub checkpoint: CheckpointConfig,
     pub auth: AuthConfig,
     pub external_llamacpp: ExternalLlamaCppConfig,
+    pub openai_responses: OpenAIResponsesConfig,
+    pub groq_responses: GroqResponsesConfig,
+    pub openrouter: OpenRouterConfig,
     pub exec: ExecConfig,
     pub orchestrator: OrchestratorConfig,
     pub tools: ToolsRuntimeConfig,
     pub generation: GenerationProfilesConfig,
     pub scheduler: SchedulerConfig,
+}
+
+impl Default for KernelConfig {
+    fn default() -> Self {
+        Self {
+            network: NetworkConfig::default(),
+            protocol: ProtocolRuntimeConfig::default(),
+            paths: PathsConfig::default(),
+            memory: MemoryRuntimeConfig::default(),
+            context: ContextConfig::default(),
+            checkpoint: CheckpointConfig::default(),
+            auth: AuthConfig::default(),
+            external_llamacpp: ExternalLlamaCppConfig::default(),
+            openai_responses: OpenAIResponsesConfig::default(),
+            groq_responses: GroqResponsesConfig::default(),
+            openrouter: OpenRouterConfig::default(),
+            exec: ExecConfig::default(),
+            orchestrator: OrchestratorConfig::default(),
+            tools: ToolsRuntimeConfig::default(),
+            generation: GenerationProfilesConfig::default(),
+            scheduler: SchedulerConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -84,6 +126,7 @@ pub struct PathsConfig {
     pub workspace_dir: PathBuf,
     pub checkpoint_path: PathBuf,
     pub kernel_token_path: PathBuf,
+    pub remote_provider_catalog_path: PathBuf,
 }
 
 impl Default for PathsConfig {
@@ -93,6 +136,7 @@ impl Default for PathsConfig {
             workspace_dir: repository_path("workspace"),
             checkpoint_path: repository_path("workspace/checkpoint.json"),
             kernel_token_path: repository_path("workspace/.kernel_token"),
+            remote_provider_catalog_path: repository_path("config/providers/remote_providers.toml"),
         }
     }
 }
@@ -166,6 +210,118 @@ impl Default for ExternalLlamaCppConfig {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct RemoteProviderRuntimeConfig {
+    pub backend_id: String,
+    pub adapter_kind: RemoteAdapterKind,
+    pub endpoint: String,
+    pub api_key: String,
+    pub default_model: String,
+    pub timeout_ms: u64,
+    pub max_request_bytes: usize,
+    pub max_response_bytes: usize,
+    pub stream: bool,
+    #[allow(dead_code)]
+    pub tokenizer_path: Option<PathBuf>,
+    pub input_price_usd_per_mtok: f64,
+    pub output_price_usd_per_mtok: f64,
+    pub http_referer: String,
+    pub app_title: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteAdapterKind {
+    #[default]
+    #[serde(rename = "openai_compatible")]
+    OpenAICompatible,
+}
+
+impl RemoteAdapterKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAICompatible => "openai_compatible",
+        }
+    }
+}
+
+macro_rules! define_remote_openai_config {
+    ($name:ident, $backend_id:expr, $endpoint:expr) => {
+        #[derive(Debug, Clone, Deserialize)]
+        #[serde(default)]
+        pub struct $name {
+            pub endpoint: String,
+            pub api_key: String,
+            pub default_model: String,
+            pub timeout_ms: u64,
+            pub max_request_bytes: usize,
+            pub max_response_bytes: usize,
+            pub stream: bool,
+            pub tokenizer_path: Option<PathBuf>,
+            pub input_price_usd_per_mtok: f64,
+            pub output_price_usd_per_mtok: f64,
+            pub http_referer: String,
+            pub app_title: String,
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self {
+                    endpoint: $endpoint.to_string(),
+                    api_key: String::new(),
+                    default_model: String::new(),
+                    timeout_ms: 120_000,
+                    max_request_bytes: 512 * 1024,
+                    max_response_bytes: 4 * 1024 * 1024,
+                    stream: true,
+                    tokenizer_path: None,
+                    input_price_usd_per_mtok: 0.0,
+                    output_price_usd_per_mtok: 0.0,
+                    http_referer: String::new(),
+                    app_title: String::new(),
+                }
+            }
+        }
+
+        impl From<$name> for RemoteProviderRuntimeConfig {
+            fn from(value: $name) -> Self {
+                Self {
+                    backend_id: $backend_id.to_string(),
+                    adapter_kind: RemoteAdapterKind::OpenAICompatible,
+                    endpoint: value.endpoint,
+                    api_key: value.api_key,
+                    default_model: value.default_model,
+                    timeout_ms: value.timeout_ms,
+                    max_request_bytes: value.max_request_bytes,
+                    max_response_bytes: value.max_response_bytes,
+                    stream: value.stream,
+                    tokenizer_path: value.tokenizer_path,
+                    input_price_usd_per_mtok: value.input_price_usd_per_mtok,
+                    output_price_usd_per_mtok: value.output_price_usd_per_mtok,
+                    http_referer: value.http_referer,
+                    app_title: value.app_title,
+                }
+            }
+        }
+    };
+}
+
+define_remote_openai_config!(
+    OpenAIResponsesConfig,
+    "openai-responses",
+    "https://api.openai.com/v1"
+);
+define_remote_openai_config!(
+    GroqResponsesConfig,
+    "groq-responses",
+    "https://api.groq.com/openai/v1"
+);
+define_remote_openai_config!(
+    OpenRouterConfig,
+    "openrouter",
+    "https://openrouter.ai/api/v1"
+);
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
@@ -353,36 +509,157 @@ pub fn kernel_config() -> &'static KernelConfig {
     })
 }
 
+#[allow(dead_code)]
 pub fn config_file_path() -> PathBuf {
-    if let Some(path) = env_string("AGENTIC_CONFIG_PATH")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
-        return path;
-    }
-
-    let cwd_candidate = PathBuf::from("agenticos.toml");
-    if cwd_candidate.exists() {
-        cwd_candidate
-    } else {
-        repository_path("agenticos.toml")
-    }
+    resolve_config_bootstrap_paths().primary_config_path()
 }
 
 fn load_kernel_config() -> Result<KernelConfig, String> {
-    let path = config_file_path();
-    let mut config = if path.exists() {
-        let raw = fs::read_to_string(&path)
-            .map_err(|e| format!("failed to read config '{}': {}", path.display(), e))?;
-        toml::from_str::<KernelConfig>(&raw)
-            .map_err(|e| format!("invalid config '{}': {}", path.display(), e))?
+    let bootstrap = resolve_config_bootstrap_paths();
+    let primary_config_path = bootstrap.primary_config_path();
+    let merged = load_merged_toml_config(&bootstrap.config_files)?;
+    let mut config = if let Some(value) = merged {
+        value.try_into::<KernelConfig>().map_err(|e| {
+            format!(
+                "invalid merged config rooted at '{}': {}",
+                primary_config_path.display(),
+                e
+            )
+        })?
     } else {
         KernelConfig::default()
     };
 
+    load_env_file(&bootstrap.env_file)?;
     apply_env_overrides(&mut config);
-    normalize_config_paths(&mut config, &path);
+    normalize_config_paths(&mut config, &primary_config_path);
     Ok(config)
+}
+
+fn resolve_config_bootstrap_paths() -> ConfigBootstrapPaths {
+    let local_override = env_string("AGENTIC_LOCAL_CONFIG_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repository_path("config/kernel/local.toml"));
+    let env_file = env_string("AGENTIC_ENV_FILE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repository_path("config/env/agenticos.env"));
+
+    let mut config_files = if let Some(path) = env_string("AGENTIC_CONFIG_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        vec![path]
+    } else {
+        vec![
+            repository_path("config/kernel/base.toml"),
+            repository_path("agenticos.toml"),
+        ]
+    };
+
+    if !config_files.contains(&local_override) {
+        config_files.push(local_override);
+    }
+
+    ConfigBootstrapPaths {
+        config_files,
+        env_file,
+    }
+}
+
+fn load_merged_toml_config(config_files: &[PathBuf]) -> Result<Option<TomlValue>, String> {
+    let mut merged: Option<TomlValue> = None;
+
+    for path in config_files {
+        if !path.exists() {
+            continue;
+        }
+
+        let raw = fs::read_to_string(path)
+            .map_err(|e| format!("failed to read config '{}': {}", path.display(), e))?;
+        let value = toml::from_str::<TomlValue>(&raw)
+            .map_err(|e| format!("invalid config '{}': {}", path.display(), e))?;
+
+        if let Some(current) = merged.as_mut() {
+            merge_toml_value(current, value);
+        } else {
+            merged = Some(value);
+        }
+    }
+
+    Ok(merged)
+}
+
+fn merge_toml_value(base: &mut TomlValue, overlay: TomlValue) {
+    match (base, overlay) {
+        (TomlValue::Table(base_table), TomlValue::Table(overlay_table)) => {
+            for (key, overlay_value) in overlay_table {
+                if let Some(base_value) = base_table.get_mut(&key) {
+                    merge_toml_value(base_value, overlay_value);
+                } else {
+                    base_table.insert(key, overlay_value);
+                }
+            }
+        }
+        (base_value, overlay_value) => {
+            *base_value = overlay_value;
+        }
+    }
+}
+
+fn load_env_file(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let raw = fs::read_to_string(path)
+        .map_err(|e| format!("failed to read env file '{}': {}", path.display(), e))?;
+
+    for (index, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let entry = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+        let (key, value) = entry.split_once('=').ok_or_else(|| {
+            format!(
+                "invalid env file '{}': line {} must be KEY=VALUE",
+                path.display(),
+                index + 1
+            )
+        })?;
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!(
+                "invalid env file '{}': line {} has empty key",
+                path.display(),
+                index + 1
+            ));
+        }
+
+        if std::env::var_os(key).is_some() {
+            continue;
+        }
+
+        std::env::set_var(key, parse_env_value(value.trim()));
+    }
+
+    Ok(())
+}
+
+fn parse_env_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 {
+        let quoted = (trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\''));
+        if quoted {
+            return trimmed[1..trimmed.len() - 1].to_string();
+        }
+    }
+
+    trimmed.to_string()
 }
 
 pub fn repository_root() -> PathBuf {
@@ -435,12 +712,22 @@ fn normalize_config_paths(config: &mut KernelConfig, config_path: &Path) {
     absolutize_from(&base_dir, &mut config.paths.workspace_dir);
     absolutize_from(&base_dir, &mut config.paths.checkpoint_path);
     absolutize_from(&base_dir, &mut config.paths.kernel_token_path);
+    absolutize_from(&base_dir, &mut config.paths.remote_provider_catalog_path);
     absolutize_from(&base_dir, &mut config.memory.swap_dir);
+    absolutize_remote_tokenizer_path(&base_dir, &mut config.openai_responses.tokenizer_path);
+    absolutize_remote_tokenizer_path(&base_dir, &mut config.groq_responses.tokenizer_path);
+    absolutize_remote_tokenizer_path(&base_dir, &mut config.openrouter.tokenizer_path);
 }
 
 fn absolutize_from(base_dir: &Path, path: &mut PathBuf) {
     if path.is_relative() {
         *path = base_dir.join(&*path);
+    }
+}
+
+fn absolutize_remote_tokenizer_path(base_dir: &Path, path: &mut Option<PathBuf>) {
+    if let Some(path) = path.as_mut() {
+        absolutize_from(base_dir, path);
     }
 }
 
@@ -456,6 +743,9 @@ fn apply_env_overrides(config: &mut KernelConfig) {
     }
     if let Some(value) = env_bool_opt("AGENTIC_PROTOCOL_ALLOW_LEGACY") {
         config.protocol.allow_legacy_fallback = value;
+    }
+    if let Some(value) = env_string("AGENTIC_REMOTE_PROVIDERS_PATH") {
+        config.paths.remote_provider_catalog_path = PathBuf::from(value);
     }
     if let Some(value) = env_string("AGENTIC_PROTOCOL_CAPABILITIES") {
         let capabilities: Vec<String> = value
@@ -503,6 +793,108 @@ fn apply_env_overrides(config: &mut KernelConfig) {
     }
     if let Some(value) = env_usize_opt("AGENTIC_LLAMACPP_CHUNK_TOKENS") {
         config.external_llamacpp.chunk_tokens = value.max(1);
+    }
+    if let Some(value) = env_string("AGENTIC_OPENAI_ENDPOINT") {
+        config.openai_responses.endpoint = value;
+    }
+    if let Some(value) = env_string("AGENTIC_OPENAI_API_KEY") {
+        config.openai_responses.api_key = value;
+    } else if let Some(value) = env_string("OPENAI_API_KEY") {
+        config.openai_responses.api_key = value;
+    }
+    if let Some(value) = env_string("AGENTIC_OPENAI_DEFAULT_MODEL") {
+        config.openai_responses.default_model = value;
+    }
+    if let Some(value) = env_u64_opt("AGENTIC_OPENAI_TIMEOUT_MS") {
+        config.openai_responses.timeout_ms = value.max(1);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_OPENAI_MAX_REQUEST_BYTES") {
+        config.openai_responses.max_request_bytes = value.max(1024);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_OPENAI_MAX_RESPONSE_BYTES") {
+        config.openai_responses.max_response_bytes = value.max(1024);
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_OPENAI_STREAM") {
+        config.openai_responses.stream = value;
+    }
+    if let Some(value) = env_string("AGENTIC_OPENAI_TOKENIZER_PATH") {
+        config.openai_responses.tokenizer_path = Some(PathBuf::from(value));
+    }
+    if let Some(value) = env_f64_opt("AGENTIC_OPENAI_INPUT_PRICE_USD_PER_MTOK") {
+        config.openai_responses.input_price_usd_per_mtok = value.max(0.0);
+    }
+    if let Some(value) = env_f64_opt("AGENTIC_OPENAI_OUTPUT_PRICE_USD_PER_MTOK") {
+        config.openai_responses.output_price_usd_per_mtok = value.max(0.0);
+    }
+    if let Some(value) = env_string("AGENTIC_GROQ_ENDPOINT") {
+        config.groq_responses.endpoint = value;
+    }
+    if let Some(value) = env_string("AGENTIC_GROQ_API_KEY") {
+        config.groq_responses.api_key = value;
+    } else if let Some(value) = env_string("GROQ_API_KEY") {
+        config.groq_responses.api_key = value;
+    }
+    if let Some(value) = env_string("AGENTIC_GROQ_DEFAULT_MODEL") {
+        config.groq_responses.default_model = value;
+    }
+    if let Some(value) = env_u64_opt("AGENTIC_GROQ_TIMEOUT_MS") {
+        config.groq_responses.timeout_ms = value.max(1);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_GROQ_MAX_REQUEST_BYTES") {
+        config.groq_responses.max_request_bytes = value.max(1024);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_GROQ_MAX_RESPONSE_BYTES") {
+        config.groq_responses.max_response_bytes = value.max(1024);
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_GROQ_STREAM") {
+        config.groq_responses.stream = value;
+    }
+    if let Some(value) = env_string("AGENTIC_GROQ_TOKENIZER_PATH") {
+        config.groq_responses.tokenizer_path = Some(PathBuf::from(value));
+    }
+    if let Some(value) = env_f64_opt("AGENTIC_GROQ_INPUT_PRICE_USD_PER_MTOK") {
+        config.groq_responses.input_price_usd_per_mtok = value.max(0.0);
+    }
+    if let Some(value) = env_f64_opt("AGENTIC_GROQ_OUTPUT_PRICE_USD_PER_MTOK") {
+        config.groq_responses.output_price_usd_per_mtok = value.max(0.0);
+    }
+    if let Some(value) = env_string("AGENTIC_OPENROUTER_ENDPOINT") {
+        config.openrouter.endpoint = value;
+    }
+    if let Some(value) = env_string("AGENTIC_OPENROUTER_API_KEY") {
+        config.openrouter.api_key = value;
+    } else if let Some(value) = env_string("OPENROUTER_API_KEY") {
+        config.openrouter.api_key = value;
+    }
+    if let Some(value) = env_string("AGENTIC_OPENROUTER_DEFAULT_MODEL") {
+        config.openrouter.default_model = value;
+    }
+    if let Some(value) = env_u64_opt("AGENTIC_OPENROUTER_TIMEOUT_MS") {
+        config.openrouter.timeout_ms = value.max(1);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_OPENROUTER_MAX_REQUEST_BYTES") {
+        config.openrouter.max_request_bytes = value.max(1024);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_OPENROUTER_MAX_RESPONSE_BYTES") {
+        config.openrouter.max_response_bytes = value.max(1024);
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_OPENROUTER_STREAM") {
+        config.openrouter.stream = value;
+    }
+    if let Some(value) = env_string("AGENTIC_OPENROUTER_TOKENIZER_PATH") {
+        config.openrouter.tokenizer_path = Some(PathBuf::from(value));
+    }
+    if let Some(value) = env_f64_opt("AGENTIC_OPENROUTER_INPUT_PRICE_USD_PER_MTOK") {
+        config.openrouter.input_price_usd_per_mtok = value.max(0.0);
+    }
+    if let Some(value) = env_f64_opt("AGENTIC_OPENROUTER_OUTPUT_PRICE_USD_PER_MTOK") {
+        config.openrouter.output_price_usd_per_mtok = value.max(0.0);
+    }
+    if let Some(value) = env_string("AGENTIC_OPENROUTER_HTTP_REFERER") {
+        config.openrouter.http_referer = value;
+    }
+    if let Some(value) = env_string("AGENTIC_OPENROUTER_TITLE") {
+        config.openrouter.app_title = value;
     }
     if let Some(value) = env_bool_opt("AGENTIC_EXEC_AUTO_SWITCH") {
         config.exec.auto_switch = value;
@@ -577,6 +969,12 @@ fn env_u64_opt(name: &str) -> Option<u64> {
     std::env::var(name)
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
+}
+
+fn env_f64_opt(name: &str) -> Option<f64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
 }
 
 fn env_usize_opt(name: &str) -> Option<usize> {

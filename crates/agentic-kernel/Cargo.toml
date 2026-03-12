@@ -23,6 +23,7 @@ byteorder = "1.5"
 anyhow = "1.0"
 hf-hub = "0.4.3"
 getrandom = "0.2"
+ureq = { version = "2.12", features = ["json"] }
 
 [dev-dependencies]
 jsonschema = "0.18"

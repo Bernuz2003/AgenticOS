@@ -1,13 +1,14 @@
 use anyhow::{Error as E, Result};
 use serde_json::json;
 
+use crate::backend::driver_descriptor;
 use crate::prompting::PromptFamily;
 
-use super::external_llamacpp::ExternalLlamaCppBackend;
-use super::http::{HttpEndpoint, HttpJsonResponse};
+use super::llamacpp::ExternalLlamaCppBackend;
+use crate::backend::http::{HttpEndpoint, HttpJsonResponse};
 
 pub(crate) fn diagnose_external_backend() -> Result<serde_json::Value> {
-    let endpoint_raw = super::external_llamacpp_endpoint().ok_or_else(|| {
+    let endpoint_raw = super::endpoint().ok_or_else(|| {
         E::msg("AGENTIC_LLAMACPP_ENDPOINT is not configured; external backend diagnostics are unavailable.")
     })?;
     let timeout_ms = std::env::var("AGENTIC_LLAMACPP_TIMEOUT_MS")
@@ -51,7 +52,7 @@ pub(crate) fn diagnose_external_backend() -> Result<serde_json::Value> {
 
     let props_json = props_entry.get("json");
     let slots_json = slots_entry.get("json").and_then(|value| value.as_array());
-    let descriptor = super::driver_descriptor("external-llamacpp")
+    let descriptor = driver_descriptor("external-llamacpp")
         .ok_or_else(|| E::msg("Backend registry is missing external-llamacpp."))?;
     let capabilities = descriptor.capabilities;
 

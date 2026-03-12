@@ -135,6 +135,7 @@ pub(super) fn advance_orchestrator(
                 prompt: req.prompt.clone(),
                 owner_id: req.owner_id,
                 workload: req.workload,
+                required_backend_class: req.required_backend_class,
                 priority: ProcessPriority::Normal,
                 lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
                 context_policy: Some(req.context_policy.clone()),

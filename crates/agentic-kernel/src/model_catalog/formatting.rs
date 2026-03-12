@@ -1,5 +1,6 @@
 use agentic_control_models::{
     ModelCatalogEntry, ModelCatalogSnapshot, ModelInfoResponse, ModelRoutingRecommendation,
+    RemoteModelCatalogEntry, RemoteProviderCatalogEntry,
 };
 
 use crate::errors::CatalogError;
@@ -17,6 +18,32 @@ pub(super) fn format_list_json(catalog: &ModelCatalog) -> String {
             .entries
             .iter()
             .map(|entry| format_list_entry(entry, selected))
+            .collect(),
+        remote_providers: catalog
+            .remote_providers
+            .iter()
+            .map(|provider| RemoteProviderCatalogEntry {
+                id: provider.id.clone(),
+                backend_id: provider.backend_id.clone(),
+                adapter_kind: provider.adapter_kind.as_str().to_string(),
+                label: provider.label.clone(),
+                note: provider.note.clone(),
+                credential_hint: provider.credential_hint.clone(),
+                default_model_id: provider.default_model_id.clone(),
+                models: provider
+                    .models
+                    .iter()
+                    .map(|model| RemoteModelCatalogEntry {
+                        id: model.id.clone(),
+                        label: model.label.clone(),
+                        context_window_tokens: model.context_window_tokens,
+                        max_output_tokens: model.max_output_tokens,
+                        supports_structured_output: model.supports_structured_output,
+                        input_price_usd_per_mtok: model.input_price_usd_per_mtok,
+                        output_price_usd_per_mtok: model.output_price_usd_per_mtok,
+                    })
+                    .collect(),
+            })
             .collect(),
         routing_recommendations: [
             ("fast", WorkloadClass::Fast),

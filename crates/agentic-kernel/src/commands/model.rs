@@ -45,10 +45,7 @@ pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u
             Ok(loaded) => {
                 ctx.pending_events.push(KernelEvent::ModelChanged {
                     selected_model_id: ctx.model_catalog.selected_id.clone().unwrap_or_default(),
-                    loaded_model_id: current_loaded_model_id(
-                        ctx.model_catalog,
-                        loaded.path.as_path(),
-                    ),
+                    loaded_model_id: loaded.loaded_model_id.clone(),
                 });
                 ctx.pending_events.push(KernelEvent::LobbyChanged {
                     reason: "model_loaded".to_string(),
@@ -69,6 +66,10 @@ pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u
                     protocol::schema::LOAD,
                     &LoadModelResult {
                         family: format!("{:?}", loaded.family),
+                        loaded_model_id: loaded.loaded_model_id,
+                        loaded_target_kind: loaded.loaded_target_kind,
+                        loaded_provider_id: loaded.loaded_provider_id,
+                        loaded_remote_model_id: loaded.loaded_remote_model_id,
                         backend: loaded.backend_id,
                         backend_class: loaded.backend_class.as_str().to_string(),
                         backend_capabilities: loaded.backend_capabilities.into(),
@@ -77,6 +78,7 @@ pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u
                         path: loaded.path.display().to_string(),
                         architecture: loaded.architecture,
                         load_mode: loaded.load_mode,
+                        remote_model: loaded.remote_model,
                     },
                     Some(&message),
                 )
@@ -170,14 +172,18 @@ pub(crate) fn handle_select_model(ctx: ModelCommandContext<'_>, payload: &[u8]) 
 fn current_loaded_model_id(
     model_catalog: &crate::model_catalog::ModelCatalog,
     loaded_path: &std::path::Path,
+    loaded_remote_model: Option<&agentic_control_models::RemoteModelRuntimeView>,
 ) -> String {
+    if let Some(model) = loaded_remote_model {
+        return model.model_id.clone();
+    }
     let loaded_path = loaded_path.to_string_lossy();
     model_catalog
         .entries
         .iter()
         .find(|entry| entry.path.to_string_lossy() == loaded_path)
         .map(|entry| entry.id.clone())
-        .unwrap_or_default()
+        .unwrap_or_else(|| loaded_path.to_string())
 }
 
 fn current_engine_loaded_model_id(
@@ -191,6 +197,7 @@ fn current_engine_loaded_model_id(
     current_loaded_model_id(
         model_catalog,
         std::path::Path::new(&engine.loaded_model_path()),
+        engine.loaded_remote_model(),
     )
 }
 

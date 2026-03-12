@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Instant;
 
+use crate::backend::BackendClass;
 use crate::model_catalog::WorkloadClass;
 use crate::process::{ContextPolicy, ContextStrategy};
 
@@ -26,6 +27,8 @@ pub struct TaskNodeDef {
     pub prompt: String,
     #[serde(default)]
     pub workload: Option<String>,
+    #[serde(default)]
+    pub backend_class: Option<BackendClass>,
     #[serde(default)]
     pub context_strategy: Option<String>,
     #[serde(default)]
@@ -167,6 +170,7 @@ pub struct SpawnRequest {
     pub task_id: String,
     pub prompt: String,
     pub workload: WorkloadClass,
+    pub required_backend_class: Option<BackendClass>,
     pub owner_id: usize,
     pub context_policy: ContextPolicy,
 }

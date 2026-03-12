@@ -21,6 +21,8 @@ Il dettaglio storico fine-grained vive nella git history e nei documenti di crit
 - Test Rust: `cargo test` verde (`166 passed, 0 failed, 1 ignored`)
 - Qualita': clippy verde con `-D warnings` nell'ultima validazione M28/M29
 - GUI: `Agent Workspace` (Tauri) come workspace primario; PySide6 in fallback diagnostico `deprecated`
+- Cloud onboarding Fase 6 estesa: oltre a `openai-responses`, il kernel supporta ora `groq-responses` e `openrouter` tramite runtime remoto OpenAI-compatible condiviso; resta aperto solo il routing orchestrator backend-aware.
+- Config hardening in corso: bootstrap layered su `config/kernel` + `config/env` per separare file pubblici versionabili e segreti locali push-safe.
 
 ---
 

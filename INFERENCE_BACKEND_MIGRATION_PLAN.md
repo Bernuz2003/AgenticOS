@@ -739,11 +739,14 @@ Preparare il kernel a backend cloud senza degradare l'esperienza locale.
 - aggiungere backend API senza rompere la semantica locale.
 
 **Task**
-1. Introdurre un primo backend `remote_stateless`.
-2. Aggiungere configurazione provider.
-3. Aggiungere cost/rate telemetry.
-4. Aggiungere policy runtime differenziate.
-5. Rendere l'orchestrator capace di scegliere backend per task.
+1. Introdurre una sintassi di load esplicita per target cloud senza passare da GGUF.
+2. Separare `runtime reference` da `display path` nei path di load backend.
+3. Implementare un primo backend `remote_stateless` reale (`openai-responses`).
+4. Aggiungere configurazione provider, auth e tokenizer hint/fallback.
+5. Aggiungere supporto streaming e stop anticipato sul marker tool per i backend cloud.
+6. Aggiungere cost/rate telemetry.
+7. Aggiungere policy runtime differenziate.
+8. Rendere l'orchestrator capace di scegliere backend per task.
 
 **Deliverable**
 - supporto cloud di prima classe ma semanticamente distinto.
@@ -753,10 +756,22 @@ Preparare il kernel a backend cloud senza degradare l'esperienza locale.
 
 **Tracking implementativo**
 - [x] Classe `remote_stateless` formalizzata nel modello backend.
-- [ ] Primo backend cloud/API implementato.
-- [ ] Config provider, auth, rate limit e cost telemetry introdotte.
-- [ ] Policy runtime differenziate applicate ai backend cloud.
+- [x] Sintassi `LOAD cloud:<backend>[:<model>]` introdotta per target remoti espliciti.
+- [x] `RuntimeModel` esteso con loader generico per riferimenti non-GGUF.
+- [x] Primo backend cloud/API implementato: `openai-responses`.
+- [x] Config provider/auth introdotta per `openai-responses` con endpoint, API key, default model e limiti request/response.
+- [x] Fallback tokenizer per `remote_stateless` introdotto quando manca un tokenizer locale esplicito.
+- [x] Streaming Responses API con stop anticipato sul marker `TOOL:` implementato nel backend cloud.
+- [x] GUI/Tauri aggiornate per caricare e osservare target cloud dalla Lobby (`cloud:<backend>:<model>`, backend metadata, telemetry).
+- [x] Cost/rate telemetry cloud introdotte ed esposte via `STATUS`/Lobby.
+- [x] Policy runtime differenziate applicate ai backend cloud: i processi `remote_stateless` non allocano resident slot e non promettono semantica `park/resume`.
 - [ ] Orchestrator reso backend-aware per il routing multi-provider.
+- [x] Profili cloud OpenAI-compatible aggiunti oltre a `openai-responses`: `groq-responses` (Responses API) e `openrouter` (chat completions OpenAI-compatible) condividono il runtime remoto capability-aware.
+
+**Validazione slice aggiuntiva**
+- `cargo test -p agentic-kernel -- --nocapture`
+- `cargo check -p agent-workspace`
+- `cd apps/agent-workspace && npm run build`
 
 ---
 

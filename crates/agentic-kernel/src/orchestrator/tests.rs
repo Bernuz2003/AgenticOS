@@ -1,3 +1,4 @@
+use crate::backend::BackendClass;
 use std::collections::HashMap;
 
 use crate::model_catalog::WorkloadClass;
@@ -12,6 +13,7 @@ fn task_node(id: &str, prompt: &str, workload: Option<&str>, deps: Vec<&str>) ->
         id: id.into(),
         prompt: prompt.into(),
         workload: workload.map(str::to_string),
+        backend_class: None,
         context_strategy: None,
         context_window_size: None,
         context_trigger_tokens: None,
@@ -62,6 +64,7 @@ fn task_context_policy_overrides_are_preserved_in_spawn_requests() {
             id: "A".into(),
             prompt: "Task A".into(),
             workload: None,
+            backend_class: None,
             context_strategy: Some("retrieve".into()),
             context_window_size: Some(300),
             context_trigger_tokens: Some(250),
@@ -76,10 +79,38 @@ fn task_context_policy_overrides_are_preserved_in_spawn_requests() {
 
     assert_eq!(spawns.len(), 1);
     assert_eq!(spawns[0].context_policy.strategy.label(), "retrieve");
+    assert_eq!(spawns[0].required_backend_class, None);
     assert_eq!(spawns[0].context_policy.window_size_tokens, 300);
     assert_eq!(spawns[0].context_policy.compaction_trigger_tokens, 250);
     assert_eq!(spawns[0].context_policy.compaction_target_tokens, 180);
     assert_eq!(spawns[0].context_policy.retrieve_top_k, 4);
+}
+
+#[test]
+fn task_backend_class_is_preserved_in_spawn_requests() {
+    let graph = TaskGraphDef {
+        tasks: vec![TaskNodeDef {
+            id: "A".into(),
+            prompt: "Use cloud runtime".into(),
+            workload: Some("fast".into()),
+            backend_class: Some(BackendClass::RemoteStateless),
+            context_strategy: None,
+            context_window_size: None,
+            context_trigger_tokens: None,
+            context_target_tokens: None,
+            context_retrieve_top_k: None,
+            deps: vec![],
+        }],
+        failure_policy: FailurePolicy::FailFast,
+    };
+    let mut orch = Orchestrator::new();
+    let (_, spawns) = orch.register(graph, 1).expect("register");
+
+    assert_eq!(spawns.len(), 1);
+    assert_eq!(
+        spawns[0].required_backend_class,
+        Some(BackendClass::RemoteStateless)
+    );
 }
 
 #[test]
@@ -329,7 +360,7 @@ fn format_status_includes_all_info() {
 fn json_deserialization() {
     let json = r#"{
             "tasks": [
-                {"id": "step1", "prompt": "Hello", "workload": "fast", "deps": []},
+                {"id": "step1", "prompt": "Hello", "workload": "fast", "backend_class": "remote_stateless", "deps": []},
                 {"id": "step2", "prompt": "World", "deps": ["step1"]}
             ],
             "failure_policy": "best_effort"
@@ -338,7 +369,12 @@ fn json_deserialization() {
     assert_eq!(graph.tasks.len(), 2);
     assert_eq!(graph.failure_policy, FailurePolicy::BestEffort);
     assert_eq!(graph.tasks[0].workload.as_deref(), Some("fast"));
+    assert_eq!(
+        graph.tasks[0].backend_class,
+        Some(BackendClass::RemoteStateless)
+    );
     assert!(graph.tasks[1].workload.is_none());
+    assert_eq!(graph.tasks[1].backend_class, None);
 }
 
 #[test]

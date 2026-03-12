@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use tokenizers::Tokenizer;
+use tokenizers::{models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace};
 
 use crate::errors::EngineError;
 use crate::model_catalog::ModelMetadata;
@@ -133,4 +134,24 @@ pub(super) fn resolve_special_tokens(
             Ok((eos, eos))
         }
     }
+}
+
+pub(super) fn build_remote_fallback_tokenizer() -> Tokenizer {
+    let vocab = [
+        ("<pad>".to_string(), 0),
+        ("<bos>".to_string(), 1),
+        ("<unk>".to_string(), 2),
+    ]
+    .into_iter()
+    .collect();
+
+    let model = WordLevel::builder()
+        .vocab(vocab)
+        .unk_token("<unk>".to_string())
+        .build()
+        .expect("build remote fallback tokenizer");
+
+    let mut tokenizer = Tokenizer::new(model);
+    tokenizer.with_pre_tokenizer(Some(Whitespace));
+    tokenizer
 }

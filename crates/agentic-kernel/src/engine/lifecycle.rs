@@ -13,31 +13,41 @@ use crate::prompting::{
     format_user_message_with_metadata, GenerationConfig,
 };
 
-use super::tokenizer::{resolve_special_tokens, resolve_tokenizer_path};
+use super::tokenizer::{
+    build_remote_fallback_tokenizer, resolve_special_tokens, resolve_tokenizer_path,
+};
 use super::LLMEngine;
 
 impl LLMEngine {
     pub fn load_target(target: &ResolvedModelTarget) -> Result<Self> {
         Self::load(
-            target.path.to_string_lossy().as_ref(),
-            target.family,
-            target.tokenizer_path.clone(),
-            target.metadata.clone(),
-            target.driver_resolution.clone(),
+            target.display_path().to_string_lossy().as_ref(),
+            target.runtime_reference(),
+            target.family(),
+            target.cloned_tokenizer_path(),
+            target.cloned_metadata(),
+            target.driver_resolution().clone(),
+            target,
         )
     }
 
     fn load(
-        path: &str,
+        display_path: &str,
+        runtime_reference: &str,
         family: crate::prompting::PromptFamily,
         tokenizer_hint: Option<PathBuf>,
         metadata: Option<ModelMetadata>,
         driver_resolution: DriverResolution,
+        target: &ResolvedModelTarget,
     ) -> Result<Self> {
-        tracing::info!(path, ?family, "ENGINE: Loading Master Model");
+        tracing::info!(
+            display_path,
+            runtime_reference,
+            ?family,
+            "ENGINE: Loading Master Model"
+        );
 
-        let model =
-            RuntimeModel::load_from_gguf(path, family, &driver_resolution.resolved_backend_id)?;
+        let model = RuntimeModel::load_target(target)?;
         let resolved_family = model.family();
         let backend_id = model.backend_id();
 
@@ -49,10 +59,22 @@ impl LLMEngine {
             "ENGINE: Weights loaded. Loading Tokenizer..."
         );
 
-        let tokenizer_path = resolve_tokenizer_path(path, tokenizer_hint)
-            .ok_or_else(|| E::msg("Tokenizer not found for selected model (fail-fast policy)."))?;
-        tracing::info!(?tokenizer_path, "ENGINE: Using tokenizer");
-        let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_path).map_err(E::msg)?;
+        let tokenizer = if let Some(tokenizer_path) =
+            resolve_tokenizer_path(display_path, tokenizer_hint)
+        {
+            tracing::info!(?tokenizer_path, "ENGINE: Using tokenizer");
+            tokenizers::Tokenizer::from_file(tokenizer_path).map_err(E::msg)?
+        } else if driver_resolution.backend_class == crate::backend::BackendClass::RemoteStateless {
+            tracing::warn!(
+                backend_id,
+                "ENGINE: Remote stateless backend loaded without tokenizer hint; using fallback whitespace tokenizer"
+            );
+            build_remote_fallback_tokenizer()
+        } else {
+            return Err(E::msg(
+                "Tokenizer not found for selected model (fail-fast policy).",
+            ));
+        };
 
         let (eos_token_id, eot_token_id) =
             resolve_special_tokens(&tokenizer, resolved_family, metadata.as_ref())
@@ -67,10 +89,12 @@ impl LLMEngine {
 
         Ok(Self {
             master_model: Some(model),
-            model_path: path.to_string(),
+            display_path: display_path.to_string(),
+            runtime_reference: runtime_reference.to_string(),
             backend_id: backend_id.to_string(),
             driver_resolution_source: driver_resolution.resolution_source.to_string(),
             driver_resolution_rationale: driver_resolution.resolution_rationale,
+            loaded_remote_model: target.remote_model_view(),
             tokenizer,
             processes: std::collections::HashMap::new(),
             next_pid: 1,
@@ -113,7 +137,11 @@ impl LLMEngine {
                     pid,
                     "ENGINE: Runtime backend not cloneable; reloading model instance (first process)"
                 );
-                RuntimeModel::load_from_gguf(&self.model_path, self.family, &self.backend_id)?
+                RuntimeModel::load_from_reference(
+                    &self.runtime_reference,
+                    self.family,
+                    &self.backend_id,
+                )?
             } else {
                 // C7 guard: reject concurrent spawn for non-cloneable backends.
                 return Err(E::msg(format!(
@@ -452,11 +480,25 @@ impl LLMEngine {
     }
 
     pub fn loaded_model_path(&self) -> &str {
-        &self.model_path
+        &self.display_path
     }
 
     pub fn loaded_backend_id(&self) -> &str {
         &self.backend_id
+    }
+
+    pub fn loaded_backend_class(&self) -> crate::backend::BackendClass {
+        self.master_model
+            .as_ref()
+            .map(|model| model.backend_class())
+            .unwrap_or(crate::backend::BackendClass::RemoteStateless)
+    }
+
+    pub fn loaded_backend_capabilities(&self) -> crate::backend::BackendCapabilities {
+        self.master_model
+            .as_ref()
+            .map(|model| model.backend_capabilities())
+            .unwrap_or_default()
     }
 
     pub fn driver_resolution_source(&self) -> &str {
@@ -465,6 +507,10 @@ impl LLMEngine {
 
     pub fn driver_resolution_rationale(&self) -> &str {
         &self.driver_resolution_rationale
+    }
+
+    pub fn loaded_remote_model(&self) -> Option<&agentic_control_models::RemoteModelRuntimeView> {
+        self.loaded_remote_model.as_ref()
     }
 
     pub fn loaded_family(&self) -> crate::prompting::PromptFamily {
@@ -647,10 +693,12 @@ mod tests {
         (
             LLMEngine {
                 master_model: Some(master_model),
-                model_path: "test.gguf".to_string(),
+                display_path: "test.gguf".to_string(),
+                runtime_reference: "test.gguf".to_string(),
                 backend_id: "external-llamacpp".to_string(),
                 driver_resolution_source: "test".to_string(),
                 driver_resolution_rationale: "test".to_string(),
+                loaded_remote_model: None,
                 tokenizer,
                 processes,
                 next_pid: 2,

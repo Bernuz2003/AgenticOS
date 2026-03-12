@@ -17,6 +17,14 @@ export interface LobbySnapshot {
   connected: boolean;
   selectedModelId: string;
   loadedModelId: string;
+  loadedTargetKind: string | null;
+  loadedProviderId: string | null;
+  loadedRemoteModelId: string | null;
+  loadedBackendId: string | null;
+  loadedBackendClass: string | null;
+  loadedBackendCapabilities: BackendCapabilities | null;
+  loadedBackendTelemetry: BackendTelemetry | null;
+  loadedRemoteModel: RemoteRuntimeModel | null;
   orchestrations: LobbyOrchestrationSummary[];
   sessions: LobbySnapshotSession[];
   error: string | null;
@@ -118,6 +126,33 @@ export interface BackendCapabilities {
   parallelSessions: boolean;
 }
 
+export interface BackendTelemetry {
+  requestsTotal: number;
+  streamRequestsTotal: number;
+  inputTokensTotal: number;
+  outputTokensTotal: number;
+  estimatedCostUsd: number;
+  rateLimitErrors: number;
+  authErrors: number;
+  transportErrors: number;
+  lastModel: string | null;
+  lastError: string | null;
+}
+
+export interface RemoteRuntimeModel {
+  providerId: string;
+  providerLabel: string;
+  backendId: string;
+  adapterKind: string;
+  modelId: string;
+  modelLabel: string;
+  contextWindowTokens: number | null;
+  maxOutputTokens: number | null;
+  supportsStructuredOutput: boolean;
+  inputPriceUsdPerMtok: number | null;
+  outputPriceUsdPerMtok: number | null;
+}
+
 export interface ModelCatalogEntry {
   id: string;
   family: string;
@@ -157,11 +192,33 @@ export interface ModelRoutingRecommendation {
   capabilityScore: number | null;
 }
 
+export interface RemoteProviderModel {
+  id: string;
+  label: string;
+  contextWindowTokens: number | null;
+  maxOutputTokens: number | null;
+  supportsStructuredOutput: boolean;
+  inputPriceUsdPerMtok: number | null;
+  outputPriceUsdPerMtok: number | null;
+}
+
+export interface RemoteProvider {
+  id: string;
+  backendId: string;
+  adapterKind: string;
+  label: string;
+  note: string | null;
+  credentialHint: string | null;
+  defaultModelId: string;
+  models: RemoteProviderModel[];
+}
+
 export interface ModelCatalogSnapshot {
   selectedModelId: string | null;
   totalModels: number;
   models: ModelCatalogEntry[];
   routingRecommendations: ModelRoutingRecommendation[];
+  remoteProviders: RemoteProvider[];
 }
 
 export interface SelectModelResult {
@@ -170,6 +227,10 @@ export interface SelectModelResult {
 
 export interface LoadModelResult {
   family: string;
+  loadedModelId: string;
+  loadedTargetKind: string;
+  loadedProviderId: string | null;
+  loadedRemoteModelId: string | null;
   backend: string;
   backendClass: string;
   backendCapabilities: BackendCapabilities;
@@ -178,6 +239,7 @@ export interface LoadModelResult {
   path: string;
   architecture: string | null;
   loadMode: string;
+  remoteModel: RemoteRuntimeModel | null;
 }
 
 export interface SendInputResult {
@@ -221,6 +283,49 @@ export interface LobbySnapshotDto {
   connected: boolean;
   selected_model_id: string;
   loaded_model_id: string;
+  loaded_target_kind: string | null;
+  loaded_provider_id: string | null;
+  loaded_remote_model_id: string | null;
+  loaded_backend_id: string | null;
+  loaded_backend_class: string | null;
+  loaded_backend_capabilities: {
+    resident_kv: boolean;
+    persistent_slots: boolean;
+    save_restore_slots: boolean;
+    prompt_cache_reuse: boolean;
+    streaming_generation: boolean;
+    structured_output: boolean;
+    cancel_generation: boolean;
+    memory_telemetry: boolean;
+    tool_pause_resume: boolean;
+    context_compaction_reset: boolean;
+    parallel_sessions: boolean;
+  } | null;
+  loaded_backend_telemetry: {
+    requests_total: number;
+    stream_requests_total: number;
+    input_tokens_total: number;
+    output_tokens_total: number;
+    estimated_cost_usd: number;
+    rate_limit_errors: number;
+    auth_errors: number;
+    transport_errors: number;
+    last_model: string | null;
+    last_error: string | null;
+  } | null;
+  loaded_remote_model: {
+    provider_id: string;
+    provider_label: string;
+    backend_id: string;
+    adapter_kind: string;
+    model_id: string;
+    model_label: string;
+    context_window_tokens: number | null;
+    max_output_tokens: number | null;
+    supports_structured_output: boolean;
+    input_price_usd_per_mtok: number | null;
+    output_price_usd_per_mtok: number | null;
+  } | null;
   orchestrations: Array<{
     orchestration_id: number;
     total: number;
@@ -333,6 +438,18 @@ export function normalizeLobbySnapshot(snapshot: LobbySnapshotDto): LobbySnapsho
     connected: snapshot.connected,
     selectedModelId: snapshot.selected_model_id,
     loadedModelId: snapshot.loaded_model_id,
+    loadedTargetKind: snapshot.loaded_target_kind,
+    loadedProviderId: snapshot.loaded_provider_id,
+    loadedRemoteModelId: snapshot.loaded_remote_model_id,
+    loadedBackendId: snapshot.loaded_backend_id,
+    loadedBackendClass: snapshot.loaded_backend_class,
+    loadedBackendCapabilities: mapBackendCapabilities(
+      snapshot.loaded_backend_capabilities,
+    ),
+    loadedBackendTelemetry: mapBackendTelemetry(
+      snapshot.loaded_backend_telemetry,
+    ),
+    loadedRemoteModel: mapRemoteRuntimeModel(snapshot.loaded_remote_model),
     orchestrations: snapshot.orchestrations.map((orchestration) => ({
       orchestrationId: orchestration.orchestration_id,
       total: orchestration.total,
@@ -358,6 +475,49 @@ export function normalizeLobbySnapshot(snapshot: LobbySnapshotDto): LobbySnapsho
       orchestrationId: session.orchestration_id,
       orchestrationTaskId: session.orchestration_task_id,
     })),
+  };
+}
+
+function mapRemoteRuntimeModel(
+  model: LobbySnapshotDto["loaded_remote_model"],
+): RemoteRuntimeModel | null {
+  if (!model) {
+    return null;
+  }
+
+  return {
+    providerId: model.provider_id,
+    providerLabel: model.provider_label,
+    backendId: model.backend_id,
+    adapterKind: model.adapter_kind,
+    modelId: model.model_id,
+    modelLabel: model.model_label,
+    contextWindowTokens: model.context_window_tokens,
+    maxOutputTokens: model.max_output_tokens,
+    supportsStructuredOutput: model.supports_structured_output,
+    inputPriceUsdPerMtok: model.input_price_usd_per_mtok,
+    outputPriceUsdPerMtok: model.output_price_usd_per_mtok,
+  };
+}
+
+function mapBackendTelemetry(
+  telemetry: LobbySnapshotDto["loaded_backend_telemetry"],
+): BackendTelemetry | null {
+  if (!telemetry) {
+    return null;
+  }
+
+  return {
+    requestsTotal: telemetry.requests_total,
+    streamRequestsTotal: telemetry.stream_requests_total,
+    inputTokensTotal: telemetry.input_tokens_total,
+    outputTokensTotal: telemetry.output_tokens_total,
+    estimatedCostUsd: telemetry.estimated_cost_usd,
+    rateLimitErrors: telemetry.rate_limit_errors,
+    authErrors: telemetry.auth_errors,
+    transportErrors: telemetry.transport_errors,
+    lastModel: telemetry.last_model,
+    lastError: telemetry.last_error,
   };
 }
 
@@ -574,6 +734,24 @@ export async function listModels(): Promise<ModelCatalogSnapshot> {
       capability_key: string | null;
       capability_score: number | null;
     }>;
+    remote_providers: Array<{
+      id: string;
+      backend_id: string;
+      adapter_kind: string;
+      label: string;
+      note: string | null;
+      credential_hint: string | null;
+      default_model_id: string;
+      models: Array<{
+        id: string;
+        label: string;
+        context_window_tokens: number | null;
+        max_output_tokens: number | null;
+        supports_structured_output: boolean;
+        input_price_usd_per_mtok: number | null;
+        output_price_usd_per_mtok: number | null;
+      }>;
+    }>;
   }>("list_models");
 
   return {
@@ -620,6 +798,24 @@ export async function listModels(): Promise<ModelCatalogSnapshot> {
       capabilityKey: entry.capability_key,
       capabilityScore: entry.capability_score,
     })),
+    remoteProviders: snapshot.remote_providers.map((provider) => ({
+      id: provider.id,
+      backendId: provider.backend_id,
+      adapterKind: provider.adapter_kind,
+      label: provider.label,
+      note: provider.note,
+      credentialHint: provider.credential_hint,
+      defaultModelId: provider.default_model_id,
+      models: provider.models.map((model) => ({
+        id: model.id,
+        label: model.label,
+        contextWindowTokens: model.context_window_tokens,
+        maxOutputTokens: model.max_output_tokens,
+        supportsStructuredOutput: model.supports_structured_output,
+        inputPriceUsdPerMtok: model.input_price_usd_per_mtok,
+        outputPriceUsdPerMtok: model.output_price_usd_per_mtok,
+      })),
+    })),
   };
 }
 
@@ -636,6 +832,10 @@ export async function selectModel(modelId: string): Promise<SelectModelResult> {
 export async function loadModel(selector = ""): Promise<LoadModelResult> {
   const result = await invoke<{
     family: string;
+    loaded_model_id: string;
+    loaded_target_kind: string;
+    loaded_provider_id: string | null;
+    loaded_remote_model_id: string | null;
     backend: string;
     backend_class: string;
     backend_capabilities: {
@@ -656,10 +856,15 @@ export async function loadModel(selector = ""): Promise<LoadModelResult> {
     path: string;
     architecture: string | null;
     load_mode: string;
+    remote_model: LobbySnapshotDto["loaded_remote_model"];
   }>("load_model", { selector });
 
   return {
     family: result.family,
+    loadedModelId: result.loaded_model_id,
+    loadedTargetKind: result.loaded_target_kind,
+    loadedProviderId: result.loaded_provider_id,
+    loadedRemoteModelId: result.loaded_remote_model_id,
     backend: result.backend,
     backendClass: result.backend_class,
     backendCapabilities: mapBackendCapabilities(result.backend_capabilities)!,
@@ -668,6 +873,7 @@ export async function loadModel(selector = ""): Promise<LoadModelResult> {
     path: result.path,
     architecture: result.architecture,
     loadMode: result.load_mode,
+    remoteModel: mapRemoteRuntimeModel(result.remote_model),
   };
 }
 

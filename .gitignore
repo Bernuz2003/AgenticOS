@@ -28,3 +28,7 @@ Thumbs.db
 
 # ── Misc ──
 *.log
+
+# ── Local config / secrets ──
+/config/kernel/local.toml
+/config/env/*.env

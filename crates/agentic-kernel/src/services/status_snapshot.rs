@@ -1,13 +1,13 @@
 use std::collections::HashSet;
 
 use agentic_control_models::{
-    BackendCapabilitiesView, ContextStatusSnapshot as ControlContextStatusSnapshot,
-    GenerationStatus, MemoryStatus, ModelStatus, OrchStatusResponse, OrchSummaryResponse,
-    OrchTaskEntry, OrchestrationsStatus, PidStatusResponse, ProcessesStatus, SchedulerStatus,
-    StatusResponse,
+    BackendCapabilitiesView, BackendTelemetryView,
+    ContextStatusSnapshot as ControlContextStatusSnapshot, GenerationStatus, MemoryStatus,
+    ModelStatus, OrchStatusResponse, OrchSummaryResponse, OrchTaskEntry, OrchestrationsStatus,
+    PidStatusResponse, ProcessesStatus, SchedulerStatus, StatusResponse,
 };
 
-use crate::backend::{BackendCapabilities, RuntimeModel};
+use crate::backend::{runtime_backend_telemetry, BackendCapabilities, RuntimeModel};
 use crate::commands::MetricsState;
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
@@ -38,13 +38,13 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
         if let Some(engine) = deps.engine_state.as_ref() {
             let loaded_path = engine.loaded_model_path().to_string();
             let loaded_family = engine.loaded_family();
-            let loaded_model_id = deps
-                .model_catalog
-                .entries
-                .iter()
-                .find(|entry| entry.path.to_string_lossy() == loaded_path)
-                .map(|entry| entry.id.clone())
-                .unwrap_or_default();
+            let loaded_remote_model = engine.loaded_remote_model().cloned();
+            let (loaded_model_id, loaded_target_kind, loaded_provider_id, loaded_remote_model_id) =
+                current_loaded_target_info(
+                    deps.model_catalog,
+                    std::path::Path::new(&loaded_path),
+                    loaded_remote_model.as_ref(),
+                );
             let cfg = engine.generation_config();
             (
                 ModelStatus {
@@ -53,6 +53,9 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                     loaded_family: format!("{:?}", loaded_family),
                     loaded_model_path: loaded_path,
                     selected_model_id: selected_model_id.clone(),
+                    loaded_target_kind: Some(loaded_target_kind),
+                    loaded_provider_id,
+                    loaded_remote_model_id,
                     loaded_backend: Some(engine.backend_id.clone()),
                     loaded_backend_class: Some(
                         engine
@@ -65,6 +68,8 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                         .master_model
                         .as_ref()
                         .map(|model| model.backend_capabilities().into()),
+                    loaded_backend_telemetry: runtime_backend_telemetry(&engine.backend_id),
+                    loaded_remote_model,
                 },
                 Some(GenerationStatus {
                     temperature: cfg.temperature,
@@ -105,9 +110,14 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                     loaded_family: "Unknown".to_string(),
                     loaded_model_path: String::new(),
                     selected_model_id: selected_model_id.clone(),
+                    loaded_target_kind: None,
+                    loaded_provider_id: None,
+                    loaded_remote_model_id: None,
                     loaded_backend: None,
                     loaded_backend_class: None,
                     loaded_backend_capabilities: None,
+                    loaded_backend_telemetry: None,
+                    loaded_remote_model: None,
                 },
                 None,
                 ProcessesStatus {
@@ -160,6 +170,37 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
         },
         processes: processes_status,
     }
+}
+
+fn current_loaded_target_info(
+    model_catalog: &ModelCatalog,
+    loaded_path: &std::path::Path,
+    loaded_remote_model: Option<&agentic_control_models::RemoteModelRuntimeView>,
+) -> (String, String, Option<String>, Option<String>) {
+    if let Some(model) = loaded_remote_model {
+        return (
+            model.model_id.clone(),
+            "remote_provider".to_string(),
+            Some(model.provider_id.clone()),
+            Some(model.model_id.clone()),
+        );
+    }
+
+    let loaded_path = loaded_path.to_string_lossy();
+    if let Some(entry) = model_catalog
+        .entries
+        .iter()
+        .find(|entry| entry.path.to_string_lossy() == loaded_path)
+    {
+        return (entry.id.clone(), "local_catalog".to_string(), None, None);
+    }
+
+    (
+        loaded_path.to_string(),
+        "local_path".to_string(),
+        None,
+        None,
+    )
 }
 
 pub fn build_pid_status(deps: &StatusSnapshotDeps<'_>, pid: u64) -> Option<PidStatusResponse> {
@@ -276,7 +317,7 @@ fn build_pid_status_response_checked(
 
     if let Some(engine) = engine {
         if let Some(process) = engine.processes.get(&pid) {
-            let (backend_id, backend_class, backend_capabilities) =
+            let (backend_id, backend_class, backend_capabilities, _) =
                 runtime_backend_status(&process.model);
             return Some(PidStatusResponse {
                 pid,
@@ -418,11 +459,13 @@ fn runtime_backend_status(
     Option<String>,
     Option<String>,
     Option<BackendCapabilitiesView>,
+    Option<BackendTelemetryView>,
 ) {
     (
         Some(model.backend_id().to_string()),
         Some(model.backend_class().as_str().to_string()),
         Some(model.backend_capabilities().into()),
+        model.backend_telemetry(),
     )
 }
 
@@ -473,17 +516,25 @@ fn build_orchestration_summaries(deps: &StatusSnapshotDeps<'_>) -> Vec<OrchSumma
 #[cfg(test)]
 mod tests {
     use super::{
-        checked_out_pid_status_response, collect_unique_pids, restored_pid_status_response,
-        runtime_backend_status,
+        build_global_status, checked_out_pid_status_response, collect_unique_pids,
+        restored_pid_status_response, runtime_backend_status, StatusSnapshotDeps,
     };
+    use crate::backend::{resolve_driver_for_model, TestOpenAIConfigOverrideGuard};
     use crate::backend::{
         ContextSlotPersistence, InferenceBackend, InferenceStepRequest, InferenceStepResult,
         RuntimeModel,
     };
+    use crate::commands::MetricsState;
+    use crate::config::OpenAIResponsesConfig;
+    use crate::engine::LLMEngine;
+    use crate::memory::NeuralMemory;
+    use crate::model_catalog::{ModelCatalog, RemoteModelEntry, ResolvedModelTarget};
+    use crate::orchestrator::Orchestrator;
     use crate::process::{ContextPolicy, ContextState, ContextStatusSnapshot, ContextStrategy};
     use crate::prompting::PromptFamily;
-    use crate::scheduler::{CheckedOutProcessMetadata, RestoredProcessMetadata};
+    use crate::scheduler::{CheckedOutProcessMetadata, ProcessScheduler, RestoredProcessMetadata};
     use anyhow::Result;
+    use std::collections::HashSet;
 
     #[test]
     fn collect_unique_pids_preserves_first_seen_order() {
@@ -520,7 +571,8 @@ mod tests {
     fn runtime_backend_status_reports_resident_backend_capabilities() {
         let model = RuntimeModel::from_boxed_backend(Box::new(FakeResidentBackend));
 
-        let (backend_id, backend_class, backend_capabilities) = runtime_backend_status(&model);
+        let (backend_id, backend_class, backend_capabilities, backend_telemetry) =
+            runtime_backend_status(&model);
 
         assert_eq!(backend_id.as_deref(), Some("external-llamacpp"));
         assert_eq!(backend_class.as_deref(), Some("resident_local"));
@@ -536,6 +588,7 @@ mod tests {
                 .map(|capabilities| capabilities.resident_kv),
             Some(true)
         );
+        assert_eq!(backend_telemetry, None);
     }
 
     #[test]
@@ -624,5 +677,108 @@ mod tests {
         assert_eq!(response.backend_id, None);
         assert_eq!(response.backend_class, None);
         assert_eq!(response.backend_capabilities, None);
+    }
+
+    fn test_openai_config() -> OpenAIResponsesConfig {
+        OpenAIResponsesConfig {
+            endpoint: "http://127.0.0.1:19090/v1".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-4.1-mini".to_string(),
+            timeout_ms: 5_000,
+            max_request_bytes: 256 * 1024,
+            max_response_bytes: 256 * 1024,
+            stream: true,
+            tokenizer_path: None,
+            input_price_usd_per_mtok: 1.0,
+            output_price_usd_per_mtok: 2.0,
+            http_referer: String::new(),
+            app_title: String::new(),
+        }
+    }
+
+    #[test]
+    fn global_status_surfaces_cloud_backend_metadata_for_lobby() {
+        let _openai = TestOpenAIConfigOverrideGuard::set(test_openai_config());
+        let driver_resolution =
+            resolve_driver_for_model(PromptFamily::Unknown, None, Some("openai-responses"))
+                .expect("resolve openai backend");
+        let target = ResolvedModelTarget::remote(
+            "openai-responses",
+            "OpenAI",
+            "openai-responses",
+            "gpt-4.1-mini",
+            RemoteModelEntry {
+                id: "gpt-4.1-mini".to_string(),
+                label: "GPT-4.1 mini".to_string(),
+                context_window_tokens: None,
+                max_output_tokens: None,
+                supports_structured_output: true,
+                input_price_usd_per_mtok: None,
+                output_price_usd_per_mtok: None,
+            },
+            test_openai_config().into(),
+            None,
+            driver_resolution,
+        );
+        let engine = LLMEngine::load_target(&target).expect("load remote stateless engine");
+        let memory = NeuralMemory::new().expect("memory init");
+        let model_catalog =
+            ModelCatalog::discover(crate::config::kernel_config().paths.models_dir.clone())
+                .expect("discover model catalog");
+        let scheduler = ProcessScheduler::new();
+        let orchestrator = Orchestrator::new();
+        let in_flight = HashSet::new();
+        let metrics = MetricsState::new();
+        let engine_state = Some(engine);
+
+        let status = build_global_status(&StatusSnapshotDeps {
+            memory: &memory,
+            engine_state: &engine_state,
+            model_catalog: &model_catalog,
+            scheduler: &scheduler,
+            orchestrator: &orchestrator,
+            in_flight: &in_flight,
+            metrics: &metrics,
+        });
+
+        assert!(status.model.loaded);
+        assert_eq!(status.model.loaded_model_id, "gpt-4.1-mini");
+        assert_eq!(
+            status.model.loaded_target_kind.as_deref(),
+            Some("remote_provider")
+        );
+        assert_eq!(
+            status.model.loaded_provider_id.as_deref(),
+            Some("openai-responses")
+        );
+        assert_eq!(
+            status.model.loaded_remote_model_id.as_deref(),
+            Some("gpt-4.1-mini")
+        );
+        assert_eq!(
+            status.model.loaded_backend.as_deref(),
+            Some("openai-responses")
+        );
+        assert_eq!(
+            status.model.loaded_backend_class.as_deref(),
+            Some("remote_stateless")
+        );
+        assert_eq!(
+            status
+                .model
+                .loaded_backend_capabilities
+                .as_ref()
+                .map(|capabilities| capabilities.resident_kv),
+            Some(false)
+        );
+        assert_eq!(
+            status
+                .model
+                .loaded_remote_model
+                .as_ref()
+                .map(|model| model.model_id.as_str()),
+            Some("gpt-4.1-mini")
+        );
+        assert!(status.model.loaded_backend_telemetry.is_some());
     }
 }

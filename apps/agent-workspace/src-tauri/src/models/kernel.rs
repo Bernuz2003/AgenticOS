@@ -1,6 +1,8 @@
 use serde::Serialize;
 
-use agentic_control_models::BackendCapabilitiesView;
+use agentic_control_models::{
+    BackendCapabilitiesView, BackendTelemetryView, RemoteModelRuntimeView,
+};
 
 #[derive(Debug, Serialize, Clone)]
 pub struct KernelBootstrapState {
@@ -15,6 +17,14 @@ pub struct LobbySnapshot {
     pub connected: bool,
     pub selected_model_id: String,
     pub loaded_model_id: String,
+    pub loaded_target_kind: Option<String>,
+    pub loaded_provider_id: Option<String>,
+    pub loaded_remote_model_id: Option<String>,
+    pub loaded_backend_id: Option<String>,
+    pub loaded_backend_class: Option<String>,
+    pub loaded_backend_capabilities: Option<BackendCapabilitiesView>,
+    pub loaded_backend_telemetry: Option<BackendTelemetryView>,
+    pub loaded_remote_model: Option<RemoteModelRuntimeView>,
     pub orchestrations: Vec<LobbyOrchestrationSummary>,
     pub sessions: Vec<AgentSessionSummary>,
     pub error: Option<String>,
