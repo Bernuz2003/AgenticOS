@@ -181,6 +181,12 @@ impl LLMEngine {
         Ok(pid)
     }
 
+    pub fn ensure_next_pid_at_least(&mut self, next_pid: u64) {
+        if self.next_pid < next_pid {
+            self.next_pid = next_pid;
+        }
+    }
+
     pub fn set_process_context_slot(&mut self, pid: u64, slot_id: ContextSlotId) -> Result<()> {
         let policy = self
             .processes

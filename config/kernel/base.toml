@@ -7,6 +7,7 @@ log_connections = false
 [paths]
 models_dir = "../../models"
 workspace_dir = "../../workspace"
+database_path = "../../workspace/agenticos.db"
 checkpoint_path = "../../workspace/checkpoint.json"
 kernel_token_path = "../../workspace/.kernel_token"
 remote_provider_catalog_path = "../../config/providers/remote_providers.toml"
@@ -15,6 +16,17 @@ remote_provider_catalog_path = "../../config/providers/remote_providers.toml"
 swap_async = true
 swap_dir = "../../workspace/swap"
 token_slot_quota_per_pid = 4096
+
+[resources]
+ram_budget_bytes = 0
+vram_budget_bytes = 0
+min_ram_headroom_bytes = 0
+min_vram_headroom_bytes = 0
+local_runtime_ram_scale = 1.15
+local_runtime_vram_scale = 1.05
+local_runtime_ram_overhead_bytes = 268435456
+local_runtime_vram_overhead_bytes = 134217728
+max_queue_entries = 32
 
 [checkpoint]
 interval_secs = 0

@@ -4,7 +4,8 @@ use agentic_control_models::{
     BackendCapabilitiesView, BackendTelemetryView,
     ContextStatusSnapshot as ControlContextStatusSnapshot, GenerationStatus, MemoryStatus,
     ModelStatus, OrchStatusResponse, OrchSummaryResponse, OrchTaskEntry, OrchestrationsStatus,
-    PidStatusResponse, ProcessesStatus, SchedulerStatus, StatusResponse,
+    PidStatusResponse, ProcessesStatus, ResourceGovernorStatusView, RuntimeInstanceView,
+    RuntimeLoadQueueEntryView, SchedulerStatus, StatusResponse,
 };
 
 use crate::backend::{runtime_backend_telemetry, BackendCapabilities, RuntimeModel};
@@ -13,18 +14,25 @@ use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
+use crate::resource_governor::ResourceGovernor;
+use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::{
     CheckedOutProcessMetadata, ProcessScheduler, ProcessSchedulerSnapshot, RestoredProcessMetadata,
 };
+use crate::session::SessionRegistry;
+use crate::storage::StorageService;
 
 pub struct StatusSnapshotDeps<'a> {
     pub memory: &'a NeuralMemory,
-    pub engine_state: &'a Option<LLMEngine>,
+    pub runtime_registry: &'a RuntimeRegistry,
+    pub resource_governor: &'a ResourceGovernor,
     pub model_catalog: &'a ModelCatalog,
     pub scheduler: &'a ProcessScheduler,
     pub orchestrator: &'a Orchestrator,
     pub in_flight: &'a HashSet<u64>,
     pub metrics: &'a MetricsState,
+    pub session_registry: &'a SessionRegistry,
+    pub storage: &'a StorageService,
 }
 
 pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
@@ -33,9 +41,70 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
     let (sched_tracked, sched_crit, sched_high, sched_norm, sched_low) =
         deps.scheduler.summary_counts();
     let selected_model_id = deps.model_catalog.selected_id.clone().unwrap_or_default();
+    let runtime_instances: Vec<RuntimeInstanceView> = deps
+        .runtime_registry
+        .runtime_views()
+        .into_iter()
+        .map(|runtime| RuntimeInstanceView {
+            runtime_id: runtime.runtime_id,
+            target_kind: runtime.target_kind,
+            logical_model_id: runtime.logical_model_id,
+            display_path: runtime.display_path,
+            family: runtime.family,
+            backend_id: runtime.backend_id,
+            backend_class: runtime.backend_class,
+            provider_id: runtime.provider_id,
+            remote_model_id: runtime.remote_model_id,
+            state: runtime.state,
+            reservation_ram_bytes: runtime.reservation_ram_bytes,
+            reservation_vram_bytes: runtime.reservation_vram_bytes,
+            pinned: runtime.pinned,
+            transition_state: runtime.transition_state,
+            active_pid_count: runtime.active_pid_count,
+            active_pids: runtime.active_pids,
+            current: runtime.current,
+        })
+        .collect();
+    let governor_status = deps.resource_governor.status(deps.runtime_registry);
+    let governor_view = ResourceGovernorStatusView {
+        ram_budget_bytes: governor_status.ram_budget_bytes,
+        vram_budget_bytes: governor_status.vram_budget_bytes,
+        min_ram_headroom_bytes: governor_status.min_ram_headroom_bytes,
+        min_vram_headroom_bytes: governor_status.min_vram_headroom_bytes,
+        ram_used_bytes: governor_status.ram_used_bytes,
+        vram_used_bytes: governor_status.vram_used_bytes,
+        ram_available_bytes: governor_status.ram_available_bytes,
+        vram_available_bytes: governor_status.vram_available_bytes,
+        pending_queue_depth: governor_status.pending_queue_depth,
+        loader_busy: governor_status.loader_busy,
+        loader_reason: governor_status.loader_reason,
+    };
+    let runtime_load_queue: Vec<RuntimeLoadQueueEntryView> = deps
+        .resource_governor
+        .queue_views()
+        .into_iter()
+        .map(|entry| RuntimeLoadQueueEntryView {
+            queue_id: entry.queue_id,
+            logical_model_id: entry.logical_model_id,
+            display_path: entry.display_path,
+            backend_class: entry.backend_class,
+            state: entry.state,
+            reservation_ram_bytes: entry.reservation_ram_bytes,
+            reservation_vram_bytes: entry.reservation_vram_bytes,
+            reason: entry.reason,
+            requested_at_ms: entry.requested_at_ms,
+            updated_at_ms: entry.updated_at_ms,
+        })
+        .collect();
+    let global_accounting = deps
+        .storage
+        .global_accounting_summary()
+        .ok()
+        .flatten()
+        .map(|summary| summary.into_view());
 
     let (model_status, gen_status, processes_status) =
-        if let Some(engine) = deps.engine_state.as_ref() {
+        if let Some(engine) = deps.runtime_registry.current_engine() {
             let loaded_path = engine.loaded_model_path().to_string();
             let loaded_family = engine.loaded_family();
             let loaded_remote_model = engine.loaded_remote_model().cloned();
@@ -68,8 +137,17 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                         .master_model
                         .as_ref()
                         .map(|model| model.backend_capabilities().into()),
-                    loaded_backend_telemetry: runtime_backend_telemetry(&engine.backend_id),
+                    loaded_backend_telemetry: deps
+                        .storage
+                        .accounting_summary_for_backend(&engine.backend_id)
+                        .ok()
+                        .flatten()
+                        .map(|summary| summary.into_view())
+                        .or_else(|| runtime_backend_telemetry(&engine.backend_id)),
                     loaded_remote_model,
+                    runtime_instances: runtime_instances.clone(),
+                    resource_governor: Some(governor_view.clone()),
+                    runtime_load_queue: runtime_load_queue.clone(),
                 },
                 Some(GenerationStatus {
                     temperature: cfg.temperature,
@@ -78,11 +156,31 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                     max_tokens: cfg.max_tokens,
                 }),
                 {
-                    let active_pids = engine.list_active_pids();
-                    let parked_pids = engine.list_parked_pids();
+                    let active_pids = deps
+                        .runtime_registry
+                        .loaded_runtime_ids()
+                        .into_iter()
+                        .flat_map(|runtime_id| {
+                            deps.runtime_registry
+                                .engine(&runtime_id)
+                                .map(|engine| engine.list_active_pids())
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<_>>();
+                    let parked_pids = deps
+                        .runtime_registry
+                        .loaded_runtime_ids()
+                        .into_iter()
+                        .flat_map(|runtime_id| {
+                            deps.runtime_registry
+                                .engine(&runtime_id)
+                                .map(|engine| engine.list_parked_pids())
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<_>>();
                     let in_flight_pids: Vec<u64> = deps.in_flight.iter().copied().collect();
                     let restored_pids = deps.scheduler.restored_pids();
-                    let live_pids: Vec<u64> = engine.processes.keys().copied().collect();
+                    let live_pids: Vec<u64> = deps.runtime_registry.all_active_pids();
                     let all_pids = collect_unique_pids([
                         live_pids.as_slice(),
                         active_pids.as_slice(),
@@ -92,7 +190,13 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                     ]);
                     let active_processes = all_pids
                         .iter()
-                        .map(|&pid| build_pid_status_or_placeholder(deps, Some(engine), pid))
+                        .map(|&pid| {
+                            let engine = deps
+                                .runtime_registry
+                                .runtime_id_for_pid(pid)
+                                .and_then(|runtime_id| deps.runtime_registry.engine(runtime_id));
+                            build_pid_status_or_placeholder(deps, engine, pid)
+                        })
                         .collect();
                     ProcessesStatus {
                         active_pids,
@@ -118,6 +222,9 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                     loaded_backend_capabilities: None,
                     loaded_backend_telemetry: None,
                     loaded_remote_model: None,
+                    runtime_instances: runtime_instances.clone(),
+                    resource_governor: Some(governor_view.clone()),
+                    runtime_load_queue: runtime_load_queue.clone(),
                 },
                 None,
                 ProcessesStatus {
@@ -140,6 +247,7 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
         total_errors: total_err,
         total_exec_started: total_exec,
         total_signals,
+        global_accounting,
         model: model_status,
         generation: gen_status,
         memory: MemoryStatus {
@@ -204,7 +312,11 @@ fn current_loaded_target_info(
 }
 
 pub fn build_pid_status(deps: &StatusSnapshotDeps<'_>, pid: u64) -> Option<PidStatusResponse> {
-    build_pid_status_response_checked(deps, deps.engine_state.as_ref(), pid)
+    let engine = deps
+        .runtime_registry
+        .runtime_id_for_pid(pid)
+        .and_then(|runtime_id| deps.runtime_registry.engine(runtime_id));
+    build_pid_status_response_checked(deps, engine, pid)
 }
 
 pub fn build_orchestration_status(
@@ -281,6 +393,7 @@ fn build_pid_status_or_placeholder(
     pid: u64,
 ) -> PidStatusResponse {
     build_pid_status_response_checked(deps, engine, pid).unwrap_or_else(|| PidStatusResponse {
+        session_id: deps.session_registry.session_id_for_pid_or_fallback(pid),
         pid,
         owner_id: 0,
         orchestration_id: None,
@@ -303,6 +416,7 @@ fn build_pid_status_or_placeholder(
         backend_id: None,
         backend_class: None,
         backend_capabilities: None,
+        session_accounting: None,
         context: None,
     })
 }
@@ -319,7 +433,15 @@ fn build_pid_status_response_checked(
         if let Some(process) = engine.processes.get(&pid) {
             let (backend_id, backend_class, backend_capabilities, _) =
                 runtime_backend_status(&process.model);
+            let session_id = deps.session_registry.session_id_for_pid_or_fallback(pid);
+            let session_accounting = deps
+                .storage
+                .accounting_summary_for_session(&session_id)
+                .ok()
+                .flatten()
+                .map(|summary| summary.into_view());
             return Some(PidStatusResponse {
+                session_id,
                 pid,
                 owner_id: process.owner_id,
                 orchestration_id: orchestration_binding.as_ref().map(|(orch_id, _)| *orch_id),
@@ -358,6 +480,7 @@ fn build_pid_status_response_checked(
                 backend_id,
                 backend_class,
                 backend_capabilities,
+                session_accounting,
                 context: Some(map_context_snapshot(process.context_status_snapshot())),
             });
         }
@@ -365,6 +488,7 @@ fn build_pid_status_response_checked(
 
     if let Some(checked_out) = deps.scheduler.checked_out_process(pid) {
         return Some(checked_out_pid_status_response(
+            deps.session_registry.session_id_for_pid_or_fallback(pid),
             pid,
             sched.as_ref(),
             orchestration_binding,
@@ -372,18 +496,25 @@ fn build_pid_status_response_checked(
         ));
     }
 
-    deps.scheduler
-        .restored_process(pid)
-        .map(|metadata| restored_pid_status_response(pid, sched.as_ref(), metadata))
+    deps.scheduler.restored_process(pid).map(|metadata| {
+        restored_pid_status_response(
+            deps.session_registry.session_id_for_pid_or_fallback(pid),
+            pid,
+            sched.as_ref(),
+            metadata,
+        )
+    })
 }
 
 fn checked_out_pid_status_response(
+    session_id: String,
     pid: u64,
     sched: Option<&ProcessSchedulerSnapshot>,
     orchestration_binding: Option<(u64, String)>,
     metadata: &CheckedOutProcessMetadata,
 ) -> PidStatusResponse {
     PidStatusResponse {
+        session_id,
         pid,
         owner_id: metadata.owner_id,
         orchestration_id: orchestration_binding.as_ref().map(|(orch_id, _)| *orch_id),
@@ -410,16 +541,19 @@ fn checked_out_pid_status_response(
         backend_id: metadata.backend_id.clone(),
         backend_class: metadata.backend_class.clone(),
         backend_capabilities: map_backend_capabilities(metadata.backend_capabilities),
+        session_accounting: None,
         context: Some(map_context_snapshot(metadata.context.clone())),
     }
 }
 
 fn restored_pid_status_response(
+    session_id: String,
     pid: u64,
     sched: Option<&ProcessSchedulerSnapshot>,
     metadata: &RestoredProcessMetadata,
 ) -> PidStatusResponse {
     PidStatusResponse {
+        session_id,
         pid,
         owner_id: metadata.owner_id,
         orchestration_id: None,
@@ -444,6 +578,7 @@ fn restored_pid_status_response(
         backend_id: metadata.backend_id.clone(),
         backend_class: metadata.backend_class.clone(),
         backend_capabilities: map_backend_capabilities(metadata.backend_capabilities),
+        session_accounting: None,
         context: Some(map_context_snapshot(
             crate::process::ContextStatusSnapshot::from_parts(
                 &metadata.context_policy,
@@ -526,15 +661,19 @@ mod tests {
     };
     use crate::commands::MetricsState;
     use crate::config::OpenAIResponsesConfig;
-    use crate::engine::LLMEngine;
     use crate::memory::NeuralMemory;
     use crate::model_catalog::{ModelCatalog, RemoteModelEntry, ResolvedModelTarget};
     use crate::orchestrator::Orchestrator;
     use crate::process::{ContextPolicy, ContextState, ContextStatusSnapshot, ContextStrategy};
     use crate::prompting::PromptFamily;
+    use crate::resource_governor::ResourceGovernor;
+    use crate::runtimes::{RuntimeRegistry, RuntimeReservation};
     use crate::scheduler::{CheckedOutProcessMetadata, ProcessScheduler, RestoredProcessMetadata};
+    use crate::session::SessionRegistry;
+    use crate::storage::StorageService;
     use anyhow::Result;
     use std::collections::HashSet;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn collect_unique_pids_preserves_first_seen_order() {
@@ -596,6 +735,7 @@ mod tests {
         let policy = ContextPolicy::new(ContextStrategy::SlidingWindow, 256, 256, 128, 4);
         let context = ContextStatusSnapshot::from_parts(&policy, &ContextState::default());
         let response = checked_out_pid_status_response(
+            "sess-test-000042".to_string(),
             42,
             None,
             None,
@@ -652,6 +792,7 @@ mod tests {
     #[test]
     fn restored_status_can_surface_absent_backend_slot_metadata() {
         let response = restored_pid_status_response(
+            "sess-test-000077".to_string(),
             77,
             None,
             &RestoredProcessMetadata {
@@ -720,7 +861,6 @@ mod tests {
             None,
             driver_resolution,
         );
-        let engine = LLMEngine::load_target(&target).expect("load remote stateless engine");
         let memory = NeuralMemory::new().expect("memory init");
         let model_catalog =
             ModelCatalog::discover(crate::config::kernel_config().paths.models_dir.clone())
@@ -729,16 +869,24 @@ mod tests {
         let orchestrator = Orchestrator::new();
         let in_flight = HashSet::new();
         let metrics = MetricsState::new();
-        let engine_state = Some(engine);
+        let session_registry = fresh_session_registry();
+        let (mut runtime_storage, mut runtime_registry, resource_governor) =
+            fresh_runtime_registry();
+        runtime_registry
+            .activate_target(&mut runtime_storage, &target, RuntimeReservation::default())
+            .expect("activate runtime");
 
         let status = build_global_status(&StatusSnapshotDeps {
             memory: &memory,
-            engine_state: &engine_state,
+            runtime_registry: &runtime_registry,
+            resource_governor: &resource_governor,
             model_catalog: &model_catalog,
             scheduler: &scheduler,
             orchestrator: &orchestrator,
             in_flight: &in_flight,
             metrics: &metrics,
+            session_registry: &session_registry,
+            storage: &runtime_storage,
         });
 
         assert!(status.model.loaded);
@@ -780,5 +928,40 @@ mod tests {
             Some("gpt-4.1-mini")
         );
         assert!(status.model.loaded_backend_telemetry.is_some());
+        assert_eq!(status.model.runtime_instances.len(), 1);
+        assert!(status.model.resource_governor.is_some());
+        assert_eq!(
+            status.model.runtime_instances[0].backend_id,
+            "openai-responses"
+        );
+    }
+
+    fn fresh_session_registry() -> SessionRegistry {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("agenticos-status-snapshot-{unique}.db"));
+        let mut storage = StorageService::open(&db_path).expect("open session registry storage");
+        let boot = storage
+            .record_kernel_boot("status-snapshot-test")
+            .expect("record status snapshot boot");
+        SessionRegistry::load(&mut storage, boot.boot_id).expect("load session registry")
+    }
+
+    fn fresh_runtime_registry() -> (StorageService, RuntimeRegistry, ResourceGovernor) {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("agenticos-runtime-snapshot-{unique}.db"));
+        let mut storage = StorageService::open(&db_path).expect("open runtime registry storage");
+        let registry = RuntimeRegistry::load(&mut storage).expect("load runtime registry");
+        let governor = ResourceGovernor::load(
+            &mut storage,
+            crate::config::ResourceGovernorConfig::default(),
+        )
+        .expect("load resource governor");
+        (storage, registry, governor)
     }
 }

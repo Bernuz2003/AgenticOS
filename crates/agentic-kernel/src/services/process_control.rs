@@ -1,10 +1,14 @@
 use std::collections::HashSet;
 
-use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
+use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
+use crate::session::SessionRegistry;
+use crate::storage::StorageService;
 
-use super::process_runtime::{kill_managed_process, release_process_resources};
+use super::process_runtime::{
+    kill_managed_process_with_session, release_process_resources_with_session,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessSignalResult {
@@ -14,10 +18,12 @@ pub enum ProcessSignalResult {
     NoModelLoaded,
 }
 
-pub fn request_process_termination(
-    engine_state: &mut Option<LLMEngine>,
+pub fn request_process_termination_with_session(
+    runtime_registry: &mut RuntimeRegistry,
     memory: &mut NeuralMemory,
     scheduler: &mut ProcessScheduler,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
     in_flight: &HashSet<u64>,
     pending_kills: &mut Vec<u64>,
     pid: u64,
@@ -27,22 +33,47 @@ pub fn request_process_termination(
         return ProcessSignalResult::Deferred;
     }
 
-    let Some(engine) = engine_state.as_mut() else {
+    let Some(runtime_id) = runtime_registry
+        .runtime_id_for_pid(pid)
+        .map(ToString::to_string)
+    else {
         return ProcessSignalResult::NoModelLoaded;
     };
+    let terminated = {
+        let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
+            return ProcessSignalResult::NoModelLoaded;
+        };
+        engine.terminate_process(pid)
+    };
 
-    if engine.terminate_process(pid) {
-        release_process_resources(engine, memory, scheduler, pid);
+    if terminated {
+        let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
+            return ProcessSignalResult::NoModelLoaded;
+        };
+        release_process_resources_with_session(
+            engine,
+            memory,
+            scheduler,
+            session_registry,
+            storage,
+            pid,
+            "terminated",
+        );
+        if let Err(err) = runtime_registry.release_pid(storage, pid) {
+            tracing::warn!(pid, %err, "PROCESS_CONTROL: failed to release runtime binding");
+        }
         ProcessSignalResult::Applied
     } else {
         ProcessSignalResult::NotFound
     }
 }
 
-pub fn request_process_kill(
-    engine_state: &mut Option<LLMEngine>,
+pub fn request_process_kill_with_session(
+    runtime_registry: &mut RuntimeRegistry,
     memory: &mut NeuralMemory,
     scheduler: &mut ProcessScheduler,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
     in_flight: &HashSet<u64>,
     pending_kills: &mut Vec<u64>,
     pid: u64,
@@ -52,10 +83,28 @@ pub fn request_process_kill(
         return ProcessSignalResult::Deferred;
     }
 
-    let Some(engine) = engine_state.as_mut() else {
+    let Some(runtime_id) = runtime_registry
+        .runtime_id_for_pid(pid)
+        .map(ToString::to_string)
+    else {
         return ProcessSignalResult::NoModelLoaded;
     };
-
-    kill_managed_process(engine, memory, scheduler, pid);
+    {
+        let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
+            return ProcessSignalResult::NoModelLoaded;
+        };
+        kill_managed_process_with_session(
+            engine,
+            memory,
+            scheduler,
+            session_registry,
+            storage,
+            pid,
+            "killed",
+        );
+    }
+    if let Err(err) = runtime_registry.release_pid(storage, pid) {
+        tracing::warn!(pid, %err, "PROCESS_CONTROL: failed to release runtime binding");
+    }
     ProcessSignalResult::Applied
 }

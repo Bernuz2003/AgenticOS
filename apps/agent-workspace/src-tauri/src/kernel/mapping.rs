@@ -3,8 +3,13 @@ use crate::models::kernel::AuditEvent;
 pub fn make_audit_event(category: &str, title: &str, detail: String) -> AuditEvent {
     AuditEvent {
         category: category.to_string(),
+        kind: category.to_string(),
         title: title.to_string(),
         detail,
+        recorded_at_ms: 0,
+        session_id: None,
+        pid: None,
+        runtime_id: None,
     }
 }
 

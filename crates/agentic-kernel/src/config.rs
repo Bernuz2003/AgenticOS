@@ -28,6 +28,7 @@ pub struct KernelConfig {
     pub protocol: ProtocolRuntimeConfig,
     pub paths: PathsConfig,
     pub memory: MemoryRuntimeConfig,
+    pub resources: ResourceGovernorConfig,
     pub context: ContextConfig,
     pub checkpoint: CheckpointConfig,
     pub auth: AuthConfig,
@@ -49,6 +50,7 @@ impl Default for KernelConfig {
             protocol: ProtocolRuntimeConfig::default(),
             paths: PathsConfig::default(),
             memory: MemoryRuntimeConfig::default(),
+            resources: ResourceGovernorConfig::default(),
             context: ContextConfig::default(),
             checkpoint: CheckpointConfig::default(),
             auth: AuthConfig::default(),
@@ -124,6 +126,7 @@ impl Default for NetworkConfig {
 pub struct PathsConfig {
     pub models_dir: PathBuf,
     pub workspace_dir: PathBuf,
+    pub database_path: PathBuf,
     pub checkpoint_path: PathBuf,
     pub kernel_token_path: PathBuf,
     pub remote_provider_catalog_path: PathBuf,
@@ -134,6 +137,7 @@ impl Default for PathsConfig {
         Self {
             models_dir: repository_path("models"),
             workspace_dir: repository_path("workspace"),
+            database_path: repository_path("workspace/agenticos.db"),
             checkpoint_path: repository_path("workspace/checkpoint.json"),
             kernel_token_path: repository_path("workspace/.kernel_token"),
             remote_provider_catalog_path: repository_path("config/providers/remote_providers.toml"),
@@ -155,6 +159,36 @@ impl Default for MemoryRuntimeConfig {
             swap_async: true,
             swap_dir: repository_path("workspace/swap"),
             token_slot_quota_per_pid: 4096,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ResourceGovernorConfig {
+    pub ram_budget_bytes: u64,
+    pub vram_budget_bytes: u64,
+    pub min_ram_headroom_bytes: u64,
+    pub min_vram_headroom_bytes: u64,
+    pub local_runtime_ram_scale: f64,
+    pub local_runtime_vram_scale: f64,
+    pub local_runtime_ram_overhead_bytes: u64,
+    pub local_runtime_vram_overhead_bytes: u64,
+    pub max_queue_entries: usize,
+}
+
+impl Default for ResourceGovernorConfig {
+    fn default() -> Self {
+        Self {
+            ram_budget_bytes: 0,
+            vram_budget_bytes: 0,
+            min_ram_headroom_bytes: 0,
+            min_vram_headroom_bytes: 0,
+            local_runtime_ram_scale: 1.15,
+            local_runtime_vram_scale: 1.05,
+            local_runtime_ram_overhead_bytes: 268_435_456,
+            local_runtime_vram_overhead_bytes: 134_217_728,
+            max_queue_entries: 32,
         }
     }
 }
@@ -710,6 +744,7 @@ fn normalize_config_paths(config: &mut KernelConfig, config_path: &Path) {
 
     absolutize_from(&base_dir, &mut config.paths.models_dir);
     absolutize_from(&base_dir, &mut config.paths.workspace_dir);
+    absolutize_from(&base_dir, &mut config.paths.database_path);
     absolutize_from(&base_dir, &mut config.paths.checkpoint_path);
     absolutize_from(&base_dir, &mut config.paths.kernel_token_path);
     absolutize_from(&base_dir, &mut config.paths.remote_provider_catalog_path);
@@ -746,6 +781,9 @@ fn apply_env_overrides(config: &mut KernelConfig) {
     }
     if let Some(value) = env_string("AGENTIC_REMOTE_PROVIDERS_PATH") {
         config.paths.remote_provider_catalog_path = PathBuf::from(value);
+    }
+    if let Some(value) = env_string("AGENTIC_DB_PATH") {
+        config.paths.database_path = PathBuf::from(value);
     }
     if let Some(value) = env_string("AGENTIC_PROTOCOL_CAPABILITIES") {
         let capabilities: Vec<String> = value

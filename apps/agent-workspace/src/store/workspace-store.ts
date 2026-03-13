@@ -11,6 +11,7 @@ let snapshotRequestSeq = 0;
 let timelineRequestSeq = 0;
 
 interface WorkspaceState {
+  activeSessionId: string | null;
   activePid: number | null;
   snapshot: WorkspaceSnapshot | null;
   timeline: TimelineSnapshot | null;
@@ -18,14 +19,15 @@ interface WorkspaceState {
   timelineLoading: boolean;
   error: string | null;
   timelineError: string | null;
-  refresh: (pid: number) => Promise<void>;
-  refreshTimeline: (pid: number) => Promise<void>;
+  refresh: (sessionId: string, pid: number | null) => Promise<void>;
+  refreshTimeline: (sessionId: string, pid: number | null) => Promise<void>;
   applySnapshot: (snapshot: WorkspaceSnapshot) => void;
   applyTimeline: (timeline: TimelineSnapshot) => void;
   clear: () => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
+  activeSessionId: null,
   activePid: null,
   snapshot: null,
   timeline: null,
@@ -35,11 +37,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   timelineError: null,
   applySnapshot: (snapshot) =>
     set((state) => {
-      if (state.activePid !== null && state.activePid !== snapshot.pid) {
+      if (
+        state.activeSessionId !== null &&
+        state.activeSessionId !== snapshot.sessionId
+      ) {
         return state;
       }
 
       return {
+        activeSessionId: snapshot.sessionId,
         activePid: snapshot.pid,
         snapshot,
         loading: false,
@@ -48,39 +54,50 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }),
   applyTimeline: (timeline) =>
     set((state) => {
-      if (state.activePid !== null && state.activePid !== timeline.pid) {
+      if (
+        state.activeSessionId !== null &&
+        state.activeSessionId !== timeline.sessionId
+      ) {
         return state;
       }
 
       return {
+        activeSessionId: timeline.sessionId,
         activePid: timeline.pid,
         timeline,
         timelineLoading: false,
         timelineError: null,
       };
     }),
-  refresh: async (pid) => {
+  refresh: async (sessionId, pid) => {
     const requestId = ++snapshotRequestSeq;
-    const pidChanged = get().activePid !== pid;
+    const sessionChanged = get().activeSessionId !== sessionId;
 
     set((state) => ({
+      activeSessionId: sessionId,
       activePid: pid,
       loading: true,
       error: null,
-      snapshot: pidChanged ? null : state.snapshot,
-      timeline: pidChanged ? null : state.timeline,
-      timelineError: pidChanged ? null : state.timelineError,
+      snapshot: sessionChanged ? null : state.snapshot,
+      timeline: sessionChanged ? null : state.timeline,
+      timelineError: sessionChanged ? null : state.timelineError,
     }));
 
     try {
-      const snapshot = await fetchWorkspaceSnapshot(pid);
-      if (get().activePid !== pid || requestId !== snapshotRequestSeq) {
+      const snapshot = await fetchWorkspaceSnapshot(sessionId, pid);
+      if (
+        get().activeSessionId !== sessionId ||
+        requestId !== snapshotRequestSeq
+      ) {
         return;
       }
 
       set({ snapshot, loading: false, error: null });
     } catch (error) {
-      if (get().activePid !== pid || requestId !== snapshotRequestSeq) {
+      if (
+        get().activeSessionId !== sessionId ||
+        requestId !== snapshotRequestSeq
+      ) {
         return;
       }
 
@@ -93,28 +110,35 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       });
     }
   },
-  refreshTimeline: async (pid) => {
+  refreshTimeline: async (sessionId, pid) => {
     const requestId = ++timelineRequestSeq;
-    const pidChanged = get().activePid !== pid;
+    const sessionChanged = get().activeSessionId !== sessionId;
 
     set((state) => ({
+      activeSessionId: sessionId,
       activePid: pid,
       timelineLoading: true,
       timelineError: null,
-      timeline: pidChanged ? null : state.timeline,
-      snapshot: pidChanged ? null : state.snapshot,
-      error: pidChanged ? null : state.error,
+      timeline: sessionChanged ? null : state.timeline,
+      snapshot: sessionChanged ? null : state.snapshot,
+      error: sessionChanged ? null : state.error,
     }));
 
     try {
-      const timeline = await fetchTimelineSnapshot(pid);
-      if (get().activePid !== pid || requestId !== timelineRequestSeq) {
+      const timeline = await fetchTimelineSnapshot(sessionId, pid);
+      if (
+        get().activeSessionId !== sessionId ||
+        requestId !== timelineRequestSeq
+      ) {
         return;
       }
 
       set({ timeline, timelineLoading: false, timelineError: null });
     } catch (error) {
-      if (get().activePid !== pid || requestId !== timelineRequestSeq) {
+      if (
+        get().activeSessionId !== sessionId ||
+        requestId !== timelineRequestSeq
+      ) {
         return;
       }
 
@@ -129,6 +153,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
   clear: () =>
     set({
+      activeSessionId: null,
       activePid: null,
       snapshot: null,
       timeline: null,

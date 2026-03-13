@@ -1,7 +1,7 @@
 use crate::backend;
 use crate::errors::CatalogError;
 use crate::protocol;
-use crate::services::model_runtime::activate_model_target;
+use crate::services::model_runtime::{activate_model_target, ModelActivationError};
 use agentic_control_models::{KernelEvent, LoadModelResult, SelectModelResult};
 use agentic_protocol::ControlErrorCode;
 use serde_json::Value;
@@ -9,39 +9,17 @@ use serde_json::Value;
 use super::context::ModelCommandContext;
 
 pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
-    // Cannot load a new model while processes are in-flight on the inference worker.
-    if !ctx.in_flight.is_empty() {
-        return protocol::response_protocol_err_typed(
-            ctx.client,
-            &ctx.request_id,
-            ControlErrorCode::InFlight,
-            protocol::schema::ERROR,
-            &format!(
-                "Cannot LOAD while {} process(es) are in-flight. KILL them first.",
-                ctx.in_flight.len()
-            ),
-        );
-    }
-
-    if let Some(engine) = ctx.engine_state.as_ref() {
-        if !engine.processes.is_empty() {
-            return protocol::response_protocol_err_typed(
-                ctx.client,
-                &ctx.request_id,
-                ControlErrorCode::LoadBusy,
-                protocol::schema::ERROR,
-                &format!(
-                    "Cannot LOAD while {} live process(es) are still present. TERM/KILL them first.",
-                    engine.processes.len()
-                ),
-            );
-        }
-    }
-
     let _ = ctx.model_catalog.refresh();
     let selector = String::from_utf8_lossy(payload).trim().to_string();
     match ctx.model_catalog.resolve_load_target(&selector) {
-        Ok(target) => match activate_model_target(ctx.engine_state, ctx.model_catalog, &target) {
+        Ok(target) => match activate_model_target(
+            ctx.runtime_registry,
+            ctx.resource_governor,
+            ctx.session_registry,
+            ctx.storage,
+            ctx.model_catalog,
+            &target,
+        ) {
             Ok(loaded) => {
                 ctx.pending_events.push(KernelEvent::ModelChanged {
                     selected_model_id: ctx.model_catalog.selected_id.clone().unwrap_or_default(),
@@ -51,14 +29,15 @@ pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u
                     reason: "model_loaded".to_string(),
                 });
                 let message = format!(
-                        "Master Model Loaded. family={:?} backend={} backend_class={} driver_source={} rationale={} path={}",
-                        loaded.family,
-                        loaded.backend_id,
-                        loaded.backend_class.as_str(),
-                        loaded.driver_source,
-                        loaded.driver_rationale,
-                        loaded.path.display()
-                    );
+                    "Runtime ready. runtime_id={} family={:?} backend={} backend_class={} driver_source={} rationale={} path={}",
+                    loaded.runtime_id,
+                    loaded.family,
+                    loaded.backend_id,
+                    loaded.backend_class.as_str(),
+                    loaded.driver_source,
+                    loaded.driver_rationale,
+                    loaded.path.display()
+                );
                 protocol::response_protocol_ok(
                     ctx.client,
                     &ctx.request_id,
@@ -83,12 +62,19 @@ pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u
                     Some(&message),
                 )
             }
-            Err(e) => protocol::response_protocol_err_typed(
+            Err(ModelActivationError::Busy(e)) => protocol::response_protocol_err_typed(
+                ctx.client,
+                &ctx.request_id,
+                ControlErrorCode::LoadBusy,
+                protocol::schema::ERROR,
+                &e,
+            ),
+            Err(ModelActivationError::Failed(e)) => protocol::response_protocol_err_typed(
                 ctx.client,
                 &ctx.request_id,
                 ControlErrorCode::LoadFailed,
                 protocol::schema::ERROR,
-                &e.to_string(),
+                &e,
             ),
         },
         Err(CatalogError::DriverResolutionFailed(detail)) => protocol::response_protocol_err_typed(
@@ -139,7 +125,7 @@ pub(crate) fn handle_select_model(ctx: ModelCommandContext<'_>, payload: &[u8]) 
                 ctx.pending_events.push(KernelEvent::ModelChanged {
                     selected_model_id: ctx.model_catalog.selected_id.clone().unwrap_or_default(),
                     loaded_model_id: current_engine_loaded_model_id(
-                        ctx.engine_state.as_ref(),
+                        ctx.runtime_registry.current_engine(),
                         ctx.model_catalog,
                     ),
                 });

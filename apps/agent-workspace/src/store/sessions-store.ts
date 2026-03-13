@@ -2,9 +2,14 @@ import { create } from "zustand";
 
 import {
   fetchLobbySnapshot,
+  type AuditEvent,
   type BackendCapabilities,
   type BackendTelemetry,
+  type MemoryStatus,
   type RemoteRuntimeModel,
+  type ResourceGovernorStatus,
+  type RuntimeInstance,
+  type RuntimeLoadQueueEntry,
 } from "../lib/api";
 
 export type SessionStatus = "idle" | "running" | "swapped";
@@ -12,12 +17,17 @@ export type SessionStatus = "idle" | "running" | "swapped";
 export interface AgentSessionSummary {
   sessionId: string;
   pid: number;
+  activePid: number | null;
+  lastPid: number | null;
   title: string;
   promptPreview: string;
   status: SessionStatus;
   uptimeLabel: string;
   tokensLabel: string;
   contextStrategy: string;
+  runtimeId: string | null;
+  runtimeLabel: string | null;
+  backendClass: string | null;
   orchestrationId?: number | null;
   orchestrationTaskId?: string | null;
 }
@@ -47,8 +57,14 @@ interface SessionsState {
   loadedBackendId: string | null;
   loadedBackendClass: string | null;
   loadedBackendCapabilities: BackendCapabilities | null;
+  globalAccounting: BackendTelemetry | null;
   loadedBackendTelemetry: BackendTelemetry | null;
   loadedRemoteModel: RemoteRuntimeModel | null;
+  memory: MemoryStatus | null;
+  runtimeInstances: RuntimeInstance[];
+  resourceGovernor: ResourceGovernorStatus | null;
+  runtimeLoadQueue: RuntimeLoadQueueEntry[];
+  globalAuditEvents: AuditEvent[];
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -79,8 +95,14 @@ export const useSessionsStore = create<SessionsState>((set) => ({
   loadedBackendId: null,
   loadedBackendClass: null,
   loadedBackendCapabilities: null,
+  globalAccounting: null,
   loadedBackendTelemetry: null,
   loadedRemoteModel: null,
+  memory: null,
+  runtimeInstances: [],
+  resourceGovernor: null,
+  runtimeLoadQueue: [],
+  globalAuditEvents: [],
   loading: false,
   error: null,
   applySnapshot: (snapshot) => {
@@ -94,20 +116,31 @@ export const useSessionsStore = create<SessionsState>((set) => ({
       loadedBackendId: snapshot.loadedBackendId,
       loadedBackendClass: snapshot.loadedBackendClass,
       loadedBackendCapabilities: snapshot.loadedBackendCapabilities,
+      globalAccounting: snapshot.globalAccounting,
       loadedBackendTelemetry: snapshot.loadedBackendTelemetry,
       loadedRemoteModel: snapshot.loadedRemoteModel,
+      memory: snapshot.memory,
+      runtimeInstances: snapshot.runtimeInstances,
+      resourceGovernor: snapshot.resourceGovernor,
+      runtimeLoadQueue: snapshot.runtimeLoadQueue,
+      globalAuditEvents: snapshot.globalAuditEvents,
       orchestrations: snapshot.orchestrations,
       error: snapshot.error,
       loading: false,
       sessions: snapshot.sessions.map((session) => ({
         sessionId: session.sessionId,
         pid: session.pid,
+        activePid: session.activePid,
+        lastPid: session.lastPid,
         title: session.title,
         promptPreview: session.promptPreview,
         status: normalizeStatus(session.status),
         uptimeLabel: session.uptimeLabel,
         tokensLabel: session.tokensLabel,
         contextStrategy: session.contextStrategy || "sliding_window",
+        runtimeId: session.runtimeId,
+        runtimeLabel: session.runtimeLabel,
+        backendClass: session.backendClass,
         orchestrationId: session.orchestrationId,
         orchestrationTaskId: session.orchestrationTaskId,
       })),
@@ -139,8 +172,14 @@ export const useSessionsStore = create<SessionsState>((set) => ({
         loadedBackendId: null,
         loadedBackendClass: null,
         loadedBackendCapabilities: null,
+        globalAccounting: null,
         loadedBackendTelemetry: null,
         loadedRemoteModel: null,
+        memory: null,
+        runtimeInstances: [],
+        resourceGovernor: null,
+        runtimeLoadQueue: [],
+        globalAuditEvents: [],
         orchestrations: [],
         sessions: [],
         error: error instanceof Error ? error.message : "Failed to fetch lobby snapshot",

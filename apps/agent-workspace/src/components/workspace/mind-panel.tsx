@@ -4,6 +4,18 @@ import { strategyLabel } from "../../lib/format";
 import type { AgentSessionSummary } from "../../store/sessions-store";
 import type { AuditEvent, WorkspaceSnapshot } from "../../lib/api";
 
+function formatAuditTime(recordedAtMs: number): string {
+  if (recordedAtMs <= 0) {
+    return "replay";
+  }
+
+  return new Date(recordedAtMs).toLocaleTimeString("it-IT", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 export function MindPanel({
   session,
   snapshot,
@@ -29,11 +41,17 @@ export function MindPanel({
   const residentSlotSnapshotPath = snapshot?.residentSlotSnapshotPath ?? "none";
   const residentKv = snapshot?.backendCapabilities?.residentKv ?? false;
   const persistentSlots = snapshot?.backendCapabilities?.persistentSlots ?? false;
+  const accounting = snapshot?.accounting ?? null;
   const auditEvents = snapshot?.auditEvents ?? [
     {
       category: "status",
+      kind: "snapshot",
       title: "Context snapshot",
       detail: `pid=${session.pid} strategy=${strategy}`,
+      recordedAtMs: 0,
+      sessionId: session.sessionId,
+      pid: session.pid,
+      runtimeId: null,
     },
   ];
   const [auditFilter, setAuditFilter] = useState<string>("all");
@@ -65,8 +83,12 @@ export function MindPanel({
 
   const filterOptions: Array<{ value: string; label: string }> = [
     { value: "all", label: "All" },
+    { value: "admission", label: "Admission" },
+    { value: "process", label: "Process" },
     { value: "runtime", label: "Runtime" },
+    { value: "accounting", label: "Accounting" },
     { value: "tool", label: "Tool" },
+    { value: "kernel", label: "Kernel" },
     { value: "orchestration", label: "Orch" },
     { value: "status", label: "Status" },
     { value: "compaction", label: "Compaction" },
@@ -94,6 +116,13 @@ export function MindPanel({
         </div>
         <div className="mt-3 text-xs text-white/70">
           {snapshot ? `tokens_generated=${snapshot.tokensGenerated} syscalls_used=${snapshot.syscallsUsed}` : "Waiting for STATUS <pid> snapshot"}
+        </div>
+        <div className="mt-3 text-[11px] leading-5 text-white/70">
+          session={session.sessionId}
+          <br />
+          active_pid={snapshot?.activePid ?? session.activePid ?? "none"} · last_pid={snapshot?.lastPid ?? session.lastPid ?? session.pid}
+          <br />
+          runtime={snapshot?.runtimeLabel ?? session.runtimeLabel ?? session.runtimeId ?? "unbound"}
         </div>
       </section>
 
@@ -129,6 +158,17 @@ export function MindPanel({
               Retrieval hits
             </div>
             <div className="mt-3 text-3xl font-bold text-slate-950">{retrievalHits}</div>
+          </div>
+        </div>
+        <div className="rounded-[24px] bg-white p-4">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
+            <DatabaseZap className="h-4 w-4" />
+            Session accounting
+          </div>
+          <div className="mt-3 text-sm leading-6 text-slate-700">
+            {accounting
+              ? `req=${accounting.requestsTotal} tok=${accounting.inputTokensTotal}/${accounting.outputTokensTotal} cost=$${accounting.estimatedCostUsd.toFixed(6)} err=${accounting.rateLimitErrors}/${accounting.authErrors}/${accounting.transportErrors}`
+              : "No persisted accounting for this session yet."}
           </div>
         </div>
       </div>
@@ -187,11 +227,19 @@ export function MindPanel({
         <div className="mt-4 flex-1 space-y-3 overflow-auto rounded-2xl bg-slate-950 p-4 text-[12px] leading-6 text-emerald-100">
           {filteredAuditEvents.map((event: AuditEvent, index) => (
             <div key={`${event.category}-${event.title}-${index}`} className="rounded-2xl border border-white/8 bg-white/5 p-3">
-              <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-300">
-                {event.category}
+              <div className="flex items-center justify-between gap-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-300">
+                <span>
+                  {event.category} · {event.kind}
+                </span>
+                <span>{formatAuditTime(event.recordedAtMs)}</span>
               </div>
               <div className="mt-1 font-semibold text-white">{event.title}</div>
               <div className="mt-1 font-mono text-emerald-100/90">{event.detail}</div>
+              <div className="mt-2 text-[10px] text-emerald-100/70">
+                {event.sessionId ? `session ${event.sessionId}` : "global"}
+                {event.pid !== null ? ` · pid ${event.pid}` : ""}
+                {event.runtimeId ? ` · runtime ${event.runtimeId}` : ""}
+              </div>
             </div>
           ))}
           {filteredAuditEvents.length === 0 ? (

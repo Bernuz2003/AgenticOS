@@ -33,12 +33,12 @@ export function WorkspacePage() {
   const routePid =
     sessionId && sessionId.startsWith("pid-") ? Number(sessionId.slice(4)) : Number.NaN;
   const session = useMemo(() => {
-    if (listedSession) {
-      return listedSession;
+    if (!sessionId) {
+      return undefined;
     }
 
-    if (Number.isNaN(routePid)) {
-      return undefined;
+    if (listedSession) {
+      return listedSession;
     }
 
     const derivedStatus: "idle" | "running" | "swapped" =
@@ -51,28 +51,52 @@ export function WorkspacePage() {
           ? "running"
           : "idle";
 
+    if (!Number.isNaN(routePid)) {
+      return {
+        sessionId: sessionId ?? `pid-${routePid}`,
+        pid: routePid,
+        activePid: snapshot?.activePid ?? routePid,
+        lastPid: snapshot?.lastPid ?? routePid,
+        title: snapshot?.title ?? `Runtime session / PID ${routePid}`,
+        promptPreview: "Sessione avviata dal bridge Tauri",
+        status: derivedStatus,
+        uptimeLabel: snapshot ? `${Math.round(snapshot.elapsedSecs)}s` : "live",
+        tokensLabel: snapshot ? String(snapshot.tokensGenerated) : "0",
+        contextStrategy: snapshot?.context?.contextStrategy ?? "sliding_window",
+        runtimeId: snapshot?.runtimeId ?? null,
+        runtimeLabel: snapshot?.runtimeLabel ?? null,
+        backendClass: snapshot?.backendClass ?? null,
+      };
+    }
+
     return {
-      sessionId: sessionId ?? `pid-${routePid}`,
-      pid: routePid,
-      title: `Runtime session / PID ${routePid}`,
-      promptPreview: "Sessione avviata dal bridge Tauri",
+      sessionId,
+      pid: snapshot?.activePid ?? snapshot?.lastPid ?? timeline?.pid ?? 0,
+      activePid: snapshot?.activePid ?? null,
+      lastPid: snapshot?.lastPid ?? (timeline?.pid ?? null),
+      title: snapshot?.title ?? `Session ${sessionId}`,
+      promptPreview: "Sessione persistita dal control plane SQLite",
       status: derivedStatus,
-      uptimeLabel: snapshot ? `${Math.round(snapshot.elapsedSecs)}s` : "live",
+      uptimeLabel: snapshot ? `${Math.round(snapshot.elapsedSecs)}s` : "persisted",
       tokensLabel: snapshot ? String(snapshot.tokensGenerated) : "0",
       contextStrategy: snapshot?.context?.contextStrategy ?? "sliding_window",
+      runtimeId: snapshot?.runtimeId ?? null,
+      runtimeLabel: snapshot?.runtimeLabel ?? null,
+      backendClass: snapshot?.backendClass ?? null,
     };
-  }, [listedSession, routePid, sessionId, snapshot, timeline?.running]);
+  }, [listedSession, routePid, sessionId, snapshot, timeline?.pid, timeline?.running]);
+
+  const activePid = snapshot?.activePid ?? session?.activePid ?? null;
 
   useEffect(() => {
-    if (!session?.pid) {
+    if (!sessionId) {
       clear();
       return;
     }
 
-    const pid = session.pid;
-    void refresh(pid);
-    void refreshTimeline(pid);
-  }, [clear, refresh, refreshTimeline, session?.pid]);
+    void refreshTimeline(sessionId, activePid);
+    void refresh(sessionId, activePid);
+  }, [activePid, clear, refresh, refreshTimeline, sessionId]);
 
   useEffect(() => {
     setComposerValue("");
@@ -84,14 +108,14 @@ export function WorkspacePage() {
 
   const awaitingContinuation = snapshot?.state === "AwaitingTurnDecision";
   const canSendInput =
-    !!session?.pid &&
+    !!activePid &&
     snapshot?.state === "WaitingForInput" &&
     !timeline?.running &&
     !composerLoading &&
     !turnActionLoading;
 
   async function handleComposerSubmit() {
-    if (!session?.pid) {
+    if (!session || !activePid) {
       return;
     }
 
@@ -104,9 +128,12 @@ export function WorkspacePage() {
     setComposerError(null);
     setTurnActionError(null);
     try {
-      await sendSessionInput(session.pid, prompt);
+      await sendSessionInput(activePid, prompt);
       setComposerValue("");
-      await Promise.all([refreshTimeline(session.pid), refresh(session.pid)]);
+      await Promise.all([
+        refreshTimeline(session.sessionId, activePid),
+        refresh(session.sessionId, activePid),
+      ]);
     } catch (error) {
       setComposerError(
         error instanceof Error ? error.message : "Failed to send input to resident PID",
@@ -117,7 +144,7 @@ export function WorkspacePage() {
   }
 
   async function handleContinueOutput() {
-    if (!session?.pid) {
+    if (!session || !activePid) {
       return;
     }
 
@@ -125,8 +152,11 @@ export function WorkspacePage() {
     setTurnActionError(null);
     setComposerError(null);
     try {
-      await continueSessionOutput(session.pid);
-      await Promise.all([refreshTimeline(session.pid), refresh(session.pid)]);
+      await continueSessionOutput(activePid);
+      await Promise.all([
+        refreshTimeline(session.sessionId, activePid),
+        refresh(session.sessionId, activePid),
+      ]);
     } catch (error) {
       setTurnActionError(
         error instanceof Error
@@ -139,15 +169,18 @@ export function WorkspacePage() {
   }
 
   async function handleStopOutput() {
-    if (!session?.pid) {
+    if (!session || !activePid) {
       return;
     }
 
     setTurnActionLoading(true);
     setTurnActionError(null);
     try {
-      await stopSessionOutput(session.pid);
-      await Promise.all([refreshTimeline(session.pid), refresh(session.pid)]);
+      await stopSessionOutput(activePid);
+      await Promise.all([
+        refreshTimeline(session.sessionId, activePid),
+        refresh(session.sessionId, activePid),
+      ]);
     } catch (error) {
       setTurnActionError(
         error instanceof Error ? error.message : "Failed to stop truncated assistant output",
@@ -162,7 +195,7 @@ export function WorkspacePage() {
       <div className="panel-surface px-6 py-10 text-center">
         <h2 className="text-2xl font-bold text-slate-950">Sessione non trovata</h2>
         <p className="mt-3 text-sm text-slate-600">
-          La Lobby usa ora session state reale da `STATUS`; questo workspace mostra solo PID/sessioni presenti nell'ultimo snapshot disponibile.
+          Questo workspace usa `session_id` come identita' primaria e ricarica i dati da SQLite; la sessione richiesta non e' presente nello store persistito.
         </p>
         <Link
           to="/"

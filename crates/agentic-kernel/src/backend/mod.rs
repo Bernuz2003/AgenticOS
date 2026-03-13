@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokenizers::Tokenizer;
 
+use crate::accounting::BackendAccountingEvent;
 use crate::memory::{ContextSlotId, SlotPersistenceKind};
 use crate::model_catalog::ResolvedModelTarget;
 use crate::prompting::{GenerationConfig, PromptFamily};
@@ -337,6 +338,9 @@ pub trait InferenceBackend: Send {
     fn family(&self) -> PromptFamily;
     fn generate_step(&mut self, request: InferenceStepRequest<'_>) -> Result<InferenceStepResult>;
     fn duplicate_boxed(&self) -> Option<Box<dyn ModelBackend>>;
+    fn take_last_accounting_event(&mut self) -> Option<BackendAccountingEvent> {
+        None
+    }
     fn runtime_capabilities(&self) -> Option<BackendCapabilities> {
         None
     }
@@ -496,6 +500,10 @@ impl RuntimeModel {
         request: InferenceStepRequest<'_>,
     ) -> Result<InferenceStepResult> {
         self.inner.generate_step(request)
+    }
+
+    pub fn take_last_accounting_event(&mut self) -> Option<BackendAccountingEvent> {
+        self.inner.take_last_accounting_event()
     }
 
     #[allow(dead_code)]

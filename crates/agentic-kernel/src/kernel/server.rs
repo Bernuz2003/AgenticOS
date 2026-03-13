@@ -9,15 +9,18 @@ use std::time::Instant;
 
 use crate::commands::MetricsState;
 use crate::config;
-use crate::engine::LLMEngine;
 use crate::events::flush_pending_events;
 use crate::inference_worker::{InferenceCmd, InferenceResult};
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
+use crate::resource_governor::ResourceGovernor;
 use crate::runtime::run_engine_tick;
 use crate::runtime::syscalls::{SyscallCmd, SyscallCompletion};
+use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
+use crate::session::SessionRegistry;
+use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
 use crate::transport::{
     handle_read_with_registry, handle_write, needs_writable_interest, writable_interest, Client,
@@ -46,7 +49,8 @@ pub(crate) struct Kernel {
     pub(crate) unique_token: Token,
     pub(crate) log_connections: bool,
     pub(crate) memory: NeuralMemory,
-    pub(crate) engine_state: Option<LLMEngine>,
+    pub(crate) runtime_registry: RuntimeRegistry,
+    pub(crate) resource_governor: ResourceGovernor,
     pub(crate) shutdown_requested: Arc<AtomicBool>,
     pub(crate) model_catalog: ModelCatalog,
     pub(crate) scheduler: ProcessScheduler,
@@ -68,6 +72,8 @@ pub(crate) struct Kernel {
     pub(crate) tool_registry: ToolRegistry,
     pub(crate) auth_token: String,
     pub(crate) auth_disabled: bool,
+    pub(crate) session_registry: SessionRegistry,
+    pub(crate) storage: StorageService,
 }
 
 impl Kernel {
@@ -107,8 +113,10 @@ impl Kernel {
             }
 
             run_engine_tick(
-                &mut self.engine_state,
+                &mut self.runtime_registry,
+                &mut self.resource_governor,
                 &mut self.memory,
+                &mut self.model_catalog,
                 &mut self.clients,
                 &self.poll,
                 &mut self.scheduler,
@@ -117,6 +125,8 @@ impl Kernel {
                 &self.result_rx,
                 &self.syscall_cmd_tx,
                 &self.syscall_result_rx,
+                &mut self.session_registry,
+                &mut self.storage,
                 &mut self.in_flight,
                 &mut self.pending_kills,
                 &mut self.pending_events,
@@ -127,13 +137,14 @@ impl Kernel {
                 &mut self.clients,
                 &self.poll,
                 &mut self.next_event_sequence,
+                &mut self.storage,
                 &mut self.pending_events,
             );
 
             checkpointing::maybe_run_auto_checkpoint(
                 self.checkpoint_interval_secs,
                 &mut self.last_checkpoint,
-                self.engine_state.as_ref(),
+                self.runtime_registry.current_engine(),
                 &self.model_catalog,
                 &self.scheduler,
                 &self.metrics,
@@ -199,10 +210,13 @@ fn handle_client_event(
             && handle_read_with_registry(
                 client,
                 &mut kernel.memory,
-                &mut kernel.engine_state,
+                &mut kernel.runtime_registry,
+                &mut kernel.resource_governor,
                 &mut kernel.model_catalog,
                 &mut kernel.scheduler,
                 &mut kernel.orchestrator,
+                &mut kernel.session_registry,
+                &mut kernel.storage,
                 token.0,
                 &kernel.shutdown_requested,
                 &kernel.in_flight,

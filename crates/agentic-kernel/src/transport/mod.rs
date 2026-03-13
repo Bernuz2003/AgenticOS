@@ -6,6 +6,8 @@ pub use client::{Client, ClientState, ParsedCommand};
 pub use framing::parse_available_commands;
 #[cfg(test)]
 pub use io::handle_read;
+#[cfg(test)]
+pub use io::handle_read_with_test_state;
 pub use io::{handle_read_with_registry, handle_write};
 
 use mio::Interest;
@@ -30,19 +32,21 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::time::Duration;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::commands::MetricsState;
-    use crate::engine::LLMEngine;
     use crate::memory::NeuralMemory;
     use crate::model_catalog::ModelCatalog;
     use crate::model_catalog::WorkloadClass;
     use crate::orchestrator::Orchestrator;
+    use crate::runtimes::RuntimeRegistry;
     use crate::scheduler::ProcessScheduler;
+    use crate::storage::StorageService;
     use crate::tool_registry::ToolRegistry;
     use jsonschema::JSONSchema;
     use serde_json::Value;
 
-    use super::{handle_read, handle_read_with_registry, handle_write, Client};
+    use super::{handle_read, handle_read_with_test_state, handle_write, Client};
     use super::{parse_available_commands, ClientState, ParsedCommand};
 
     fn setup_client_and_peer() -> (Client, TcpStream) {
@@ -72,7 +76,7 @@ mod tests {
     fn pump_read_with_registry(
         client: &mut Client,
         memory: &mut NeuralMemory,
-        engine_state: &mut Option<LLMEngine>,
+        engine_state: &mut RuntimeRegistry,
         catalog: &mut ModelCatalog,
         scheduler: &mut ProcessScheduler,
         orchestrator: &mut Orchestrator,
@@ -85,7 +89,7 @@ mod tests {
     ) {
         let mut pending_events = Vec::new();
         for _ in 0..4 {
-            let _ = handle_read_with_registry(
+            let _ = handle_read_with_test_state(
                 client,
                 memory,
                 engine_state,
@@ -225,7 +229,7 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn setup_shared_state() -> (
         NeuralMemory,
-        Option<LLMEngine>,
+        RuntimeRegistry,
         ModelCatalog,
         Arc<AtomicBool>,
         ProcessScheduler,
@@ -235,7 +239,7 @@ mod tests {
         MetricsState,
     ) {
         let memory = NeuralMemory::new().expect("memory init");
-        let engine_state: Option<LLMEngine> = None;
+        let engine_state = fresh_runtime_registry();
         let catalog = ModelCatalog::discover(repository_path("models")).expect("catalog discover");
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         (
@@ -254,7 +258,7 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn setup_shared_state_for_swap_pressure() -> (
         NeuralMemory,
-        Option<LLMEngine>,
+        RuntimeRegistry,
         ModelCatalog,
         Arc<AtomicBool>,
         ProcessScheduler,
@@ -264,7 +268,7 @@ mod tests {
         MetricsState,
     ) {
         let memory = NeuralMemory::new().expect("memory init");
-        let engine_state: Option<LLMEngine> = None;
+        let engine_state = fresh_runtime_registry();
         let catalog = ModelCatalog::discover(repository_path("models")).expect("catalog discover");
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         (
@@ -278,6 +282,16 @@ mod tests {
             Vec::new(),
             MetricsState::new(),
         )
+    }
+
+    fn fresh_runtime_registry() -> RuntimeRegistry {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("agenticos-transport-runtime-{unique}.db"));
+        let mut storage = StorageService::open(&db_path).expect("open runtime storage");
+        RuntimeRegistry::load(&mut storage).expect("load runtime registry")
     }
 
     #[test]

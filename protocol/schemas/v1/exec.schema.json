@@ -9,8 +9,9 @@
         "schema_id": {"const": "agenticos.control.exec.v1"},
         "data": {
           "type": "object",
-          "required": ["pid", "workload", "priority"],
+          "required": ["session_id", "pid", "workload", "priority"],
           "properties": {
+            "session_id": {"type": "string", "minLength": 1},
             "pid": {"type": "integer", "minimum": 0},
             "workload": {"type": "string"},
             "priority": {"type": "string"},

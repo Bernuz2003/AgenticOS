@@ -71,7 +71,7 @@ export function TimelinePane({
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
-            Timeline
+            Timeline · {session.sessionId}
           </p>
           <h2 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">
             Conversazione e loop operativo

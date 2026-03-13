@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use agentic_control_models::ExecStartPayload;
 use agentic_protocol::OpCode;
-use serde::{Deserialize, Serialize};
 
 use super::audit::AuditLogEntry;
 use super::auth::kernel_token_path;
@@ -22,14 +21,14 @@ pub struct TimelineStore {
     sessions: HashMap<u64, TimelineSessionState>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct TimelineTurn {
     prompt: String,
     assistant_stream: String,
     running: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct TimelineSessionState {
     session_id: String,
     pid: u64,
@@ -47,8 +46,15 @@ pub(crate) struct ProcessFinishedMarker {
 }
 
 impl TimelineStore {
-    pub fn insert_started_session(&mut self, pid: u64, prompt: String, workload: String) {
+    pub fn insert_started_session(
+        &mut self,
+        pid: u64,
+        session_id: String,
+        prompt: String,
+        workload: String,
+    ) {
         if let Some(session) = self.sessions.get_mut(&pid) {
+            session.session_id = session_id;
             session.workload = workload;
             session.error = None;
             if session.turns.is_empty() {
@@ -62,7 +68,7 @@ impl TimelineStore {
         }
 
         let state = TimelineSessionState {
-            session_id: format!("pid-{pid}"),
+            session_id,
             pid,
             workload,
             turns: vec![TimelineTurn {
@@ -165,79 +171,21 @@ impl TimelineStore {
         })
     }
 
-    fn insert_persisted_session(&mut self, session: TimelineSessionState) {
-        self.sessions.insert(session.pid, session);
+    pub fn snapshot_for_session_id(&self, session_id: &str) -> Option<TimelineSnapshot> {
+        self.sessions
+            .values()
+            .find(|session| session.session_id == session_id)
+            .map(|session| TimelineSnapshot {
+                session_id: session.session_id.clone(),
+                pid: session.pid,
+                running: session.turns.last().is_some_and(|turn| turn.running),
+                workload: session.workload.clone(),
+                source: "live_exec".to_string(),
+                fallback_notice: None,
+                error: session.error.clone(),
+                items: build_live_timeline_items(session),
+            })
     }
-}
-
-fn timeline_sessions_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join("timeline_sessions")
-}
-
-fn timeline_session_path(workspace_root: &Path, pid: u64) -> PathBuf {
-    timeline_sessions_dir(workspace_root).join(format!("pid-{pid}.json"))
-}
-
-pub fn persist_session_snapshot(
-    workspace_root: &Path,
-    store: &TimelineStore,
-    pid: u64,
-) -> Result<(), String> {
-    let Some(session) = store.sessions.get(&pid).cloned() else {
-        return Ok(());
-    };
-
-    fs::create_dir_all(timeline_sessions_dir(workspace_root)).map_err(|err| err.to_string())?;
-    let payload = serde_json::to_vec_pretty(&session).map_err(|err| err.to_string())?;
-    fs::write(timeline_session_path(workspace_root, pid), payload).map_err(|err| err.to_string())
-}
-
-fn load_persisted_session(
-    workspace_root: &Path,
-    pid: u64,
-) -> Result<Option<TimelineSessionState>, String> {
-    let path = timeline_session_path(workspace_root, pid);
-    match fs::read(path) {
-        Ok(payload) => serde_json::from_slice(&payload)
-            .map(Some)
-            .map_err(|err| err.to_string()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err.to_string()),
-    }
-}
-
-fn sync_persisted_session_with_workspace_snapshot(
-    session: &mut TimelineSessionState,
-    snapshot: &WorkspaceSnapshot,
-) {
-    session.workload = snapshot.workload.clone();
-    if let Some(turn) = session.turns.last_mut() {
-        turn.running = matches!(
-            snapshot.state.as_str(),
-            "Running" | "WaitingForSyscall" | "InFlight"
-        );
-    }
-}
-
-pub fn hydrate_session_from_disk(
-    timeline_store: &Arc<Mutex<TimelineStore>>,
-    workspace_root: &Path,
-    pid: u64,
-    snapshot: Option<&WorkspaceSnapshot>,
-) -> Result<bool, String> {
-    let Some(mut session) = load_persisted_session(workspace_root, pid)? else {
-        return Ok(false);
-    };
-
-    if let Some(snapshot) = snapshot {
-        sync_persisted_session_with_workspace_snapshot(&mut session, snapshot);
-    }
-
-    let mut store = timeline_store
-        .lock()
-        .map_err(|_| "Timeline store lock poisoned".to_string())?;
-    store.insert_persisted_session(session);
-    Ok(true)
 }
 
 pub fn synthesize_fallback_timeline(snapshot: WorkspaceSnapshot) -> TimelineSnapshot {
@@ -394,7 +342,7 @@ pub fn start_exec_session(
         return Err("Kernel returned EXEC start without a PID".to_string());
     }
 
-    let session_id = format!("pid-{}", started.pid);
+    let session_id = started.session_id.clone();
     {
         let mut store = timeline_store
             .lock()
@@ -404,8 +352,7 @@ pub fn start_exec_session(
         } else {
             started.workload.clone()
         };
-        store.insert_started_session(started.pid, prompt, started_workload);
-        let _ = persist_session_snapshot(&workspace_root, &store, started.pid);
+        store.insert_started_session(started.pid, session_id.clone(), prompt, started_workload);
     }
 
     Ok(StartSessionResult {
@@ -443,7 +390,11 @@ fn build_live_timeline_items(session: &TimelineSessionState) -> Vec<TimelineItem
     items
 }
 
-fn parse_stream_segments(item_prefix: &str, stream: &str, running: bool) -> Vec<TimelineItem> {
+pub(super) fn parse_stream_segments(
+    item_prefix: &str,
+    stream: &str,
+    running: bool,
+) -> Vec<TimelineItem> {
     let mut items = Vec::new();
     let mut cursor = 0usize;
     let mut item_index = 1usize;

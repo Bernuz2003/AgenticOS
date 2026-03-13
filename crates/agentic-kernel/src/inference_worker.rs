@@ -1,8 +1,7 @@
 use std::sync::mpsc;
 use std::thread;
 
-use anyhow::Result;
-
+use crate::accounting::BackendAccountingEvent;
 use crate::backend::{InferenceFinishReason, InferenceStepRequest};
 use crate::process::{AgentProcess, ProcessState};
 
@@ -28,20 +27,32 @@ pub enum InferenceResult {
         text_output: String,
         generated_tokens: usize,
         finished: bool,
+        accounting_event: Option<BackendAccountingEvent>,
     },
     /// Inference failed — the process has been dropped (model weights freed).
-    Error { pid: u64, error: String },
+    Error {
+        pid: u64,
+        error: String,
+        accounting_event: Option<BackendAccountingEvent>,
+    },
 }
 
 /// Run one inference step on a checked-out process.
 ///
 /// Replicates the forward+sample logic from `LLMEngine::step_process()`
 /// but operates on an owned `AgentProcess` without needing access to the engine.
-fn run_step(
-    mut process: AgentProcess,
-    eos_token_id: u32,
-    eot_token_id: u32,
-) -> Result<(AgentProcess, String, usize, bool)> {
+type StepResult = std::result::Result<
+    (
+        AgentProcess,
+        String,
+        usize,
+        bool,
+        Option<BackendAccountingEvent>,
+    ),
+    (String, Option<BackendAccountingEvent>),
+>;
+
+fn run_step(mut process: AgentProcess, eos_token_id: u32, eot_token_id: u32) -> StepResult {
     let remaining_generation_budget = process
         .max_tokens
         .saturating_sub(process.generated_tokens_in_current_turn());
@@ -52,14 +63,14 @@ fn run_step(
         } else {
             ProcessState::Finished
         };
-        return Ok((process, String::new(), 0, true));
+        return Ok((process, String::new(), 0, true, None));
     }
 
     process.state = ProcessState::Running;
     let rendered_prompt = process.prompt_text().to_string();
     let resident_prompt_suffix = process.pending_resident_prompt_suffix().to_string();
 
-    let step = process.model.generate_step(InferenceStepRequest {
+    let step = match process.model.generate_step(InferenceStepRequest {
         context_slot_id: process.context_slot_id,
         tokens: &process.tokens,
         rendered_prompt: &rendered_prompt,
@@ -70,11 +81,18 @@ fn run_step(
         generation: process.generation,
         eos_token_id,
         eot_token_id,
-    })?;
+    }) {
+        Ok(step) => step,
+        Err(err) => {
+            let accounting_event = process.model.take_last_accounting_event();
+            return Err((err.to_string(), accounting_event));
+        }
+    };
 
     process.index_pos = step.next_index_pos;
     let generated_tokens = step.appended_tokens.len();
     process.tokens.extend(step.appended_tokens);
+    let accounting_event = process.model.take_last_accounting_event();
 
     let mut finished = step.finished;
     let mut finish_reason = step.finish_reason;
@@ -94,7 +112,13 @@ fn run_step(
         };
     }
 
-    Ok((process, step.emitted_text, generated_tokens, finished))
+    Ok((
+        process,
+        step.emitted_text,
+        generated_tokens,
+        finished,
+        accounting_event,
+    ))
 }
 
 /// Spawn the inference worker thread.
@@ -124,7 +148,13 @@ pub fn spawn_worker(
                         eos_token_id,
                         eot_token_id,
                     } => match run_step(*process, eos_token_id, eot_token_id) {
-                        Ok((process, text_output, generated_tokens, finished)) => {
+                        Ok((
+                            process,
+                            text_output,
+                            generated_tokens,
+                            finished,
+                            accounting_event,
+                        )) => {
                             if result_tx
                                 .send(InferenceResult::Token {
                                     pid,
@@ -132,6 +162,7 @@ pub fn spawn_worker(
                                     text_output,
                                     generated_tokens,
                                     finished,
+                                    accounting_event,
                                 })
                                 .is_err()
                             {
@@ -139,11 +170,12 @@ pub fn spawn_worker(
                                 break;
                             }
                         }
-                        Err(e) => {
+                        Err((error, accounting_event)) => {
                             if result_tx
                                 .send(InferenceResult::Error {
                                     pid,
-                                    error: e.to_string(),
+                                    error,
+                                    accounting_event,
                                 })
                                 .is_err()
                             {

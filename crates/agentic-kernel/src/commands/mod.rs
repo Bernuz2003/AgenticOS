@@ -19,12 +19,15 @@ use std::sync::Arc;
 use agentic_control_models::KernelEvent;
 use agentic_protocol::ControlErrorCode;
 
-use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::protocol::OpCode;
+use crate::resource_governor::ResourceGovernor;
+use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
+use crate::session::SessionRegistry;
+use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
@@ -39,11 +42,14 @@ pub fn execute_command(
     header: crate::protocol::CommandHeader,
     payload: Vec<u8>,
     memory: &mut NeuralMemory,
-    engine_state: &mut Option<LLMEngine>,
+    runtime_registry: &mut RuntimeRegistry,
+    resource_governor: &mut ResourceGovernor,
     model_catalog: &mut ModelCatalog,
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
     tool_registry: &mut ToolRegistry,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
     client_id: usize,
     shutdown_requested: &Arc<AtomicBool>,
     in_flight: &HashSet<u64>,
@@ -116,11 +122,14 @@ pub fn execute_command(
         client,
         request_id,
         memory,
-        engine_state,
+        runtime_registry,
+        resource_governor,
         model_catalog,
         scheduler,
         orchestrator,
         tool_registry,
+        session_registry,
+        storage,
         client_id,
         shutdown_requested,
         in_flight,

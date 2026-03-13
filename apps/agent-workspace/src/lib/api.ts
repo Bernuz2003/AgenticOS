@@ -3,12 +3,17 @@ import { invoke } from "@tauri-apps/api/core";
 export interface LobbySnapshotSession {
   sessionId: string;
   pid: number;
+  activePid: number | null;
+  lastPid: number | null;
   title: string;
   promptPreview: string;
   status: string;
   uptimeLabel: string;
   tokensLabel: string;
   contextStrategy: string;
+  runtimeId: string | null;
+  runtimeLabel: string | null;
+  backendClass: string | null;
   orchestrationId: number | null;
   orchestrationTaskId: string | null;
 }
@@ -23,8 +28,14 @@ export interface LobbySnapshot {
   loadedBackendId: string | null;
   loadedBackendClass: string | null;
   loadedBackendCapabilities: BackendCapabilities | null;
+  globalAccounting: BackendTelemetry | null;
   loadedBackendTelemetry: BackendTelemetry | null;
   loadedRemoteModel: RemoteRuntimeModel | null;
+  memory: MemoryStatus | null;
+  runtimeInstances: RuntimeInstance[];
+  resourceGovernor: ResourceGovernorStatus | null;
+  runtimeLoadQueue: RuntimeLoadQueueEntry[];
+  globalAuditEvents: AuditEvent[];
   orchestrations: LobbyOrchestrationSummary[];
   sessions: LobbySnapshotSession[];
   error: string | null;
@@ -57,6 +68,11 @@ export interface WorkspaceContextSnapshot {
 export interface WorkspaceSnapshot {
   sessionId: string;
   pid: number;
+  activePid: number | null;
+  lastPid: number | null;
+  title: string;
+  runtimeId: string | null;
+  runtimeLabel: string | null;
   state: string;
   workload: string;
   contextSlotId: number | null;
@@ -66,6 +82,7 @@ export interface WorkspaceSnapshot {
   backendId: string | null;
   backendClass: string | null;
   backendCapabilities: BackendCapabilities | null;
+  accounting: BackendTelemetry | null;
   tokensGenerated: number;
   syscallsUsed: number;
   elapsedSecs: number;
@@ -74,6 +91,70 @@ export interface WorkspaceSnapshot {
   orchestration: WorkspaceOrchestrationSnapshot | null;
   context: WorkspaceContextSnapshot | null;
   auditEvents: AuditEvent[];
+}
+
+export interface MemoryStatus {
+  active: boolean;
+  totalBlocks: number;
+  freeBlocks: number;
+  trackedPids: number;
+  allocatedTensors: number;
+  allocBytes: number;
+  evictions: number;
+  swapCount: number;
+  swapFaults: number;
+  swapFailures: number;
+  pendingSwaps: number;
+  parkedPids: number;
+  oomEvents: number;
+  swapWorkerCrashes: number;
+}
+
+export interface RuntimeInstance {
+  runtimeId: string;
+  targetKind: string;
+  logicalModelId: string;
+  displayPath: string;
+  family: string;
+  backendId: string;
+  backendClass: string;
+  providerId: string | null;
+  remoteModelId: string | null;
+  state: string;
+  reservationRamBytes: number;
+  reservationVramBytes: number;
+  pinned: boolean;
+  transitionState: string | null;
+  activePidCount: number;
+  activePids: number[];
+  current: boolean;
+}
+
+export interface RuntimeLoadQueueEntry {
+  queueId: number;
+  logicalModelId: string;
+  displayPath: string;
+  backendClass: string;
+  state: string;
+  reservationRamBytes: number;
+  reservationVramBytes: number;
+  reason: string;
+  requestedAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface ResourceGovernorStatus {
+  ramBudgetBytes: number;
+  vramBudgetBytes: number;
+  minRamHeadroomBytes: number;
+  minVramHeadroomBytes: number;
+  ramUsedBytes: number;
+  vramUsedBytes: number;
+  ramAvailableBytes: number;
+  vramAvailableBytes: number;
+  pendingQueueDepth: number;
+  loaderBusy: boolean;
+  loaderReason: string | null;
 }
 
 export interface WorkspaceOrchestrationSnapshot {
@@ -97,8 +178,13 @@ export interface WorkspaceOrchestrationSnapshot {
 
 export interface AuditEvent {
   category: string;
+  kind: string;
   title: string;
   detail: string;
+  recordedAtMs: number;
+  sessionId: string | null;
+  pid: number | null;
+  runtimeId: string | null;
 }
 
 export interface StartSessionResult {
@@ -301,6 +387,18 @@ export interface LobbySnapshotDto {
     context_compaction_reset: boolean;
     parallel_sessions: boolean;
   } | null;
+  global_accounting: {
+    requests_total: number;
+    stream_requests_total: number;
+    input_tokens_total: number;
+    output_tokens_total: number;
+    estimated_cost_usd: number;
+    rate_limit_errors: number;
+    auth_errors: number;
+    transport_errors: number;
+    last_model: string | null;
+    last_error: string | null;
+  } | null;
   loaded_backend_telemetry: {
     requests_total: number;
     stream_requests_total: number;
@@ -326,6 +424,76 @@ export interface LobbySnapshotDto {
     input_price_usd_per_mtok: number | null;
     output_price_usd_per_mtok: number | null;
   } | null;
+  memory: {
+    active: boolean;
+    total_blocks: number;
+    free_blocks: number;
+    tracked_pids: number;
+    allocated_tensors: number;
+    alloc_bytes: number;
+    evictions: number;
+    swap_count: number;
+    swap_faults: number;
+    swap_failures: number;
+    pending_swaps: number;
+    parked_pids: number;
+    oom_events: number;
+    swap_worker_crashes: number;
+  } | null;
+  runtime_instances: Array<{
+    runtime_id: string;
+    target_kind: string;
+    logical_model_id: string;
+    display_path: string;
+    family: string;
+    backend_id: string;
+    backend_class: string;
+    provider_id: string | null;
+    remote_model_id: string | null;
+    state: string;
+    reservation_ram_bytes: number;
+    reservation_vram_bytes: number;
+    pinned: boolean;
+    transition_state: string | null;
+    active_pid_count: number;
+    active_pids: number[];
+    current: boolean;
+  }>;
+  resource_governor: {
+    ram_budget_bytes: number;
+    vram_budget_bytes: number;
+    min_ram_headroom_bytes: number;
+    min_vram_headroom_bytes: number;
+    ram_used_bytes: number;
+    vram_used_bytes: number;
+    ram_available_bytes: number;
+    vram_available_bytes: number;
+    pending_queue_depth: number;
+    loader_busy: boolean;
+    loader_reason: string | null;
+  } | null;
+  runtime_load_queue: Array<{
+    queue_id: number;
+    logical_model_id: string;
+    display_path: string;
+    backend_class: string;
+    state: string;
+    reservation_ram_bytes: number;
+    reservation_vram_bytes: number;
+    reason: string;
+    requested_at_ms: number;
+    updated_at_ms: number;
+  }>;
+  global_audit_events: Array<{
+    category: string;
+    kind: string;
+    title: string;
+    detail: string;
+    recorded_at_ms: number;
+    session_id: string | null;
+    pid: number | null;
+    runtime_id: string | null;
+  }>;
   orchestrations: Array<{
     orchestration_id: number;
     total: number;
@@ -341,12 +509,17 @@ export interface LobbySnapshotDto {
   sessions: Array<{
     session_id: string;
     pid: number;
+    active_pid: number | null;
+    last_pid: number | null;
     title: string;
     prompt_preview: string;
     status: string;
     uptime_label: string;
     tokens_label: string;
     context_strategy?: string | null;
+    runtime_id: string | null;
+    runtime_label: string | null;
+    backend_class: string | null;
     orchestration_id: number | null;
     orchestration_task_id: string | null;
   }>;
@@ -356,6 +529,11 @@ export interface LobbySnapshotDto {
 export interface WorkspaceSnapshotDto {
   session_id: string;
   pid: number;
+  active_pid: number | null;
+  last_pid: number | null;
+  title: string;
+  runtime_id: string | null;
+  runtime_label: string | null;
   state: string;
   workload: string;
   context_slot_id: number | null;
@@ -376,6 +554,18 @@ export interface WorkspaceSnapshotDto {
     tool_pause_resume: boolean;
     context_compaction_reset: boolean;
     parallel_sessions: boolean;
+  } | null;
+  accounting: {
+    requests_total: number;
+    stream_requests_total: number;
+    input_tokens_total: number;
+    output_tokens_total: number;
+    estimated_cost_usd: number;
+    rate_limit_errors: number;
+    auth_errors: number;
+    transport_errors: number;
+    last_model: string | null;
+    last_error: string | null;
   } | null;
   tokens_generated: number;
   syscalls_used: number;
@@ -412,8 +602,13 @@ export interface WorkspaceSnapshotDto {
   };
   audit_events: Array<{
     category: string;
+    kind: string;
     title: string;
     detail: string;
+    recorded_at_ms: number;
+    session_id: string | null;
+    pid: number | null;
+    runtime_id: string | null;
   }>;
 }
 
@@ -446,10 +641,16 @@ export function normalizeLobbySnapshot(snapshot: LobbySnapshotDto): LobbySnapsho
     loadedBackendCapabilities: mapBackendCapabilities(
       snapshot.loaded_backend_capabilities,
     ),
+    globalAccounting: mapBackendTelemetry(snapshot.global_accounting),
     loadedBackendTelemetry: mapBackendTelemetry(
       snapshot.loaded_backend_telemetry,
     ),
     loadedRemoteModel: mapRemoteRuntimeModel(snapshot.loaded_remote_model),
+    memory: mapMemoryStatus(snapshot.memory),
+    runtimeInstances: snapshot.runtime_instances.map(mapRuntimeInstance),
+    resourceGovernor: mapResourceGovernor(snapshot.resource_governor),
+    runtimeLoadQueue: snapshot.runtime_load_queue.map(mapRuntimeLoadQueueEntry),
+    globalAuditEvents: snapshot.global_audit_events.map(mapAuditEvent),
     orchestrations: snapshot.orchestrations.map((orchestration) => ({
       orchestrationId: orchestration.orchestration_id,
       total: orchestration.total,
@@ -466,15 +667,44 @@ export function normalizeLobbySnapshot(snapshot: LobbySnapshotDto): LobbySnapsho
     sessions: snapshot.sessions.map((session) => ({
       sessionId: session.session_id,
       pid: session.pid,
+      activePid: session.active_pid,
+      lastPid: session.last_pid,
       title: session.title,
       promptPreview: session.prompt_preview,
       status: session.status,
       uptimeLabel: session.uptime_label,
       tokensLabel: session.tokens_label,
       contextStrategy: session.context_strategy ?? "sliding_window",
+      runtimeId: session.runtime_id,
+      runtimeLabel: session.runtime_label,
+      backendClass: session.backend_class,
       orchestrationId: session.orchestration_id,
       orchestrationTaskId: session.orchestration_task_id,
     })),
+  };
+}
+
+function mapAuditEvent(
+  event: {
+    category: string;
+    kind: string;
+    title: string;
+    detail: string;
+    recorded_at_ms: number;
+    session_id: string | null;
+    pid: number | null;
+    runtime_id: string | null;
+  },
+): AuditEvent {
+  return {
+    category: event.category,
+    kind: event.kind,
+    title: event.title,
+    detail: event.detail,
+    recordedAtMs: event.recorded_at_ms,
+    sessionId: event.session_id,
+    pid: event.pid,
+    runtimeId: event.runtime_id,
   };
 }
 
@@ -525,6 +755,11 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
   return {
     sessionId: snapshot.session_id,
     pid: snapshot.pid,
+    activePid: snapshot.active_pid,
+    lastPid: snapshot.last_pid,
+    title: snapshot.title,
+    runtimeId: snapshot.runtime_id,
+    runtimeLabel: snapshot.runtime_label,
     state: snapshot.state,
     workload: snapshot.workload,
     contextSlotId: snapshot.context_slot_id,
@@ -534,6 +769,7 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
     backendId: snapshot.backend_id,
     backendClass: snapshot.backend_class,
     backendCapabilities: mapBackendCapabilities(snapshot.backend_capabilities),
+    accounting: mapBackendTelemetry(snapshot.accounting),
     tokensGenerated: snapshot.tokens_generated,
     syscallsUsed: snapshot.syscalls_used,
     elapsedSecs: snapshot.elapsed_secs,
@@ -571,11 +807,7 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
           contextSegments: snapshot.context.context_segments,
         }
       : null,
-    auditEvents: snapshot.audit_events.map((event) => ({
-      category: event.category,
-      title: event.title,
-      detail: event.detail,
-    })),
+    auditEvents: snapshot.audit_events.map(mapAuditEvent),
   };
 }
 
@@ -626,13 +858,107 @@ function mapBackendCapabilities(
   };
 }
 
+function mapMemoryStatus(
+  memory: LobbySnapshotDto["memory"],
+): MemoryStatus | null {
+  if (!memory) {
+    return null;
+  }
+
+  return {
+    active: memory.active,
+    totalBlocks: memory.total_blocks,
+    freeBlocks: memory.free_blocks,
+    trackedPids: memory.tracked_pids,
+    allocatedTensors: memory.allocated_tensors,
+    allocBytes: memory.alloc_bytes,
+    evictions: memory.evictions,
+    swapCount: memory.swap_count,
+    swapFaults: memory.swap_faults,
+    swapFailures: memory.swap_failures,
+    pendingSwaps: memory.pending_swaps,
+    parkedPids: memory.parked_pids,
+    oomEvents: memory.oom_events,
+    swapWorkerCrashes: memory.swap_worker_crashes,
+  };
+}
+
+function mapRuntimeInstance(
+  runtime: LobbySnapshotDto["runtime_instances"][number],
+): RuntimeInstance {
+  return {
+    runtimeId: runtime.runtime_id,
+    targetKind: runtime.target_kind,
+    logicalModelId: runtime.logical_model_id,
+    displayPath: runtime.display_path,
+    family: runtime.family,
+    backendId: runtime.backend_id,
+    backendClass: runtime.backend_class,
+    providerId: runtime.provider_id,
+    remoteModelId: runtime.remote_model_id,
+    state: runtime.state,
+    reservationRamBytes: runtime.reservation_ram_bytes,
+    reservationVramBytes: runtime.reservation_vram_bytes,
+    pinned: runtime.pinned,
+    transitionState: runtime.transition_state,
+    activePidCount: runtime.active_pid_count,
+    activePids: runtime.active_pids,
+    current: runtime.current,
+  };
+}
+
+function mapRuntimeLoadQueueEntry(
+  entry: LobbySnapshotDto["runtime_load_queue"][number],
+): RuntimeLoadQueueEntry {
+  return {
+    queueId: entry.queue_id,
+    logicalModelId: entry.logical_model_id,
+    displayPath: entry.display_path,
+    backendClass: entry.backend_class,
+    state: entry.state,
+    reservationRamBytes: entry.reservation_ram_bytes,
+    reservationVramBytes: entry.reservation_vram_bytes,
+    reason: entry.reason,
+    requestedAtMs: entry.requested_at_ms,
+    updatedAtMs: entry.updated_at_ms,
+  };
+}
+
+function mapResourceGovernor(
+  governor: LobbySnapshotDto["resource_governor"],
+): ResourceGovernorStatus | null {
+  if (!governor) {
+    return null;
+  }
+
+  return {
+    ramBudgetBytes: governor.ram_budget_bytes,
+    vramBudgetBytes: governor.vram_budget_bytes,
+    minRamHeadroomBytes: governor.min_ram_headroom_bytes,
+    minVramHeadroomBytes: governor.min_vram_headroom_bytes,
+    ramUsedBytes: governor.ram_used_bytes,
+    vramUsedBytes: governor.vram_used_bytes,
+    ramAvailableBytes: governor.ram_available_bytes,
+    vramAvailableBytes: governor.vram_available_bytes,
+    pendingQueueDepth: governor.pending_queue_depth,
+    loaderBusy: governor.loader_busy,
+    loaderReason: governor.loader_reason,
+  };
+}
+
 export async function fetchLobbySnapshot(): Promise<LobbySnapshot> {
   const snapshot = await invoke<LobbySnapshotDto>("fetch_lobby_snapshot");
   return normalizeLobbySnapshot(snapshot);
 }
 
-export async function fetchWorkspaceSnapshot(pid: number): Promise<WorkspaceSnapshot> {
-  const snapshot = await invoke<WorkspaceSnapshotDto>("fetch_workspace_snapshot", { pid });
+export async function fetchWorkspaceSnapshot(
+  sessionId: string,
+  pid: number | null,
+): Promise<WorkspaceSnapshot> {
+  const snapshot = await invoke<WorkspaceSnapshotDto>("fetch_workspace_snapshot", {
+    sessionId,
+    pid,
+  });
   return normalizeWorkspaceSnapshot(snapshot);
 }
 
@@ -924,7 +1250,13 @@ export async function shutdownKernel(): Promise<string> {
   return invoke<string>("shutdown_kernel");
 }
 
-export async function fetchTimelineSnapshot(pid: number): Promise<TimelineSnapshot> {
-  const snapshot = await invoke<TimelineSnapshotDto>("fetch_timeline_snapshot", { pid });
+export async function fetchTimelineSnapshot(
+  sessionId: string,
+  pid: number | null,
+): Promise<TimelineSnapshot> {
+  const snapshot = await invoke<TimelineSnapshotDto>("fetch_timeline_snapshot", {
+    sessionId,
+    pid,
+  });
   return normalizeTimelineSnapshot(snapshot);
 }

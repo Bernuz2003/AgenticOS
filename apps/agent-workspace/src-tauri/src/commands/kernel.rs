@@ -6,6 +6,7 @@ use tauri::{async_runtime, State};
 
 use crate::app_state::AppState;
 use crate::kernel::error::KernelBridgeError;
+use crate::kernel::history_db;
 use crate::kernel::stream;
 use crate::kernel::{audit, auth, protocol};
 use crate::models::kernel::{
@@ -56,17 +57,52 @@ pub async fn fetch_lobby_snapshot(state: State<'_, AppState>) -> Result<LobbySna
 
 #[tauri::command]
 pub async fn fetch_workspace_snapshot(
-    pid: u64,
+    session_id: String,
+    pid: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<WorkspaceSnapshot, String> {
+    let workspace_root = state.workspace_root.clone();
     let bridge = state.bridge.clone();
     run_blocking(move || {
-        let mut bridge = bridge
-            .lock()
-            .map_err(|_| "Bridge state lock poisoned".to_string())?;
-        bridge
-            .fetch_workspace_snapshot(pid)
-            .map_err(|err| err.to_string())
+        if let Some(pid) = pid {
+            let mut bridge = bridge
+                .lock()
+                .map_err(|_| "Bridge state lock poisoned".to_string())?;
+            match bridge.fetch_workspace_snapshot(pid) {
+                Ok(snapshot) => return Ok(snapshot),
+                Err(err) => {
+                    drop(bridge);
+                    if let Some(snapshot) = history_db::load_workspace_snapshot(
+                        &workspace_root,
+                        &session_id,
+                        Some(pid),
+                    )? {
+                        return Ok(snapshot);
+                    }
+                    return Err(err.to_string());
+                }
+            }
+        }
+
+        let Some(persisted) =
+            history_db::load_workspace_snapshot(&workspace_root, &session_id, None)?
+        else {
+            return Err(format!(
+                "No persisted workspace snapshot found for session {}",
+                session_id
+            ));
+        };
+
+        if let Some(active_pid) = persisted.active_pid {
+            let mut bridge = bridge
+                .lock()
+                .map_err(|_| "Bridge state lock poisoned".to_string())?;
+            if let Ok(snapshot) = bridge.fetch_workspace_snapshot(active_pid) {
+                return Ok(snapshot);
+            }
+        }
+
+        Ok(persisted)
     })
     .await
 }
@@ -94,18 +130,33 @@ pub async fn start_session(
 
 #[tauri::command]
 pub async fn fetch_timeline_snapshot(
-    pid: u64,
+    session_id: String,
+    pid: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<TimelineSnapshot, String> {
     let workspace_root = state.workspace_root.clone();
     let timeline_store = state.timeline_store.clone();
     let bridge = state.bridge.clone();
     run_blocking(move || {
-        let audit_entries = audit::read_recent_audit_entries_for_pid(&workspace_root, pid, 32);
+        let persisted_workspace =
+            history_db::load_workspace_snapshot(&workspace_root, &session_id, pid)?;
+        let resolved_pid = pid.or_else(|| {
+            persisted_workspace
+                .as_ref()
+                .and_then(|snapshot| snapshot.active_pid.or(snapshot.last_pid))
+        });
+        let audit_pid = resolved_pid.unwrap_or_else(|| {
+            session_id
+                .strip_prefix("pid-")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0)
+        });
+        let audit_entries =
+            audit::read_recent_audit_entries_for_pid(&workspace_root, audit_pid, 32);
         if let Some(timeline) = timeline_store
             .lock()
             .map_err(|_| "Timeline store lock poisoned".to_string())?
-            .snapshot(pid)
+            .snapshot_for_session_id(&session_id)
         {
             return Ok(stream::augment_timeline_with_tool_results(
                 timeline,
@@ -113,32 +164,31 @@ pub async fn fetch_timeline_snapshot(
             ));
         }
 
-        let mut bridge = bridge
-            .lock()
-            .map_err(|_| "Bridge state lock poisoned".to_string())?;
-        let snapshot = bridge
-            .fetch_workspace_snapshot(pid)
-            .map_err(|err| err.to_string())?;
-        if stream::hydrate_session_from_disk(
-            &timeline_store,
-            &workspace_root,
-            pid,
-            Some(&snapshot),
-        )? {
-            if let Some(timeline) = timeline_store
-                .lock()
-                .map_err(|_| "Timeline store lock poisoned".to_string())?
-                .snapshot(pid)
-            {
-                return Ok(stream::augment_timeline_with_tool_results(
-                    timeline,
-                    &audit_entries,
-                ));
-            }
+        if let Some(timeline) =
+            history_db::load_timeline_snapshot(&workspace_root, &session_id, resolved_pid)?
+        {
+            return Ok(stream::augment_timeline_with_tool_results(
+                timeline,
+                &audit_entries,
+            ));
         }
-        Ok(stream::augment_timeline_with_tool_results(
-            stream::synthesize_fallback_timeline(snapshot),
-            &audit_entries,
+
+        if let Some(pid) = resolved_pid {
+            let mut bridge = bridge
+                .lock()
+                .map_err(|_| "Bridge state lock poisoned".to_string())?;
+            let snapshot = bridge
+                .fetch_workspace_snapshot(pid)
+                .map_err(|err| err.to_string())?;
+            return Ok(stream::augment_timeline_with_tool_results(
+                stream::synthesize_fallback_timeline(snapshot),
+                &audit_entries,
+            ));
+        }
+
+        Err(format!(
+            "No persisted timeline found for session {}",
+            session_id
         ))
     })
     .await
@@ -223,7 +273,6 @@ pub async fn send_session_input(
 ) -> Result<SendInputResult, String> {
     let bridge = state.bridge.clone();
     let timeline_store = state.timeline_store.clone();
-    let workspace_root = state.workspace_root.clone();
     run_blocking(move || {
         let mut bridge = bridge
             .lock()
@@ -234,7 +283,6 @@ pub async fn send_session_input(
 
         if let Ok(mut store) = timeline_store.lock() {
             store.append_user_turn(pid, prompt);
-            let _ = stream::persist_session_snapshot(&workspace_root, &store, pid);
         }
 
         Ok(result)
@@ -249,7 +297,6 @@ pub async fn continue_session_output(
 ) -> Result<TurnControlResult, String> {
     let bridge = state.bridge.clone();
     let timeline_store = state.timeline_store.clone();
-    let workspace_root = state.workspace_root.clone();
     run_blocking(move || {
         let mut bridge = bridge
             .lock()
@@ -257,7 +304,6 @@ pub async fn continue_session_output(
         let result = bridge.continue_output(pid).map_err(|err| err.to_string())?;
         if let Ok(mut store) = timeline_store.lock() {
             store.resume_last_turn(pid);
-            let _ = stream::persist_session_snapshot(&workspace_root, &store, pid);
         }
         Ok(result)
     })
@@ -271,14 +317,13 @@ pub async fn stop_session_output(
 ) -> Result<TurnControlResult, String> {
     let bridge = state.bridge.clone();
     let timeline_store = state.timeline_store.clone();
-    let workspace_root = state.workspace_root.clone();
     run_blocking(move || {
         let mut bridge = bridge
             .lock()
             .map_err(|_| "Bridge state lock poisoned".to_string())?;
         let result = bridge.stop_output(pid).map_err(|err| err.to_string())?;
-        if let Ok(store) = timeline_store.lock() {
-            let _ = stream::persist_session_snapshot(&workspace_root, &store, pid);
+        if let Ok(mut store) = timeline_store.lock() {
+            store.finish_session_with_reason(pid, None, Some("stopped_by_user"));
         }
         Ok(result)
     })

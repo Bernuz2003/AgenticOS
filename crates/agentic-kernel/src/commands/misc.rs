@@ -81,11 +81,11 @@ pub(crate) fn handle_set_gen(ctx: MiscCommandContext<'_>, payload: &[u8]) -> Vec
     let MiscCommandContext {
         client,
         request_id,
-        engine_state,
+        runtime_registry,
         ..
     } = ctx;
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
-    if let Some(engine) = engine_state.as_mut() {
+    if let Some(engine) = runtime_registry.current_engine_mut() {
         match parse_generation_payload(&payload_text, engine.generation_config()) {
             Ok(cfg) => {
                 engine.set_generation_config(cfg);
@@ -130,10 +130,10 @@ pub(crate) fn handle_get_gen(ctx: MiscCommandContext<'_>) -> Vec<u8> {
     let MiscCommandContext {
         client,
         request_id,
-        engine_state,
+        runtime_registry,
         ..
     } = ctx;
-    if let Some(engine) = engine_state.as_ref() {
+    if let Some(engine) = runtime_registry.current_engine() {
         let cfg = engine.generation_config();
         let message = format!(
             "temperature={} top_p={} seed={} max_tokens={}",

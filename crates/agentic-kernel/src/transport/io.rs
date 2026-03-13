@@ -7,22 +7,81 @@ use agentic_control_models::KernelEvent;
 
 use crate::commands::execute_command;
 use crate::commands::MetricsState;
-use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::protocol;
+use crate::resource_governor::ResourceGovernor;
+use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
+use crate::session::SessionRegistry;
+use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
 
 use super::{parse_available_commands, Client, ParsedCommand};
+
+#[cfg(test)]
+use std::cell::RefCell;
+#[cfg(test)]
+use std::collections::HashMap as TestHashMap;
+#[cfg(test)]
+use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+thread_local! {
+    static TEST_SESSION_STATE: RefCell<TestHashMap<usize, TestSessionState>> =
+        RefCell::new(TestHashMap::new());
+}
+
+#[cfg(test)]
+struct TestSessionState {
+    _db_path: PathBuf,
+    storage: StorageService,
+    session_registry: SessionRegistry,
+}
+
+#[cfg(test)]
+fn with_test_session_state<T>(
+    key: usize,
+    f: impl FnOnce(&mut SessionRegistry, &mut StorageService) -> T,
+) -> T {
+    TEST_SESSION_STATE.with(|states| {
+        let mut states = states.borrow_mut();
+        let state = states.entry(key).or_insert_with(new_test_session_state);
+        f(&mut state.session_registry, &mut state.storage)
+    })
+}
+
+#[cfg(test)]
+fn new_test_session_state() -> TestSessionState {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+    let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let db_path = std::env::temp_dir().join(format!(
+        "agenticos-transport-test-{}-{unique}.db",
+        std::process::id()
+    ));
+    let mut storage = StorageService::open(&db_path).expect("open transport test storage");
+    let boot = storage
+        .record_kernel_boot("transport-test")
+        .expect("record transport test boot");
+    let session_registry =
+        SessionRegistry::load(&mut storage, boot.boot_id).expect("load transport test sessions");
+
+    TestSessionState {
+        _db_path: db_path,
+        storage,
+        session_registry,
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn handle_read(
     client: &mut Client,
     memory: &mut NeuralMemory,
-    engine_state: &mut Option<LLMEngine>,
+    runtime_registry: &mut RuntimeRegistry,
     model_catalog: &mut ModelCatalog,
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
@@ -35,10 +94,10 @@ pub fn handle_read(
 ) -> bool {
     let mut tool_registry = ToolRegistry::with_builtins();
     let mut pending_events = Vec::new();
-    handle_read_with_registry(
+    handle_read_with_test_state(
         client,
         memory,
-        engine_state,
+        runtime_registry,
         model_catalog,
         scheduler,
         orchestrator,
@@ -53,14 +112,62 @@ pub fn handle_read(
     )
 }
 
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub fn handle_read_with_test_state(
+    client: &mut Client,
+    memory: &mut NeuralMemory,
+    runtime_registry: &mut RuntimeRegistry,
+    model_catalog: &mut ModelCatalog,
+    scheduler: &mut ProcessScheduler,
+    orchestrator: &mut Orchestrator,
+    client_id: usize,
+    shutdown_requested: &Arc<AtomicBool>,
+    in_flight: &HashSet<u64>,
+    pending_kills: &mut Vec<u64>,
+    pending_events: &mut Vec<KernelEvent>,
+    metrics: &mut MetricsState,
+    tool_registry: &mut ToolRegistry,
+    auth_token: &str,
+) -> bool {
+    let key = scheduler as *mut ProcessScheduler as usize;
+    with_test_session_state(key, |session_registry, storage| {
+        let mut resource_governor =
+            ResourceGovernor::load(storage, crate::config::ResourceGovernorConfig::default())
+                .expect("load transport test governor");
+        handle_read_with_registry(
+            client,
+            memory,
+            runtime_registry,
+            &mut resource_governor,
+            model_catalog,
+            scheduler,
+            orchestrator,
+            session_registry,
+            storage,
+            client_id,
+            shutdown_requested,
+            in_flight,
+            pending_kills,
+            pending_events,
+            metrics,
+            tool_registry,
+            auth_token,
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn handle_read_with_registry(
     client: &mut Client,
     memory: &mut NeuralMemory,
-    engine_state: &mut Option<LLMEngine>,
+    runtime_registry: &mut RuntimeRegistry,
+    resource_governor: &mut ResourceGovernor,
     model_catalog: &mut ModelCatalog,
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
     client_id: usize,
     shutdown_requested: &Arc<AtomicBool>,
     in_flight: &HashSet<u64>,
@@ -97,11 +204,14 @@ pub fn handle_read_with_registry(
                 header,
                 payload,
                 memory,
-                engine_state,
+                runtime_registry,
+                resource_governor,
                 model_catalog,
                 scheduler,
                 orchestrator,
                 tool_registry,
+                session_registry,
+                storage,
                 client_id,
                 shutdown_requested,
                 in_flight,

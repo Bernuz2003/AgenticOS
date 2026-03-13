@@ -123,13 +123,13 @@ fn handle_kernel_event(
             maybe_emit_workspace_snapshot(app, bridge, pid, last_workspace_refresh, false);
         }
         KernelEvent::SessionStarted {
+            session_id,
             pid,
             workload,
             prompt,
         } => {
             if let Ok(mut store) = timeline_store.lock() {
-                store.insert_started_session(pid, prompt, workload);
-                let _ = super::stream::persist_session_snapshot(workspace_root, &store, pid);
+                store.insert_started_session(pid, session_id, prompt, workload);
             }
             emit_timeline_snapshot(app, timeline_store, workspace_root, pid);
             maybe_emit_workspace_snapshot(app, bridge, pid, last_workspace_refresh, true);
@@ -138,7 +138,6 @@ fn handle_kernel_event(
         KernelEvent::TimelineChunk { pid, text } => {
             if let Ok(mut store) = timeline_store.lock() {
                 store.append_assistant_chunk(pid, &text);
-                let _ = super::stream::persist_session_snapshot(workspace_root, &store, pid);
             }
             emit_timeline_snapshot(app, timeline_store, workspace_root, pid);
             maybe_emit_workspace_snapshot(app, bridge, pid, last_workspace_refresh, false);
@@ -172,7 +171,6 @@ fn handle_kernel_event(
                         },
                     );
                 }
-                let _ = super::stream::persist_session_snapshot(workspace_root, &store, pid);
             }
             emit_timeline_snapshot(app, timeline_store, workspace_root, pid);
             maybe_emit_workspace_snapshot(app, bridge, pid, last_workspace_refresh, true);
@@ -181,7 +179,6 @@ fn handle_kernel_event(
         KernelEvent::SessionErrored { pid, message } => {
             if let Ok(mut store) = timeline_store.lock() {
                 store.set_error(pid, message);
-                let _ = super::stream::persist_session_snapshot(workspace_root, &store, pid);
             }
             emit_timeline_snapshot(app, timeline_store, workspace_root, pid);
             maybe_emit_workspace_snapshot(app, bridge, pid, last_workspace_refresh, true);
@@ -220,8 +217,14 @@ fn emit_lobby_snapshot(app: &AppHandle, bridge: &Arc<Mutex<KernelBridge>>) {
             loaded_backend_id: None,
             loaded_backend_class: None,
             loaded_backend_capabilities: None,
+            global_accounting: None,
             loaded_backend_telemetry: None,
             loaded_remote_model: None,
+            memory: None,
+            runtime_instances: Vec::new(),
+            resource_governor: None,
+            runtime_load_queue: Vec::new(),
+            global_audit_events: Vec::new(),
             orchestrations: Vec::new(),
             sessions: Vec::new(),
             error: Some("Bridge state lock poisoned".to_string()),

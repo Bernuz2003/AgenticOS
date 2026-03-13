@@ -5,10 +5,13 @@ use crate::process::{ProcessLifecyclePolicy, ProcessState};
 use crate::scheduler::ProcessPriority;
 use crate::scheduler::ProcessScheduler;
 use crate::services::process_runtime::{
-    kill_managed_process, spawn_managed_process, ManagedProcessRequest,
+    kill_managed_process_with_session, spawn_managed_process_with_session, ManagedProcessRequest,
 };
+use crate::session::SessionRegistry;
+use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
 use crate::tools::{handle_syscall, SysCallOutcome, SyscallRateMap};
+use crate::{audit, audit::AuditContext};
 use agentic_control_models::KernelEvent;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -27,7 +30,15 @@ pub(crate) enum SyscallCmd {
 #[derive(Debug)]
 pub(crate) struct SyscallCompletion {
     pub pid: u64,
+    pub command: String,
     pub outcome: SysCallOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SyscallDispatchOutcome {
+    None,
+    Spawned(u64),
+    Killed,
 }
 
 pub(crate) fn spawn_syscall_worker(
@@ -45,15 +56,25 @@ pub(crate) fn spawn_syscall_worker(
                         content,
                         registry,
                     } => {
+                        let command = content.clone();
                         let outcome = match rate_map.lock() {
                             Ok(mut guard) => handle_syscall(&content, pid, &mut guard, &registry),
                             Err(_) => SysCallOutcome {
                                 output: "SysCall Error: worker rate-limit state is unavailable."
                                     .to_string(),
+                                success: false,
+                                duration_ms: 0,
                                 should_kill_process: true,
                             },
                         };
-                        if result_tx.send(SyscallCompletion { pid, outcome }).is_err() {
+                        if result_tx
+                            .send(SyscallCompletion {
+                                pid,
+                                command,
+                                outcome,
+                            })
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -89,20 +110,32 @@ pub(super) fn scan_syscall_buffer(buffer: &mut String) -> Option<String> {
 }
 
 pub(super) fn dispatch_process_syscall(
+    runtime_id: &str,
+    pid_floor: u64,
     engine: &mut LLMEngine,
     memory: &mut NeuralMemory,
     scheduler: &mut ProcessScheduler,
     pid: u64,
     content: &str,
     syscall_cmd_tx: &mpsc::Sender<SyscallCmd>,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
     pending_events: &mut Vec<KernelEvent>,
     tool_registry: &ToolRegistry,
-) {
+) -> SyscallDispatchOutcome {
     let quota_exceeded = scheduler.record_syscall(pid);
     if quota_exceeded {
         tracing::warn!(pid, "SCHEDULER: syscall quota exceeded — killing process");
-        kill_managed_process(engine, memory, scheduler, pid);
-        return;
+        kill_managed_process_with_session(
+            engine,
+            memory,
+            scheduler,
+            session_registry,
+            storage,
+            pid,
+            "syscall_quota_exceeded",
+        );
+        return SyscallDispatchOutcome::Killed;
     }
 
     if content.starts_with("SPAWN:") {
@@ -122,10 +155,23 @@ pub(super) fn dispatch_process_syscall(
             .get(&pid)
             .map(|process| process.context_policy.clone());
 
-        match spawn_managed_process(
+        if runtime_id.is_empty() {
+            let _ = engine.inject_context(
+                pid,
+                &engine
+                    .format_system_message("ERROR: Runtime binding not found for SPAWN syscall."),
+            );
+            return SyscallDispatchOutcome::None;
+        }
+
+        match spawn_managed_process_with_session(
+            runtime_id,
+            pid_floor,
             engine,
             memory,
             scheduler,
+            session_registry,
+            storage,
             ManagedProcessRequest {
                 prompt: prompt.to_string(),
                 owner_id,
@@ -138,6 +184,7 @@ pub(super) fn dispatch_process_syscall(
         ) {
             Ok(new_pid) => {
                 pending_events.push(KernelEvent::SessionStarted {
+                    session_id: new_pid.session_id.clone(),
                     pid: new_pid.pid,
                     workload: format!("{:?}", workload).to_lowercase(),
                     prompt: prompt.to_string(),
@@ -155,15 +202,28 @@ pub(super) fn dispatch_process_syscall(
                 );
                 let feedback = engine.format_system_message(&msg);
                 let _ = engine.inject_context(pid, &feedback);
+                SyscallDispatchOutcome::Spawned(new_pid.pid)
             }
             Err(e) => {
                 let _ = engine
                     .inject_context(pid, &engine.format_system_message(&format!("ERROR: {}", e)));
+                SyscallDispatchOutcome::None
             }
         }
     } else if content.starts_with("SEND:") {
         dispatch_send_syscall(engine, pid, content);
+        SyscallDispatchOutcome::None
     } else {
+        audit::record(
+            storage,
+            audit::TOOL_DISPATCHED,
+            format!("command={content}"),
+            AuditContext::for_process(
+                session_registry.session_id_for_pid(pid),
+                pid,
+                Some(runtime_id),
+            ),
+        );
         let queued = syscall_cmd_tx.send(SyscallCmd::Execute {
             pid,
             content: content.to_string(),
@@ -188,56 +248,129 @@ pub(super) fn dispatch_process_syscall(
                 }
             }
         }
+        SyscallDispatchOutcome::None
     }
 }
 
 pub(super) fn drain_syscall_results(
-    engine: &mut LLMEngine,
+    runtime_registry: &mut crate::runtimes::RuntimeRegistry,
     memory: &mut NeuralMemory,
     scheduler: &mut ProcessScheduler,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
     result_rx: &mpsc::Receiver<SyscallCompletion>,
     pending_events: &mut Vec<KernelEvent>,
 ) {
     while let Ok(completion) = result_rx.try_recv() {
         let pid = completion.pid;
-
-        if completion.outcome.should_kill_process {
-            let _ = engine.inject_context(
+        let Some(runtime_id) = runtime_registry
+            .runtime_id_for_pid(pid)
+            .map(ToString::to_string)
+        else {
+            tracing::warn!(
                 pid,
-                &engine.format_system_message(&format!("Output:\n{}", completion.outcome.output)),
+                "OS: dropping syscall completion for unknown runtime pid"
             );
-            kill_managed_process(engine, memory, scheduler, pid);
-            pending_events.push(KernelEvent::SessionFinished {
-                pid,
-                tokens_generated: None,
-                elapsed_secs: None,
-                reason: "syscall_killed".to_string(),
-            });
-            pending_events.push(KernelEvent::WorkspaceChanged {
-                pid,
-                reason: "syscall_killed".to_string(),
-            });
-            pending_events.push(KernelEvent::LobbyChanged {
-                reason: "syscall_killed".to_string(),
-            });
             continue;
-        }
+        };
+        let should_release_runtime = {
+            let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
+                tracing::warn!(
+                    pid,
+                    runtime_id,
+                    "OS: dropping syscall completion for unloaded runtime"
+                );
+                continue;
+            };
+            let audit_context = AuditContext::for_process(
+                session_registry.session_id_for_pid(pid),
+                pid,
+                Some(&runtime_id),
+            );
 
-        match engine.inject_context(
-            pid,
-            &engine.format_system_message(&format!("Output:\n{}", completion.outcome.output)),
-        ) {
-            Ok(()) => {
-                if let Some(process) = engine.processes.get_mut(&pid) {
-                    process.state = ProcessState::Ready;
-                }
+            if completion.outcome.should_kill_process {
+                let _ = engine.inject_context(
+                    pid,
+                    &engine
+                        .format_system_message(&format!("Output:\n{}", completion.outcome.output)),
+                );
+                kill_managed_process_with_session(
+                    engine,
+                    memory,
+                    scheduler,
+                    session_registry,
+                    storage,
+                    pid,
+                    "syscall_killed",
+                );
+                pending_events.push(KernelEvent::SessionFinished {
+                    pid,
+                    tokens_generated: None,
+                    elapsed_secs: None,
+                    reason: "syscall_killed".to_string(),
+                });
                 pending_events.push(KernelEvent::WorkspaceChanged {
                     pid,
-                    reason: "syscall_completed".to_string(),
+                    reason: "syscall_killed".to_string(),
                 });
+                pending_events.push(KernelEvent::LobbyChanged {
+                    reason: "syscall_killed".to_string(),
+                });
+                audit::record(
+                    storage,
+                    audit::TOOL_KILLED,
+                    format!(
+                        "command={} duration_ms={} success={} detail={}",
+                        completion.command,
+                        completion.outcome.duration_ms,
+                        completion.outcome.success,
+                        completion.outcome.output
+                    ),
+                    audit_context,
+                );
+                true
+            } else {
+                match engine.inject_context(
+                    pid,
+                    &engine
+                        .format_system_message(&format!("Output:\n{}", completion.outcome.output)),
+                ) {
+                    Ok(()) => {
+                        if let Some(process) = engine.processes.get_mut(&pid) {
+                            process.state = ProcessState::Ready;
+                        }
+                        pending_events.push(KernelEvent::WorkspaceChanged {
+                            pid,
+                            reason: "syscall_completed".to_string(),
+                        });
+                    }
+                    Err(err) => {
+                        tracing::warn!(pid, %err, "OS: dropping syscall completion for missing process");
+                    }
+                }
+                let spec = if completion.outcome.success {
+                    audit::TOOL_COMPLETED
+                } else {
+                    audit::TOOL_FAILED
+                };
+                audit::record(
+                    storage,
+                    spec,
+                    format!(
+                        "command={} duration_ms={} detail={}",
+                        completion.command,
+                        completion.outcome.duration_ms,
+                        completion.outcome.output
+                    ),
+                    audit_context,
+                );
+                false
             }
-            Err(err) => {
-                tracing::warn!(pid, %err, "OS: dropping syscall completion for missing process");
+        };
+
+        if should_release_runtime {
+            if let Err(err) = runtime_registry.release_pid(storage, pid) {
+                tracing::warn!(pid, %err, "RUNTIME: failed to release pid after syscall kill");
             }
         }
     }

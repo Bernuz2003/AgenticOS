@@ -1,7 +1,9 @@
 use crate::protocol;
 use crate::services::process_control::{
-    request_process_kill, request_process_termination, ProcessSignalResult,
+    request_process_kill_with_session, request_process_termination_with_session,
+    ProcessSignalResult,
 };
+use crate::{audit, audit::AuditContext};
 use agentic_control_models::{KernelEvent, SendInputResult, TurnControlResult};
 use agentic_protocol::ControlErrorCode;
 use serde::Deserialize;
@@ -31,10 +33,19 @@ pub(crate) fn handle_term(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec
             "TERM requires PID payload",
         )
     } else if let Ok(pid) = payload_text.parse::<u64>() {
-        match request_process_termination(
-            ctx.engine_state,
+        let audit_context = AuditContext::for_process(
+            ctx.session_registry.session_id_for_pid(pid),
+            pid,
+            ctx.runtime_registry
+                .runtime_id_for_pid(pid)
+                .or_else(|| ctx.session_registry.runtime_id_for_pid(pid)),
+        );
+        match request_process_termination_with_session(
+            ctx.runtime_registry,
             ctx.memory,
             ctx.scheduler,
+            ctx.session_registry,
+            ctx.storage,
             ctx.in_flight,
             ctx.pending_kills,
             pid,
@@ -81,6 +92,12 @@ pub(crate) fn handle_term(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec
                     ctx.client_id,
                     Some(pid),
                     "graceful_termination_requested",
+                );
+                audit::record(
+                    ctx.storage,
+                    audit::PROCESS_TERMINATED,
+                    "mode=graceful",
+                    audit_context,
                 );
                 let message = format!("Termination requested for PID {}", pid);
                 protocol::response_protocol_ok(
@@ -129,10 +146,19 @@ pub(crate) fn handle_kill(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec
             "KILL requires PID payload",
         )
     } else if let Ok(pid) = payload_text.parse::<u64>() {
-        match request_process_kill(
-            ctx.engine_state,
+        let audit_context = AuditContext::for_process(
+            ctx.session_registry.session_id_for_pid(pid),
+            pid,
+            ctx.runtime_registry
+                .runtime_id_for_pid(pid)
+                .or_else(|| ctx.session_registry.runtime_id_for_pid(pid)),
+        );
+        match request_process_kill_with_session(
+            ctx.runtime_registry,
             ctx.memory,
             ctx.scheduler,
+            ctx.session_registry,
+            ctx.storage,
             ctx.in_flight,
             ctx.pending_kills,
             pid,
@@ -179,6 +205,12 @@ pub(crate) fn handle_kill(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec
                     ctx.client_id,
                     Some(pid),
                     "killed_immediately",
+                );
+                audit::record(
+                    ctx.storage,
+                    audit::PROCESS_KILLED,
+                    "mode=immediate",
+                    audit_context,
                 );
                 let message = format!("Killed PID {}", pid);
                 protocol::response_protocol_ok(
@@ -245,7 +277,21 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
         );
     }
 
-    let Some(engine) = ctx.engine_state.as_mut() else {
+    let Some(runtime_id) = ctx
+        .runtime_registry
+        .runtime_id_for_pid(payload.pid)
+        .or_else(|| ctx.session_registry.runtime_id_for_pid(payload.pid))
+        .map(ToString::to_string)
+    else {
+        return protocol::response_protocol_err_typed(
+            ctx.client,
+            ctx.request_id,
+            ControlErrorCode::NoModel,
+            protocol::schema::ERROR,
+            "No Model Loaded",
+        );
+    };
+    let Some(engine) = ctx.runtime_registry.engine_mut(&runtime_id) else {
         return protocol::response_protocol_err_typed(
             ctx.client,
             ctx.request_id,
@@ -280,6 +326,32 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
 
     match engine.send_user_input(payload.pid, prompt) {
         Ok(()) => {
+            let session_id = ctx
+                .session_registry
+                .session_id_for_pid(payload.pid)
+                .map(ToString::to_string);
+            let workload = ctx
+                .scheduler
+                .snapshot(payload.pid)
+                .map(|snapshot| format!("{:?}", snapshot.workload).to_lowercase())
+                .unwrap_or_else(|| "general".to_string());
+            if let Some(session_id_ref) = session_id.as_deref() {
+                if let Err(err) = ctx.storage.start_session_turn(
+                    session_id_ref,
+                    payload.pid,
+                    &workload,
+                    "send_input",
+                    prompt,
+                    "input",
+                ) {
+                    tracing::warn!(
+                        pid = payload.pid,
+                        session_id = session_id_ref,
+                        %err,
+                        "PROCESS_CMD: failed to persist SEND_INPUT turn"
+                    );
+                }
+            }
             ctx.pending_events.push(KernelEvent::WorkspaceChanged {
                 pid: payload.pid,
                 reason: "input_received".to_string(),
@@ -287,6 +359,12 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
             ctx.pending_events.push(KernelEvent::LobbyChanged {
                 reason: "input_received".to_string(),
             });
+            audit::record(
+                ctx.storage,
+                audit::PROCESS_INPUT_RECEIVED,
+                format!("source=send_input chars={}", prompt.chars().count()),
+                AuditContext::for_process(session_id.as_deref(), payload.pid, Some(&runtime_id)),
+            );
             log_event(
                 "process_continue",
                 ctx.client_id,
@@ -333,7 +411,21 @@ pub(crate) fn handle_continue_output(ctx: ProcessCommandContext<'_>, payload: &[
         }
     };
 
-    let Some(engine) = ctx.engine_state.as_mut() else {
+    let Some(runtime_id) = ctx
+        .runtime_registry
+        .runtime_id_for_pid(payload.pid)
+        .or_else(|| ctx.session_registry.runtime_id_for_pid(payload.pid))
+        .map(ToString::to_string)
+    else {
+        return protocol::response_protocol_err_typed(
+            ctx.client,
+            ctx.request_id,
+            ControlErrorCode::NoModel,
+            protocol::schema::ERROR,
+            "No Model Loaded",
+        );
+    };
+    let Some(engine) = ctx.runtime_registry.engine_mut(&runtime_id) else {
         return protocol::response_protocol_err_typed(
             ctx.client,
             ctx.request_id,
@@ -368,6 +460,13 @@ pub(crate) fn handle_continue_output(ctx: ProcessCommandContext<'_>, payload: &[
 
     match engine.continue_current_turn(payload.pid) {
         Ok(()) => {
+            if let Err(err) = ctx.storage.resume_latest_turn_for_pid(payload.pid) {
+                tracing::warn!(
+                    pid = payload.pid,
+                    %err,
+                    "PROCESS_CMD: failed to persist CONTINUE_OUTPUT turn resume"
+                );
+            }
             ctx.pending_events.push(KernelEvent::WorkspaceChanged {
                 pid: payload.pid,
                 reason: "output_continued".to_string(),
@@ -422,7 +521,21 @@ pub(crate) fn handle_stop_output(ctx: ProcessCommandContext<'_>, payload: &[u8])
         }
     };
 
-    let Some(engine) = ctx.engine_state.as_mut() else {
+    let Some(runtime_id) = ctx
+        .runtime_registry
+        .runtime_id_for_pid(payload.pid)
+        .or_else(|| ctx.session_registry.runtime_id_for_pid(payload.pid))
+        .map(ToString::to_string)
+    else {
+        return protocol::response_protocol_err_typed(
+            ctx.client,
+            ctx.request_id,
+            ControlErrorCode::NoModel,
+            protocol::schema::ERROR,
+            "No Model Loaded",
+        );
+    };
+    let Some(engine) = ctx.runtime_registry.engine_mut(&runtime_id) else {
         return protocol::response_protocol_err_typed(
             ctx.client,
             ctx.request_id,
@@ -457,6 +570,18 @@ pub(crate) fn handle_stop_output(ctx: ProcessCommandContext<'_>, payload: &[u8])
 
     match engine.stop_current_turn(payload.pid) {
         Ok(()) => {
+            if let Err(err) = ctx.storage.finish_latest_turn_for_pid(
+                payload.pid,
+                "completed",
+                "output_stopped",
+                None,
+            ) {
+                tracing::warn!(
+                    pid = payload.pid,
+                    %err,
+                    "PROCESS_CMD: failed to persist STOP_OUTPUT turn finish"
+                );
+            }
             ctx.pending_events.push(KernelEvent::WorkspaceChanged {
                 pid: payload.pid,
                 reason: "output_stopped".to_string(),
@@ -464,6 +589,16 @@ pub(crate) fn handle_stop_output(ctx: ProcessCommandContext<'_>, payload: &[u8])
             ctx.pending_events.push(KernelEvent::LobbyChanged {
                 reason: "output_stopped".to_string(),
             });
+            audit::record(
+                ctx.storage,
+                audit::PROCESS_TURN_COMPLETED,
+                "reason=output_stopped",
+                AuditContext::for_process(
+                    ctx.session_registry.session_id_for_pid(payload.pid),
+                    payload.pid,
+                    Some(&runtime_id),
+                ),
+            );
             log_event(
                 "process_stop_output",
                 ctx.client_id,

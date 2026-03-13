@@ -1,12 +1,17 @@
+use crate::audit::{self, AuditContext};
 use crate::backend::BackendClass;
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;
 use crate::process::{ContextPolicy, ProcessLifecyclePolicy};
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
+use crate::session::SessionRegistry;
+use crate::storage::StorageService;
 
 #[derive(Debug)]
 pub struct ManagedProcessSpawn {
+    pub session_id: String,
+    pub runtime_id: String,
     pub pid: u64,
 }
 
@@ -49,6 +54,21 @@ pub fn release_process_resources(
     scheduler.unregister(pid);
 }
 
+pub fn release_process_resources_with_session(
+    engine: &mut LLMEngine,
+    memory: &mut NeuralMemory,
+    scheduler: &mut ProcessScheduler,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
+    pid: u64,
+    run_state: &str,
+) {
+    if let Err(err) = session_registry.release_pid(storage, pid, run_state) {
+        tracing::warn!(pid, %err, "PROCESS_RUNTIME: failed to release session binding");
+    }
+    release_process_resources(engine, memory, scheduler, pid);
+}
+
 pub fn kill_managed_process(
     engine: &mut LLMEngine,
     memory: &mut NeuralMemory,
@@ -56,6 +76,27 @@ pub fn kill_managed_process(
     pid: u64,
 ) {
     release_process_resources(engine, memory, scheduler, pid);
+    engine.kill_process(pid);
+}
+
+pub fn kill_managed_process_with_session(
+    engine: &mut LLMEngine,
+    memory: &mut NeuralMemory,
+    scheduler: &mut ProcessScheduler,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
+    pid: u64,
+    run_state: &str,
+) {
+    release_process_resources_with_session(
+        engine,
+        memory,
+        scheduler,
+        session_registry,
+        storage,
+        pid,
+        run_state,
+    );
     engine.kill_process(pid);
 }
 
@@ -113,7 +154,71 @@ pub fn spawn_managed_process(
     }
 
     scheduler.register(pid, request.workload, request.priority);
-    Ok(ManagedProcessSpawn { pid })
+    Ok(ManagedProcessSpawn {
+        session_id: format!("pid-{pid}"),
+        runtime_id: String::new(),
+        pid,
+    })
+}
+
+pub fn spawn_managed_process_with_session(
+    runtime_id: &str,
+    pid_floor: u64,
+    engine: &mut LLMEngine,
+    memory: &mut NeuralMemory,
+    scheduler: &mut ProcessScheduler,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
+    request: ManagedProcessRequest,
+) -> Result<ManagedProcessSpawn, String> {
+    engine.ensure_next_pid_at_least(pid_floor);
+    let session_id = session_registry
+        .open_session(storage, &request.prompt, runtime_id)
+        .map_err(|err| err.to_string())?;
+    let request_workload = request.workload;
+    let request_lifecycle = request.lifecycle_policy;
+
+    match spawn_managed_process(engine, memory, scheduler, request) {
+        Ok(mut spawned) => {
+            if let Err(err) =
+                session_registry.bind_pid(storage, &session_id, runtime_id, spawned.pid)
+            {
+                kill_managed_process(engine, memory, scheduler, spawned.pid);
+                if let Err(cleanup_err) = session_registry.delete_session(storage, &session_id) {
+                    tracing::warn!(
+                        session_id,
+                        pid = spawned.pid,
+                        error = %cleanup_err,
+                        "PROCESS_RUNTIME: failed to clean up session after bind failure"
+                    );
+                }
+                return Err(err.to_string());
+            }
+
+            spawned.session_id = session_id;
+            spawned.runtime_id = runtime_id.to_string();
+            audit::record(
+                storage,
+                audit::PROCESS_SPAWNED,
+                format!(
+                    "pid={} runtime={} workload={:?} lifecycle={:?}",
+                    spawned.pid, runtime_id, request_workload, request_lifecycle
+                ),
+                AuditContext::for_process(Some(&spawned.session_id), spawned.pid, Some(runtime_id)),
+            );
+            Ok(spawned)
+        }
+        Err(err) => {
+            if let Err(cleanup_err) = session_registry.delete_session(storage, &session_id) {
+                tracing::warn!(
+                    session_id,
+                    error = %cleanup_err,
+                    "PROCESS_RUNTIME: failed to clean up session after spawn failure"
+                );
+            }
+            Err(err)
+        }
+    }
 }
 
 fn validate_backend_class_policy(

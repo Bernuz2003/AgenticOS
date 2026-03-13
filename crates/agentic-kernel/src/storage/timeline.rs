@@ -1,0 +1,797 @@
+use std::fs;
+use std::path::Path;
+
+use agentic_control_models::KernelEvent;
+use rusqlite::{params, OptionalExtension, Transaction};
+use serde::Deserialize;
+
+use super::service::{current_timestamp_ms, upsert_kernel_meta, StorageError, StorageService};
+
+const LEGACY_IMPORT_META_KEY: &str = "legacy_timeline_import_v1_completed_at_ms";
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LegacyTimelineImportReport {
+    pub(crate) imported_sessions: usize,
+    pub(crate) imported_turns: usize,
+    pub(crate) imported_messages: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyTimelineTurn {
+    prompt: String,
+    assistant_stream: String,
+    running: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyTimelineSession {
+    session_id: String,
+    pid: u64,
+    workload: String,
+    turns: Vec<LegacyTimelineTurn>,
+    error: Option<String>,
+    #[serde(default)]
+    system_events: Vec<(String, String)>,
+}
+
+impl StorageService {
+    pub(crate) fn import_legacy_timelines_once(
+        &mut self,
+        timeline_dir: &Path,
+    ) -> Result<LegacyTimelineImportReport, StorageError> {
+        if self.legacy_import_already_completed()? {
+            return Ok(LegacyTimelineImportReport::default());
+        }
+
+        let mut report = LegacyTimelineImportReport::default();
+        if let Ok(entries) = fs::read_dir(timeline_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                if !extension.eq_ignore_ascii_case("json") {
+                    continue;
+                }
+
+                match self.import_single_legacy_timeline(&path) {
+                    Ok(file_report) => {
+                        report.imported_sessions += file_report.imported_sessions;
+                        report.imported_turns += file_report.imported_turns;
+                        report.imported_messages += file_report.imported_messages;
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            %err,
+                            "STORAGE: skipping malformed legacy timeline file"
+                        );
+                    }
+                }
+            }
+        }
+
+        let now = current_timestamp_ms();
+        upsert_kernel_meta(
+            &self.connection,
+            LEGACY_IMPORT_META_KEY,
+            &now.to_string(),
+            now,
+        )?;
+
+        Ok(report)
+    }
+
+    pub(crate) fn start_session_turn(
+        &mut self,
+        session_id: &str,
+        pid: u64,
+        workload: &str,
+        source: &str,
+        prompt: &str,
+        prompt_kind: &str,
+    ) -> Result<(), StorageError> {
+        let started_at_ms = current_timestamp_ms();
+        let transaction = self.connection.transaction()?;
+        let turn_index = next_turn_index(&transaction, session_id)?;
+
+        transaction.execute(
+            r#"
+            INSERT INTO session_turns (
+                session_id,
+                pid,
+                turn_index,
+                workload,
+                source,
+                status,
+                started_at_ms,
+                updated_at_ms,
+                completed_at_ms,
+                finish_reason
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?6, NULL, NULL)
+            "#,
+            params![session_id, pid, turn_index, workload, source, started_at_ms],
+        )?;
+        let turn_id = transaction.last_insert_rowid();
+        insert_message(
+            &transaction,
+            session_id,
+            turn_id,
+            pid,
+            1,
+            "user",
+            prompt_kind,
+            prompt,
+            started_at_ms,
+        )?;
+        transaction.execute(
+            "UPDATE sessions SET updated_at_ms = ?2 WHERE session_id = ?1",
+            params![session_id, started_at_ms],
+        )?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    pub(crate) fn resume_latest_turn_for_pid(&mut self, pid: u64) -> Result<(), StorageError> {
+        let updated_at_ms = current_timestamp_ms();
+        let transaction = self.connection.transaction()?;
+        let Some((turn_id, session_id)) = latest_turn_identity_for_pid(&transaction, pid)? else {
+            return Ok(());
+        };
+
+        transaction.execute(
+            r#"
+            UPDATE session_turns
+            SET status = 'running',
+                updated_at_ms = ?2,
+                completed_at_ms = NULL,
+                finish_reason = NULL
+            WHERE turn_id = ?1
+            "#,
+            params![turn_id, updated_at_ms],
+        )?;
+        transaction.execute(
+            "UPDATE sessions SET updated_at_ms = ?2 WHERE session_id = ?1",
+            params![session_id, updated_at_ms],
+        )?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    pub(crate) fn append_assistant_chunk_for_pid(
+        &mut self,
+        pid: u64,
+        text: &str,
+    ) -> Result<(), StorageError> {
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        let created_at_ms = current_timestamp_ms();
+        let transaction = self.connection.transaction()?;
+        let Some((turn_id, session_id)) = latest_turn_identity_for_pid(&transaction, pid)? else {
+            return Ok(());
+        };
+        let ordinal = next_message_ordinal(&transaction, turn_id)?;
+
+        insert_message(
+            &transaction,
+            &session_id,
+            turn_id,
+            pid,
+            ordinal,
+            "assistant",
+            "chunk",
+            text,
+            created_at_ms,
+        )?;
+        transaction.execute(
+            "UPDATE session_turns SET updated_at_ms = ?2 WHERE turn_id = ?1",
+            params![turn_id, created_at_ms],
+        )?;
+        transaction.execute(
+            "UPDATE sessions SET updated_at_ms = ?2 WHERE session_id = ?1",
+            params![session_id, created_at_ms],
+        )?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    pub(crate) fn finish_latest_turn_for_pid(
+        &mut self,
+        pid: u64,
+        status: &str,
+        finish_reason: &str,
+        marker_text: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let ended_at_ms = current_timestamp_ms();
+        let transaction = self.connection.transaction()?;
+        let Some((turn_id, session_id)) = latest_turn_identity_for_pid(&transaction, pid)? else {
+            return Ok(());
+        };
+        let (current_status, current_finish_reason): (String, Option<String>) = transaction
+            .query_row(
+                "SELECT status, finish_reason FROM session_turns WHERE turn_id = ?1",
+                params![turn_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+        let preserve_terminal_status =
+            matches!(current_status.as_str(), "terminated" | "killed" | "errored")
+                && finish_reason == "completed";
+        let persisted_status = if preserve_terminal_status {
+            current_status.as_str()
+        } else {
+            status
+        };
+        let persisted_finish_reason = if preserve_terminal_status {
+            current_finish_reason.as_deref().unwrap_or(finish_reason)
+        } else {
+            finish_reason
+        };
+
+        transaction.execute(
+            r#"
+            UPDATE session_turns
+            SET status = ?2,
+                updated_at_ms = ?3,
+                completed_at_ms = COALESCE(completed_at_ms, ?3),
+                finish_reason = ?4
+            WHERE turn_id = ?1
+            "#,
+            params![
+                turn_id,
+                persisted_status,
+                ended_at_ms,
+                persisted_finish_reason
+            ],
+        )?;
+
+        if let Some(marker_text) = marker_text.filter(|text| !text.trim().is_empty()) {
+            let ordinal = next_message_ordinal(&transaction, turn_id)?;
+            insert_message(
+                &transaction,
+                &session_id,
+                turn_id,
+                pid,
+                ordinal,
+                "system",
+                "marker",
+                marker_text,
+                ended_at_ms,
+            )?;
+        }
+
+        transaction.execute(
+            "UPDATE sessions SET updated_at_ms = ?2 WHERE session_id = ?1",
+            params![session_id, ended_at_ms],
+        )?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    pub(crate) fn error_latest_turn_for_pid(
+        &mut self,
+        pid: u64,
+        message: &str,
+    ) -> Result<(), StorageError> {
+        let ended_at_ms = current_timestamp_ms();
+        let transaction = self.connection.transaction()?;
+        let Some((turn_id, session_id)) = latest_turn_identity_for_pid(&transaction, pid)? else {
+            return Ok(());
+        };
+
+        transaction.execute(
+            r#"
+            UPDATE session_turns
+            SET status = 'errored',
+                updated_at_ms = ?2,
+                completed_at_ms = COALESCE(completed_at_ms, ?2),
+                finish_reason = 'worker_error'
+            WHERE turn_id = ?1
+            "#,
+            params![turn_id, ended_at_ms],
+        )?;
+        let ordinal = next_message_ordinal(&transaction, turn_id)?;
+        insert_message(
+            &transaction,
+            &session_id,
+            turn_id,
+            pid,
+            ordinal,
+            "system",
+            "error",
+            message,
+            ended_at_ms,
+        )?;
+        transaction.execute(
+            "UPDATE sessions SET updated_at_ms = ?2 WHERE session_id = ?1",
+            params![session_id, ended_at_ms],
+        )?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    pub(crate) fn record_kernel_event(&mut self, event: &KernelEvent) -> Result<(), StorageError> {
+        match event {
+            KernelEvent::SessionStarted {
+                session_id,
+                pid,
+                workload,
+                prompt,
+            } => self.start_session_turn(
+                session_id,
+                *pid,
+                workload,
+                "kernel_event",
+                prompt,
+                "prompt",
+            ),
+            KernelEvent::TimelineChunk { pid, text } => {
+                self.append_assistant_chunk_for_pid(*pid, text)
+            }
+            KernelEvent::SessionFinished {
+                pid,
+                tokens_generated,
+                elapsed_secs,
+                reason,
+            } => {
+                let (status, marker_text) =
+                    finish_reason_to_turn_outcome(reason, *tokens_generated, *elapsed_secs);
+                self.finish_latest_turn_for_pid(*pid, status, reason, marker_text.as_deref())
+            }
+            KernelEvent::SessionErrored { pid, message } => {
+                self.error_latest_turn_for_pid(*pid, message)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn legacy_import_already_completed(&self) -> Result<bool, StorageError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT value FROM kernel_meta WHERE key = ?1",
+                params![LEGACY_IMPORT_META_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    fn import_single_legacy_timeline(
+        &mut self,
+        path: &Path,
+    ) -> Result<LegacyTimelineImportReport, Box<dyn std::error::Error + Send + Sync>> {
+        let payload = fs::read(path)?;
+        let legacy = serde_json::from_slice::<LegacyTimelineSession>(&payload)?;
+        let imported_at_ms = file_timestamp_ms(path).unwrap_or_else(current_timestamp_ms);
+        let mut report = LegacyTimelineImportReport::default();
+
+        let transaction = self.connection.transaction()?;
+        ensure_session_exists(&transaction, &legacy.session_id, &legacy, imported_at_ms)?;
+
+        let existing_turns: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM session_turns WHERE session_id = ?1",
+            params![legacy.session_id],
+            |row| row.get(0),
+        )?;
+        if existing_turns > 0 {
+            transaction.commit()?;
+            return Ok(report);
+        }
+
+        if !legacy.turns.is_empty() {
+            report.imported_sessions = 1;
+        }
+
+        for (index, turn) in legacy.turns.iter().enumerate() {
+            let turn_index = (index as i64) + 1;
+            let turn_started_at_ms = imported_at_ms + (index as i64);
+            transaction.execute(
+                r#"
+                INSERT INTO session_turns (
+                    session_id,
+                    pid,
+                    turn_index,
+                    workload,
+                    source,
+                    status,
+                    started_at_ms,
+                    updated_at_ms,
+                    completed_at_ms,
+                    finish_reason
+                ) VALUES (?1, ?2, ?3, ?4, 'legacy_import', ?5, ?6, ?6, ?7, ?8)
+                "#,
+                params![
+                    legacy.session_id,
+                    legacy.pid,
+                    turn_index,
+                    legacy.workload,
+                    if turn.running { "running" } else { "completed" },
+                    turn_started_at_ms,
+                    if turn.running {
+                        Option::<i64>::None
+                    } else {
+                        Some(turn_started_at_ms)
+                    },
+                    if turn.running {
+                        Option::<String>::None
+                    } else {
+                        Some("legacy_import".to_string())
+                    },
+                ],
+            )?;
+            let turn_id = transaction.last_insert_rowid();
+            report.imported_turns += 1;
+
+            insert_message(
+                &transaction,
+                &legacy.session_id,
+                turn_id,
+                legacy.pid,
+                1,
+                "user",
+                if index == 0 { "prompt" } else { "input" },
+                &turn.prompt,
+                turn_started_at_ms,
+            )?;
+            report.imported_messages += 1;
+
+            if !turn.assistant_stream.trim().is_empty() {
+                insert_message(
+                    &transaction,
+                    &legacy.session_id,
+                    turn_id,
+                    legacy.pid,
+                    2,
+                    "assistant",
+                    "chunk",
+                    &turn.assistant_stream,
+                    turn_started_at_ms,
+                )?;
+                report.imported_messages += 1;
+            }
+        }
+
+        if let Some(last_turn_id) = latest_turn_id_for_session(&transaction, &legacy.session_id)? {
+            let mut next_ordinal = next_message_ordinal(&transaction, last_turn_id)?;
+            for (text, status) in &legacy.system_events {
+                insert_message(
+                    &transaction,
+                    &legacy.session_id,
+                    last_turn_id,
+                    legacy.pid,
+                    next_ordinal,
+                    "system",
+                    if status == "error" { "error" } else { "marker" },
+                    text,
+                    imported_at_ms,
+                )?;
+                next_ordinal += 1;
+                report.imported_messages += 1;
+            }
+
+            if let Some(error) = legacy.error.as_ref() {
+                transaction.execute(
+                    r#"
+                    UPDATE session_turns
+                    SET status = 'errored',
+                        updated_at_ms = ?2,
+                        completed_at_ms = COALESCE(completed_at_ms, ?2),
+                        finish_reason = 'legacy_error'
+                    WHERE turn_id = ?1
+                    "#,
+                    params![last_turn_id, imported_at_ms],
+                )?;
+                insert_message(
+                    &transaction,
+                    &legacy.session_id,
+                    last_turn_id,
+                    legacy.pid,
+                    next_ordinal,
+                    "system",
+                    "error",
+                    error,
+                    imported_at_ms,
+                )?;
+                report.imported_messages += 1;
+            }
+        }
+
+        transaction.execute(
+            "UPDATE sessions SET updated_at_ms = ?2 WHERE session_id = ?1",
+            params![legacy.session_id, imported_at_ms],
+        )?;
+        transaction.commit()?;
+
+        Ok(report)
+    }
+}
+
+fn next_turn_index(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+) -> Result<i64, rusqlite::Error> {
+    transaction.query_row(
+        "SELECT COALESCE(MAX(turn_index), 0) + 1 FROM session_turns WHERE session_id = ?1",
+        params![session_id],
+        |row| row.get(0),
+    )
+}
+
+fn latest_turn_identity_for_pid(
+    transaction: &Transaction<'_>,
+    pid: u64,
+) -> Result<Option<(i64, String)>, rusqlite::Error> {
+    transaction
+        .query_row(
+            r#"
+            SELECT turn_id, session_id
+            FROM session_turns
+            WHERE pid = ?1
+            ORDER BY turn_index DESC, turn_id DESC
+            LIMIT 1
+            "#,
+            params![pid],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+}
+
+fn latest_turn_id_for_session(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+) -> Result<Option<i64>, rusqlite::Error> {
+    transaction
+        .query_row(
+            r#"
+            SELECT turn_id
+            FROM session_turns
+            WHERE session_id = ?1
+            ORDER BY turn_index DESC, turn_id DESC
+            LIMIT 1
+            "#,
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()
+}
+
+pub(super) fn next_message_ordinal(
+    transaction: &Transaction<'_>,
+    turn_id: i64,
+) -> Result<i64, rusqlite::Error> {
+    transaction.query_row(
+        "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM session_messages WHERE turn_id = ?1",
+        params![turn_id],
+        |row| row.get(0),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn insert_message(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    turn_id: i64,
+    pid: u64,
+    ordinal: i64,
+    role: &str,
+    kind: &str,
+    content: &str,
+    created_at_ms: i64,
+) -> Result<(), rusqlite::Error> {
+    transaction.execute(
+        r#"
+        INSERT INTO session_messages (
+            session_id,
+            turn_id,
+            pid,
+            ordinal,
+            role,
+            kind,
+            content,
+            created_at_ms
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+        params![
+            session_id,
+            turn_id,
+            pid,
+            ordinal,
+            role,
+            kind,
+            content,
+            created_at_ms
+        ],
+    )?;
+    Ok(())
+}
+
+fn ensure_session_exists(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    legacy: &LegacyTimelineSession,
+    imported_at_ms: i64,
+) -> Result<(), rusqlite::Error> {
+    let title = legacy
+        .turns
+        .first()
+        .map(|turn| turn.prompt.lines().next().unwrap_or_default().trim())
+        .filter(|title| !title.is_empty())
+        .unwrap_or(session_id);
+    transaction.execute(
+        r#"
+        INSERT INTO sessions (
+            session_id,
+            title,
+            status,
+            active_pid,
+            created_at_ms,
+            updated_at_ms
+        ) VALUES (?1, ?2, 'idle', NULL, ?3, ?3)
+        ON CONFLICT(session_id) DO NOTHING
+        "#,
+        params![session_id, title, imported_at_ms],
+    )?;
+    Ok(())
+}
+
+fn finish_reason_to_turn_outcome(
+    reason: &str,
+    tokens_generated: Option<u64>,
+    elapsed_secs: Option<f64>,
+) -> (&'static str, Option<String>) {
+    match reason {
+        "turn_completed" => ("completed", None),
+        "awaiting_turn_decision" => ("awaiting_turn_decision", None),
+        "completed" => (
+            "completed",
+            tokens_generated
+                .zip(elapsed_secs)
+                .map(|(tokens_generated, elapsed_secs)| {
+                    format!(
+                        "Process finished: tokens_generated={} elapsed_secs={:.3}",
+                        tokens_generated, elapsed_secs
+                    )
+                }),
+        ),
+        "terminated" => ("terminated", Some("terminated".to_string())),
+        "killed" => ("killed", Some("killed".to_string())),
+        "orchestrator_killed" => ("killed", Some("orchestrator_killed".to_string())),
+        "syscall_killed" => ("killed", Some("syscall_killed".to_string())),
+        "worker_error" => ("errored", Some("worker_error".to_string())),
+        other => ("completed", Some(other.to_string())),
+    }
+}
+
+fn file_timestamp_ms(path: &Path) -> Option<i64> {
+    let metadata = fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LegacyTimelineImportReport, StorageService};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn session_turns_persist_user_input_chunks_and_finish_markers() {
+        let dir = make_temp_dir("agenticos_timeline_storage");
+        let db_path = dir.join("agenticos.db");
+        let mut storage = StorageService::open(&db_path).expect("open storage");
+        let boot = storage
+            .record_kernel_boot("0.5.0-test")
+            .expect("record boot");
+        storage
+            .insert_session(
+                "sess-1",
+                "Session one",
+                "idle",
+                Some("rt-test"),
+                None,
+                1_000,
+                1_000,
+            )
+            .expect("insert session");
+        storage
+            .bind_session_to_pid("sess-1", "rt-test", boot.boot_id, 9, 2_000)
+            .expect("bind session");
+
+        storage
+            .start_session_turn("sess-1", 9, "general", "exec", "hello", "prompt")
+            .expect("start turn");
+        storage
+            .append_assistant_chunk_for_pid(9, "world")
+            .expect("append chunk");
+        storage
+            .finish_latest_turn_for_pid(9, "completed", "turn_completed", None)
+            .expect("finish turn");
+
+        let turn_count: i64 = storage
+            .connection
+            .query_row("SELECT COUNT(*) FROM session_turns", [], |row| row.get(0))
+            .expect("count turns");
+        let message_count: i64 = storage
+            .connection
+            .query_row("SELECT COUNT(*) FROM session_messages", [], |row| {
+                row.get(0)
+            })
+            .expect("count messages");
+
+        assert_eq!(turn_count, 1);
+        assert_eq!(message_count, 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_timeline_import_is_idempotent() {
+        let dir = make_temp_dir("agenticos_legacy_import");
+        let db_path = dir.join("agenticos.db");
+        let timeline_dir = dir.join("timeline_sessions");
+        fs::create_dir_all(&timeline_dir).expect("create timeline dir");
+        fs::write(
+            timeline_dir.join("pid-7.json"),
+            serde_json::json!({
+                "session_id": "pid-7",
+                "pid": 7,
+                "workload": "general",
+                "turns": [
+                    {
+                        "prompt": "legacy prompt",
+                        "assistant_stream": "legacy answer",
+                        "running": false
+                    }
+                ],
+                "error": null,
+                "system_events": [["legacy note", "complete"]]
+            })
+            .to_string(),
+        )
+        .expect("write legacy timeline");
+
+        let mut storage = StorageService::open(&db_path).expect("open storage");
+        storage
+            .record_kernel_boot("0.5.0-test")
+            .expect("record boot");
+
+        let first = storage
+            .import_legacy_timelines_once(&timeline_dir)
+            .expect("import legacy timelines");
+        let second = storage
+            .import_legacy_timelines_once(&timeline_dir)
+            .expect("skip already imported timelines");
+
+        assert_eq!(
+            first,
+            LegacyTimelineImportReport {
+                imported_sessions: 1,
+                imported_turns: 1,
+                imported_messages: 3,
+            }
+        );
+        assert_eq!(second, LegacyTimelineImportReport::default());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    fn make_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), timestamp));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+}

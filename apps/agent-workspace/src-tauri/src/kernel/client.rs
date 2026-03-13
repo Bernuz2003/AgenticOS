@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,7 @@ use agentic_protocol::OpCode;
 
 use super::auth::kernel_token_path;
 use super::error::{KernelBridgeError, KernelBridgeResult};
+use super::history_db;
 use super::mapping::{humanize_kernel_event, make_audit_event};
 use super::protocol;
 use crate::models::kernel::{
@@ -36,33 +38,64 @@ impl KernelBridge {
     }
 
     pub fn fetch_lobby_snapshot(&mut self) -> LobbySnapshot {
+        let archived_sessions =
+            history_db::load_lobby_sessions(&self.workspace_root).unwrap_or_default();
+        let persisted_runtime_instances =
+            history_db::load_runtime_instances(&self.workspace_root).unwrap_or_default();
+        let persisted_runtime_load_queue =
+            history_db::load_runtime_load_queue(&self.workspace_root).unwrap_or_default();
+        let global_audit_events =
+            history_db::load_global_audit_events(&self.workspace_root, 16).unwrap_or_default();
         match self.fetch_status() {
-            Ok(status) => LobbySnapshot {
-                connected: true,
-                selected_model_id: status.model.selected_model_id,
-                loaded_model_id: status.model.loaded_model_id,
-                loaded_target_kind: status.model.loaded_target_kind,
-                loaded_provider_id: status.model.loaded_provider_id,
-                loaded_remote_model_id: status.model.loaded_remote_model_id,
-                loaded_backend_id: status.model.loaded_backend,
-                loaded_backend_class: status.model.loaded_backend_class,
-                loaded_backend_capabilities: status.model.loaded_backend_capabilities,
-                loaded_backend_telemetry: status.model.loaded_backend_telemetry,
-                loaded_remote_model: status.model.loaded_remote_model,
-                orchestrations: status
-                    .orchestrations
-                    .active_orchestrations
+            Ok(status) => {
+                let mut persisted_sessions = archived_sessions
                     .into_iter()
-                    .map(map_orchestration_to_summary)
-                    .collect(),
-                sessions: status
+                    .map(|session| (session.session_id.clone(), session))
+                    .collect::<BTreeMap<_, _>>();
+                let active_sessions: Vec<AgentSessionSummary> = status
                     .processes
                     .active_processes
                     .into_iter()
                     .map(map_process_to_session)
-                    .collect(),
-                error: None,
-            },
+                    .map(|live| {
+                        merge_live_session_summary(
+                            persisted_sessions.remove(&live.session_id),
+                            live,
+                        )
+                    })
+                    .collect();
+
+                let mut sessions = active_sessions;
+                sessions.extend(persisted_sessions.into_values());
+
+                LobbySnapshot {
+                    connected: true,
+                    selected_model_id: status.model.selected_model_id,
+                    loaded_model_id: status.model.loaded_model_id,
+                    loaded_target_kind: status.model.loaded_target_kind,
+                    loaded_provider_id: status.model.loaded_provider_id,
+                    loaded_remote_model_id: status.model.loaded_remote_model_id,
+                    loaded_backend_id: status.model.loaded_backend,
+                    loaded_backend_class: status.model.loaded_backend_class,
+                    loaded_backend_capabilities: status.model.loaded_backend_capabilities,
+                    global_accounting: status.global_accounting,
+                    loaded_backend_telemetry: status.model.loaded_backend_telemetry,
+                    loaded_remote_model: status.model.loaded_remote_model,
+                    memory: Some(status.memory),
+                    runtime_instances: status.model.runtime_instances,
+                    resource_governor: status.model.resource_governor,
+                    runtime_load_queue: status.model.runtime_load_queue,
+                    global_audit_events,
+                    orchestrations: status
+                        .orchestrations
+                        .active_orchestrations
+                        .into_iter()
+                        .map(map_orchestration_to_summary)
+                        .collect(),
+                    sessions,
+                    error: None,
+                }
+            }
             Err(err) => LobbySnapshot {
                 connected: false,
                 selected_model_id: String::new(),
@@ -73,10 +106,17 @@ impl KernelBridge {
                 loaded_backend_id: None,
                 loaded_backend_class: None,
                 loaded_backend_capabilities: None,
+                global_accounting: history_db::load_global_accounting_summary(&self.workspace_root)
+                    .unwrap_or_default(),
                 loaded_backend_telemetry: None,
                 loaded_remote_model: None,
+                memory: None,
+                runtime_instances: persisted_runtime_instances,
+                resource_governor: None,
+                runtime_load_queue: persisted_runtime_load_queue,
+                global_audit_events,
                 orchestrations: Vec::new(),
-                sessions: Vec::new(),
+                sessions: archived_sessions,
                 error: Some(err.to_string()),
             },
         }
@@ -98,6 +138,7 @@ impl KernelBridge {
             &response.payload,
             &[agentic_protocol::schema::PID_STATUS],
         )?;
+        let session_id = status.session_id.clone();
         let (orchestration, orchestration_fetch_error) = if let Some(orch_id) =
             status.orchestration_id
         {
@@ -108,11 +149,23 @@ impl KernelBridge {
         } else {
             (None, None)
         };
-        Ok(map_pid_status_to_workspace_snapshot(
+        let mut snapshot = map_pid_status_to_workspace_snapshot(
             status,
             orchestration,
             orchestration_fetch_error.map(|err| err.to_string()),
-        ))
+        );
+        let persisted_snapshot =
+            history_db::load_workspace_snapshot(&self.workspace_root, &session_id, Some(pid))
+                .unwrap_or_default();
+        snapshot = merge_workspace_snapshot(snapshot, persisted_snapshot);
+        if let Ok(audit_events) =
+            history_db::load_session_audit_events(&self.workspace_root, &session_id, 64)
+        {
+            if !audit_events.is_empty() {
+                snapshot.audit_events = audit_events;
+            }
+        }
+        Ok(snapshot)
     }
 
     fn fetch_status(&mut self) -> KernelBridgeResult<StatusResponse> {
@@ -446,14 +499,22 @@ fn map_process_to_session(process: PidStatusResponse) -> AgentSessionSummary {
     };
 
     AgentSessionSummary {
-        session_id: format!("pid-{}", process.pid),
+        session_id: process.session_id.clone(),
         pid: process.pid,
+        active_pid: Some(process.pid),
+        last_pid: Some(process.pid),
         title: format!("{} / PID {}", process.workload, process.pid),
         prompt_preview,
         status,
         uptime_label: format_duration(process.elapsed_secs),
         tokens_label: format_tokens(process.tokens_generated),
         context_strategy,
+        runtime_id: None,
+        runtime_label: process
+            .backend_id
+            .as_ref()
+            .map(|backend_id| format!("{backend_id} · {}", process.workload)),
+        backend_class: process.backend_class.clone(),
         orchestration_id: process.orchestration_id,
         orchestration_task_id: process.orchestration_task_id,
     }
@@ -520,6 +581,22 @@ fn map_pid_status_to_workspace_snapshot(
                 humanize_kernel_event(&format!("last_summary_ts={summary_ts}")),
             ));
         }
+    }
+    if let Some(accounting) = process.session_accounting.as_ref() {
+        audit_events.push(make_audit_event(
+            "accounting",
+            "Session accounting",
+            format!(
+                "requests={} tokens={}/{} cost=${:.6} errors={}/{}/{}",
+                accounting.requests_total,
+                accounting.input_tokens_total,
+                accounting.output_tokens_total,
+                accounting.estimated_cost_usd,
+                accounting.rate_limit_errors,
+                accounting.auth_errors,
+                accounting.transport_errors,
+            ),
+        ));
     }
     audit_events.push(make_audit_event(
         "runtime",
@@ -605,8 +682,16 @@ fn map_pid_status_to_workspace_snapshot(
     }
 
     WorkspaceSnapshot {
-        session_id: format!("pid-{}", process.pid),
+        session_id: process.session_id,
         pid: process.pid,
+        active_pid: Some(process.pid),
+        last_pid: Some(process.pid),
+        title: format!("{} / PID {}", process.workload, process.pid),
+        runtime_id: None,
+        runtime_label: process
+            .backend_id
+            .as_ref()
+            .map(|backend_id| format!("{backend_id} · {}", process.workload)),
         state: process.state,
         workload: process.workload,
         context_slot_id: process.context_slot_id,
@@ -616,6 +701,7 @@ fn map_pid_status_to_workspace_snapshot(
         backend_id: process.backend_id,
         backend_class: process.backend_class,
         backend_capabilities: process.backend_capabilities,
+        accounting: process.session_accounting,
         tokens_generated: process.tokens_generated,
         syscalls_used: process.syscalls_used,
         elapsed_secs: process.elapsed_secs,
@@ -625,6 +711,73 @@ fn map_pid_status_to_workspace_snapshot(
         context,
         audit_events,
     }
+}
+
+fn merge_live_session_summary(
+    persisted: Option<AgentSessionSummary>,
+    live: AgentSessionSummary,
+) -> AgentSessionSummary {
+    let Some(persisted) = persisted else {
+        return live;
+    };
+
+    AgentSessionSummary {
+        session_id: live.session_id,
+        pid: live.pid,
+        active_pid: live.active_pid.or(persisted.active_pid),
+        last_pid: live.last_pid.or(persisted.last_pid),
+        title: if persisted.title.trim().is_empty() {
+            live.title
+        } else {
+            persisted.title
+        },
+        prompt_preview: if persisted.prompt_preview.trim().is_empty() {
+            live.prompt_preview
+        } else {
+            persisted.prompt_preview
+        },
+        status: live.status,
+        uptime_label: live.uptime_label,
+        tokens_label: live.tokens_label,
+        context_strategy: if persisted.context_strategy.trim().is_empty() {
+            live.context_strategy
+        } else {
+            persisted.context_strategy
+        },
+        runtime_id: persisted.runtime_id.or(live.runtime_id),
+        runtime_label: persisted.runtime_label.or(live.runtime_label),
+        backend_class: live.backend_class.or(persisted.backend_class),
+        orchestration_id: live.orchestration_id,
+        orchestration_task_id: live.orchestration_task_id,
+    }
+}
+
+fn merge_workspace_snapshot(
+    mut live: WorkspaceSnapshot,
+    persisted: Option<WorkspaceSnapshot>,
+) -> WorkspaceSnapshot {
+    let Some(persisted) = persisted else {
+        return live;
+    };
+
+    live.active_pid = live.active_pid.or(persisted.active_pid);
+    live.last_pid = live.last_pid.or(persisted.last_pid);
+    if live.title.trim().is_empty() {
+        live.title = persisted.title;
+    }
+    if live.runtime_id.is_none() {
+        live.runtime_id = persisted.runtime_id;
+    }
+    if live.runtime_label.is_none() {
+        live.runtime_label = persisted.runtime_label;
+    }
+    if live.accounting.is_none() {
+        live.accounting = persisted.accounting;
+    }
+    if live.backend_class.is_none() {
+        live.backend_class = persisted.backend_class;
+    }
+    live
 }
 
 fn format_duration(elapsed_secs: f64) -> String {

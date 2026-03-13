@@ -18,10 +18,14 @@ pub(crate) fn handle_orchestrate(
     match serde_json::from_str::<crate::orchestrator::TaskGraphDef>(payload_text.trim()) {
         Ok(graph) => {
             match start_orchestration(
-                ctx.engine_state,
+                ctx.runtime_registry,
+                ctx.resource_governor,
                 ctx.memory,
+                ctx.model_catalog,
                 ctx.scheduler,
                 ctx.orchestrator,
+                ctx.session_registry,
+                ctx.storage,
                 ctx.pending_events,
                 ctx.client_id,
                 graph,
@@ -72,6 +76,15 @@ pub(crate) fn handle_orchestrate(
                         ControlErrorCode::OrchestrateInvalid,
                         protocol::schema::ERROR,
                         &err.to_string(),
+                    ))
+                }
+                Err(OrchestrationStartError::RoutingFailed(err)) => {
+                    Some(protocol::response_protocol_err_typed(
+                        ctx.client,
+                        ctx.request_id,
+                        ControlErrorCode::OrchestrateInvalid,
+                        protocol::schema::ERROR,
+                        &err,
                     ))
                 }
             }

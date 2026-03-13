@@ -1,7 +1,8 @@
 use serde::Serialize;
 
 use agentic_control_models::{
-    BackendCapabilitiesView, BackendTelemetryView, RemoteModelRuntimeView,
+    BackendCapabilitiesView, BackendTelemetryView, MemoryStatus, RemoteModelRuntimeView,
+    ResourceGovernorStatusView, RuntimeInstanceView, RuntimeLoadQueueEntryView,
 };
 
 #[derive(Debug, Serialize, Clone)]
@@ -23,8 +24,14 @@ pub struct LobbySnapshot {
     pub loaded_backend_id: Option<String>,
     pub loaded_backend_class: Option<String>,
     pub loaded_backend_capabilities: Option<BackendCapabilitiesView>,
+    pub global_accounting: Option<BackendTelemetryView>,
     pub loaded_backend_telemetry: Option<BackendTelemetryView>,
     pub loaded_remote_model: Option<RemoteModelRuntimeView>,
+    pub memory: Option<MemoryStatus>,
+    pub runtime_instances: Vec<RuntimeInstanceView>,
+    pub resource_governor: Option<ResourceGovernorStatusView>,
+    pub runtime_load_queue: Vec<RuntimeLoadQueueEntryView>,
+    pub global_audit_events: Vec<AuditEvent>,
     pub orchestrations: Vec<LobbyOrchestrationSummary>,
     pub sessions: Vec<AgentSessionSummary>,
     pub error: Option<String>,
@@ -34,12 +41,17 @@ pub struct LobbySnapshot {
 pub struct AgentSessionSummary {
     pub session_id: String,
     pub pid: u64,
+    pub active_pid: Option<u64>,
+    pub last_pid: Option<u64>,
     pub title: String,
     pub prompt_preview: String,
     pub status: String,
     pub uptime_label: String,
     pub tokens_label: String,
     pub context_strategy: String,
+    pub runtime_id: Option<String>,
+    pub runtime_label: Option<String>,
+    pub backend_class: Option<String>,
     pub orchestration_id: Option<u64>,
     pub orchestration_task_id: Option<String>,
 }
@@ -62,6 +74,11 @@ pub struct LobbyOrchestrationSummary {
 pub struct WorkspaceSnapshot {
     pub session_id: String,
     pub pid: u64,
+    pub active_pid: Option<u64>,
+    pub last_pid: Option<u64>,
+    pub title: String,
+    pub runtime_id: Option<String>,
+    pub runtime_label: Option<String>,
     pub state: String,
     pub workload: String,
     pub context_slot_id: Option<u64>,
@@ -71,6 +88,7 @@ pub struct WorkspaceSnapshot {
     pub backend_id: Option<String>,
     pub backend_class: Option<String>,
     pub backend_capabilities: Option<BackendCapabilitiesView>,
+    pub accounting: Option<BackendTelemetryView>,
     pub tokens_generated: usize,
     pub syscalls_used: usize,
     pub elapsed_secs: f64,
@@ -119,8 +137,13 @@ pub struct WorkspaceContextSnapshot {
 #[derive(Debug, Serialize, Clone)]
 pub struct AuditEvent {
     pub category: String,
+    pub kind: String,
     pub title: String,
     pub detail: String,
+    pub recorded_at_ms: i64,
+    pub session_id: Option<String>,
+    pub pid: Option<u64>,
+    pub runtime_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]

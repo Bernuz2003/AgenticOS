@@ -1,6 +1,7 @@
 use crate::checkpoint;
 use crate::protocol;
 use crate::scheduler::{ProcessPriority, ProcessQuota, RestoredProcessMetadata};
+use crate::{audit, audit::AuditContext};
 use agentic_control_models::KernelEvent;
 use agentic_protocol::ControlErrorCode;
 
@@ -13,7 +14,7 @@ pub(crate) fn handle_checkpoint(ctx: CheckpointCommandContext<'_>, payload: &[u8
     let CheckpointCommandContext {
         client,
         request_id,
-        engine_state,
+        runtime_registry,
         model_catalog,
         scheduler,
         metrics,
@@ -29,7 +30,7 @@ pub(crate) fn handle_checkpoint(ctx: CheckpointCommandContext<'_>, payload: &[u8
     };
 
     let snapshot = checkpoint::build_kernel_snapshot(
-        engine_state.as_ref(),
+        runtime_registry.current_engine(),
         model_catalog,
         scheduler,
         metrics,
@@ -62,9 +63,10 @@ pub(crate) fn handle_restore(ctx: CheckpointCommandContext<'_>, payload: &[u8]) 
     let CheckpointCommandContext {
         client,
         request_id,
-        engine_state,
+        runtime_registry,
         model_catalog,
         scheduler,
+        storage,
         in_flight,
         pending_events,
         client_id,
@@ -87,29 +89,46 @@ pub(crate) fn handle_restore(ctx: CheckpointCommandContext<'_>, payload: &[u8]) 
         );
     }
 
-    if let Some(engine) = engine_state.as_ref() {
-        let live_processes = engine.processes.len();
-        if live_processes > 0 {
-            return protocol::response_protocol_err_typed(
-                client,
-                request_id,
-                ControlErrorCode::RestoreBusy,
-                protocol::schema::ERROR,
-                &format!(
-                    "RESTORE requires an idle kernel: {} live process(es) still present",
-                    live_processes
-                ),
-            );
-        }
+    let live_processes = runtime_registry.live_process_count();
+    if live_processes > 0 {
+        return protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::RestoreBusy,
+            protocol::schema::ERROR,
+            &format!(
+                "RESTORE requires an idle kernel: {} live process(es) still present",
+                live_processes
+            ),
+        );
     }
 
     match checkpoint::load_checkpoint(&path) {
         Ok(snap) => {
             let cleared_scheduler_entries = apply_restore_snapshot(&snap, scheduler, model_catalog);
-            *engine_state = None;
+            if let Err(err) = runtime_registry.clear_loaded_runtimes(storage) {
+                return protocol::response_protocol_err_typed(
+                    client,
+                    request_id,
+                    ControlErrorCode::RestoreFailed,
+                    protocol::schema::ERROR,
+                    &err.to_string(),
+                );
+            }
             pending_events.push(KernelEvent::LobbyChanged {
                 reason: "restore_applied".to_string(),
             });
+            audit::record(
+                storage,
+                audit::KERNEL_LEGACY_RESTORE_APPLIED,
+                format!(
+                    "path={} restored_scheduler_entries={} processes_metadata={} semantics=legacy_metadata_only_diagnostic",
+                    path.display(),
+                    snap.scheduler.entries.len(),
+                    snap.processes.len()
+                ),
+                AuditContext::default(),
+            );
 
             let response = json!({
                 "version": snap.version,
@@ -118,8 +137,10 @@ pub(crate) fn handle_restore(ctx: CheckpointCommandContext<'_>, payload: &[u8]) 
                 "restored_scheduler_entries": snap.scheduler.entries.len(),
                 "processes_metadata": snap.processes.len(),
                 "selected_model": snap.selected_model.clone().unwrap_or_default(),
-                "restore_semantics": "metadata_only_clear_and_apply",
+                "restore_semantics": "legacy_metadata_only_diagnostic",
+                "primary_persistence": "sqlite_control_plane",
                 "limitations": [
+                    "not_primary_persistence_path",
                     "live_processes_not_restored",
                     "model_weights_not_restored",
                     "tensor_data_not_restored",

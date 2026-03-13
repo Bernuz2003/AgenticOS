@@ -13,7 +13,7 @@ export function SessionCard({ session }: { session: AgentSessionSummary }) {
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
-              PID {session.pid}
+              Session {session.sessionId}
             </p>
             <h2 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">
               {session.title}
@@ -32,6 +32,13 @@ export function SessionCard({ session }: { session: AgentSessionSummary }) {
         <p className="max-w-sm text-sm leading-6 text-slate-600">
           {session.promptPreview}
         </p>
+        <div className="rounded-2xl bg-slate-950/[0.04] px-4 py-3 text-xs leading-5 text-slate-600">
+          runtime={session.runtimeLabel || session.runtimeId || "unbound"}
+          <br />
+          active_pid={session.activePid ?? "none"} · last_pid={session.lastPid ?? session.pid}
+          <br />
+          backend_class={session.backendClass || "unknown"}
+        </div>
       </div>
 
       <div className="space-y-5">

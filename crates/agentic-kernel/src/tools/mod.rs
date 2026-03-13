@@ -46,6 +46,8 @@ pub fn cleanup_stale_temp_scripts() {
 #[derive(Debug, Clone)]
 pub struct SysCallOutcome {
     pub output: String,
+    pub success: bool,
+    pub duration_ms: u128,
     pub should_kill_process: bool,
 }
 
@@ -76,6 +78,8 @@ pub fn handle_syscall(
         );
         return SysCallOutcome {
             output: e,
+            success: false,
+            duration_ms: start.elapsed().as_millis(),
             should_kill_process: true,
         };
     }
@@ -106,6 +110,8 @@ pub fn handle_syscall(
 
     SysCallOutcome {
         output: final_output,
+        success,
+        duration_ms: start.elapsed().as_millis(),
         should_kill_process: kill_from_burst,
     }
 }

@@ -8,18 +8,24 @@ use std::time::Instant;
 
 use crate::commands::MetricsState;
 use crate::config;
-use crate::engine::LLMEngine;
 use crate::inference_worker::{self, InferenceCmd, InferenceResult};
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
+use crate::resource_governor::ResourceGovernor;
 use crate::runtime::syscalls::{self, SyscallCmd, SyscallCompletion};
+use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
+use crate::session::SessionRegistry;
+use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
 use crate::tools::SyscallRateMap;
 use crate::transport::Client;
 
-use super::server::{Kernel, SERVER};
+use super::{
+    recovery,
+    server::{Kernel, SERVER},
+};
 
 pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> {
     let poll = Poll::new()?;
@@ -48,6 +54,20 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         syscall_result_tx,
         syscall_cmd_rx,
     );
+    let mut storage =
+        StorageService::open(&config.paths.database_path).map_err(io::Error::other)?;
+    let boot_record = storage
+        .record_kernel_boot(env!("CARGO_PKG_VERSION"))
+        .map_err(io::Error::other)?;
+    let legacy_import = storage
+        .import_legacy_timelines_once(&config::repository_path("timeline_sessions"))
+        .map_err(io::Error::other)?;
+    let recovery_report = recovery::run_boot_recovery(&mut storage)?;
+    let runtime_registry = RuntimeRegistry::load(&mut storage).map_err(io::Error::other)?;
+    let resource_governor =
+        ResourceGovernor::load(&mut storage, config.resources.clone()).map_err(io::Error::other)?;
+    let session_registry =
+        SessionRegistry::load(&mut storage, boot_record.boot_id).map_err(io::Error::other)?;
 
     let auth_disabled = config.auth.disabled;
     let auth_token = write_auth_token(config)?;
@@ -57,6 +77,21 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         %addr,
         memory_swap_async = config.memory.swap_async,
         swap_dir = %config.memory.swap_dir.display(),
+        database_path = %config.paths.database_path.display(),
+        database_boot_id = boot_record.boot_id,
+        imported_legacy_sessions = legacy_import.imported_sessions,
+        imported_legacy_turns = legacy_import.imported_turns,
+        imported_legacy_messages = legacy_import.imported_messages,
+        recovery_reset_sessions = recovery_report.stale_active_sessions_reset,
+        recovery_interrupted_runs = recovery_report.interrupted_process_runs,
+        recovery_interrupted_turns = recovery_report.interrupted_turns,
+        recovery_logical_resume_sessions = recovery_report.logical_resume_sessions,
+        recovery_strong_restore_candidates = recovery_report.strong_restore_candidate_sessions,
+        recovery_pending_runtime_queue = recovery_report.pending_runtime_queue_entries,
+        resource_ram_budget_bytes = config.resources.ram_budget_bytes,
+        resource_vram_budget_bytes = config.resources.vram_budget_bytes,
+        persisted_runtimes = runtime_registry.runtime_count(),
+        persisted_sessions = session_registry.session_count(),
         checkpoint_interval_secs,
         auth_disabled,
         "AgenticOS Kernel ready"
@@ -70,7 +105,8 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         unique_token: Token(SERVER.0 + 1),
         log_connections: config.network.log_connections,
         memory,
-        engine_state: Option::<LLMEngine>::None,
+        runtime_registry,
+        resource_governor,
         shutdown_requested,
         model_catalog,
         scheduler: ProcessScheduler::new(),
@@ -92,6 +128,8 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         tool_registry: ToolRegistry::with_builtins(),
         auth_token,
         auth_disabled,
+        session_registry,
+        storage,
     })
 }
 

@@ -11,14 +11,21 @@ pub(crate) fn handle_memory_write(ctx: MemoryCommandContext<'_>, payload: &[u8])
         client,
         request_id,
         memory,
-        engine_state,
+        runtime_registry,
         pending_events,
+        ..
     } = ctx;
     match parse_memw_payload(payload) {
         Ok((pid, raw)) => {
-            let backend_id = engine_state
-                .as_ref()
+            let backend_id = runtime_registry
+                .runtime_id_for_pid(pid)
+                .and_then(|runtime_id| runtime_registry.engine(runtime_id))
                 .map(|engine| engine.loaded_backend_id())
+                .or_else(|| {
+                    runtime_registry
+                        .current_engine()
+                        .map(|engine| engine.loaded_backend_id())
+                })
                 .or(Some("external-llamacpp"));
             match memory.write_for_pid_bytes_with_backend(pid, &raw, backend_id) {
                 Ok(msg) => {
@@ -36,7 +43,7 @@ pub(crate) fn handle_memory_write(ctx: MemoryCommandContext<'_>, payload: &[u8])
                     });
 
                     if is_parked {
-                        if let Some(engine) = engine_state.as_mut() {
+                        if let Some(engine) = runtime_registry.engine_for_pid_mut(pid) {
                             let _ = engine.park_process(pid);
                         }
                         protocol::response_protocol_ok(

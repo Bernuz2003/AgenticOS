@@ -46,6 +46,56 @@ pub struct RemoteModelRuntimeView {
     pub output_price_usd_per_mtok: Option<f64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeInstanceView {
+    pub runtime_id: String,
+    pub target_kind: String,
+    pub logical_model_id: String,
+    pub display_path: String,
+    pub family: String,
+    pub backend_id: String,
+    pub backend_class: String,
+    pub provider_id: Option<String>,
+    pub remote_model_id: Option<String>,
+    pub state: String,
+    pub reservation_ram_bytes: u64,
+    pub reservation_vram_bytes: u64,
+    pub pinned: bool,
+    pub transition_state: Option<String>,
+    pub active_pid_count: usize,
+    pub active_pids: Vec<u64>,
+    pub current: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeLoadQueueEntryView {
+    pub queue_id: i64,
+    pub logical_model_id: String,
+    pub display_path: String,
+    pub backend_class: String,
+    pub state: String,
+    pub reservation_ram_bytes: u64,
+    pub reservation_vram_bytes: u64,
+    pub reason: String,
+    pub requested_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResourceGovernorStatusView {
+    pub ram_budget_bytes: u64,
+    pub vram_budget_bytes: u64,
+    pub min_ram_headroom_bytes: u64,
+    pub min_vram_headroom_bytes: u64,
+    pub ram_used_bytes: u64,
+    pub vram_used_bytes: u64,
+    pub ram_available_bytes: u64,
+    pub vram_available_bytes: u64,
+    pub pending_queue_depth: usize,
+    pub loader_busy: bool,
+    pub loader_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlMessage {
     pub message: String,
@@ -53,6 +103,7 @@ pub struct ControlMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecStartPayload {
+    pub session_id: String,
     pub pid: u64,
     pub workload: String,
     pub priority: String,
@@ -74,6 +125,8 @@ pub struct StatusResponse {
     pub total_errors: u64,
     pub total_exec_started: u64,
     pub total_signals: u64,
+    #[serde(default)]
+    pub global_accounting: Option<BackendTelemetryView>,
     pub model: ModelStatus,
     pub generation: Option<GenerationStatus>,
     pub memory: MemoryStatus,
@@ -97,6 +150,11 @@ pub struct ModelStatus {
     pub loaded_backend_capabilities: Option<BackendCapabilitiesView>,
     pub loaded_backend_telemetry: Option<BackendTelemetryView>,
     pub loaded_remote_model: Option<RemoteModelRuntimeView>,
+    #[serde(default)]
+    pub runtime_instances: Vec<RuntimeInstanceView>,
+    pub resource_governor: Option<ResourceGovernorStatusView>,
+    #[serde(default)]
+    pub runtime_load_queue: Vec<RuntimeLoadQueueEntryView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +221,7 @@ pub struct OrchSummaryResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PidStatusResponse {
+    pub session_id: String,
     pub pid: u64,
     pub owner_id: usize,
     pub orchestration_id: Option<u64>,
@@ -185,6 +244,8 @@ pub struct PidStatusResponse {
     pub backend_id: Option<String>,
     pub backend_class: Option<String>,
     pub backend_capabilities: Option<BackendCapabilitiesView>,
+    #[serde(default)]
+    pub session_accounting: Option<BackendTelemetryView>,
     pub context: Option<ContextStatusSnapshot>,
 }
 
@@ -383,6 +444,7 @@ pub enum KernelEvent {
         reason: String,
     },
     SessionStarted {
+        session_id: String,
         pid: u64,
         workload: String,
         prompt: String,

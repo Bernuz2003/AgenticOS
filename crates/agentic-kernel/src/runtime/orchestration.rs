@@ -4,34 +4,47 @@ use std::sync::mpsc;
 
 use agentic_control_models::KernelEvent;
 
-use crate::engine::LLMEngine;
+use crate::audit;
 use crate::inference_worker::InferenceCmd;
 use crate::memory::NeuralMemory;
+use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::process::{ProcessLifecyclePolicy, ProcessState};
+use crate::resource_governor::ResourceGovernor;
+use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
+use crate::services::orchestration_runtime::resolve_runtime_for_spawn_request;
 use crate::services::process_runtime::{
-    kill_managed_process, spawn_managed_process, ManagedProcessRequest,
+    kill_managed_process_with_session, spawn_managed_process_with_session, ManagedProcessRequest,
 };
+use crate::session::SessionRegistry;
+use crate::storage::StorageService;
 use crate::transport::Client;
 use crate::{protocol, scheduler::CheckedOutProcessMetadata};
 
 pub(super) fn handle_finished_processes(
-    engine: &mut LLMEngine,
+    runtime_registry: &mut RuntimeRegistry,
     memory: &mut NeuralMemory,
     clients: &mut HashMap<Token, Client>,
     poll: &Poll,
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
     pending_events: &mut Vec<KernelEvent>,
 ) {
-    let finished_pids = engine.list_finished_pids();
+    let finished_pids = runtime_registry.finishable_pids();
     for pid in finished_pids {
         if orchestrator.is_orchestrated(pid) {
             orchestrator.mark_completed(pid);
         }
 
-        if let Some(owner_id) = engine.process_owner_id(pid) {
+        let owner_id = runtime_registry
+            .runtime_id_for_pid(pid)
+            .and_then(|runtime_id| runtime_registry.engine(runtime_id))
+            .and_then(|engine| engine.process_owner_id(pid));
+
+        if let Some(owner_id) = owner_id {
             if owner_id > 0 {
                 let token = Token(owner_id);
                 if let Some(client) = clients.get_mut(&token) {
@@ -68,19 +81,62 @@ pub(super) fn handle_finished_processes(
         pending_events.push(KernelEvent::LobbyChanged {
             reason: "finished".to_string(),
         });
+        let audit_context = audit::context_for_pid(session_registry, runtime_registry, pid);
+        audit::record(
+            storage,
+            audit::PROCESS_FINISHED,
+            format!(
+                "reason=completed tokens={} elapsed={:.3}s",
+                sched
+                    .as_ref()
+                    .map(|snapshot| snapshot.tokens_generated)
+                    .unwrap_or(0),
+                sched
+                    .as_ref()
+                    .map(|snapshot| snapshot.elapsed_secs)
+                    .unwrap_or(0.0)
+            ),
+            audit_context,
+        );
 
-        kill_managed_process(engine, memory, scheduler, pid);
+        let Some(runtime_id) = runtime_registry
+            .runtime_id_for_pid(pid)
+            .map(ToString::to_string)
+        else {
+            continue;
+        };
+        {
+            let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
+                continue;
+            };
+            kill_managed_process_with_session(
+                engine,
+                memory,
+                scheduler,
+                session_registry,
+                storage,
+                pid,
+                "completed",
+            );
+        }
+        if let Err(err) = runtime_registry.release_pid(storage, pid) {
+            tracing::warn!(pid, %err, "ORCHESTRATOR: failed to release runtime binding on finish");
+        }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn advance_orchestrator(
-    engine: &mut LLMEngine,
+    runtime_registry: &mut RuntimeRegistry,
+    resource_governor: &mut ResourceGovernor,
     memory: &mut NeuralMemory,
+    model_catalog: &mut ModelCatalog,
     clients: &mut HashMap<Token, Client>,
     poll: &Poll,
     scheduler: &mut ProcessScheduler,
     orchestrator: &mut Orchestrator,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
     in_flight: &mut HashSet<u64>,
     pending_kills: &mut Vec<u64>,
     pending_events: &mut Vec<KernelEvent>,
@@ -94,7 +150,16 @@ pub(super) fn advance_orchestrator(
             pending_kills.push(pid);
             continue;
         }
-        if let Some(owner_id) = engine.process_owner_id(pid) {
+        let Some(runtime_id) = runtime_registry
+            .runtime_id_for_pid(pid)
+            .map(ToString::to_string)
+        else {
+            continue;
+        };
+        let owner_id = runtime_registry
+            .engine(&runtime_id)
+            .and_then(|engine| engine.process_owner_id(pid));
+        if let Some(owner_id) = owner_id {
             if owner_id > 0 {
                 let token = Token(owner_id);
                 if let Some(client) = clients.get_mut(&token) {
@@ -123,28 +188,96 @@ pub(super) fn advance_orchestrator(
         pending_events.push(KernelEvent::LobbyChanged {
             reason: "orchestrator_killed".to_string(),
         });
-        kill_managed_process(engine, memory, scheduler, pid);
+        let audit_context = audit::context_for_pid(session_registry, runtime_registry, pid);
+        audit::record(
+            storage,
+            audit::PROCESS_KILLED,
+            "reason=orchestrator_killed",
+            audit_context,
+        );
+        {
+            let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
+                continue;
+            };
+            kill_managed_process_with_session(
+                engine,
+                memory,
+                scheduler,
+                session_registry,
+                storage,
+                pid,
+                "orchestrator_killed",
+            );
+        }
+        if let Err(err) = runtime_registry.release_pid(storage, pid) {
+            tracing::warn!(pid, %err, "ORCHESTRATOR: failed to release runtime binding on kill");
+        }
     }
 
     for req in spawn_requests {
-        match spawn_managed_process(
-            engine,
-            memory,
-            scheduler,
-            ManagedProcessRequest {
-                prompt: req.prompt.clone(),
-                owner_id: req.owner_id,
-                workload: req.workload,
-                required_backend_class: req.required_backend_class,
-                priority: ProcessPriority::Normal,
-                lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
-                context_policy: Some(req.context_policy.clone()),
-            },
+        let runtime_id = match resolve_runtime_for_spawn_request(
+            runtime_registry,
+            resource_governor,
+            storage,
+            model_catalog,
+            session_registry,
+            &req,
         ) {
+            Ok(runtime_id) => runtime_id,
+            Err(err) => {
+                orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, &err.to_string());
+                pending_events.push(KernelEvent::LobbyChanged {
+                    reason: "orchestrator_spawn_failed".to_string(),
+                });
+                tracing::error!(task_id = %req.task_id, %err, "ORCHESTRATOR: routing failed");
+                continue;
+            }
+        };
+
+        let pid_floor = runtime_registry.next_pid_floor();
+        let spawn_result = {
+            let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
+                orchestrator.mark_spawn_failed(
+                    req.orch_id,
+                    &req.task_id,
+                    "resolved runtime has no loaded engine",
+                );
+                continue;
+            };
+            spawn_managed_process_with_session(
+                &runtime_id,
+                pid_floor,
+                engine,
+                memory,
+                scheduler,
+                session_registry,
+                storage,
+                ManagedProcessRequest {
+                    prompt: req.prompt.clone(),
+                    owner_id: req.owner_id,
+                    workload: req.workload,
+                    required_backend_class: req.required_backend_class,
+                    priority: ProcessPriority::Normal,
+                    lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+                    context_policy: Some(req.context_policy.clone()),
+                },
+            )
+        };
+
+        match spawn_result {
             Ok(spawned_process) => {
                 let pid = spawned_process.pid;
+                if let Err(err) = runtime_registry.register_pid(storage, &runtime_id, pid) {
+                    tracing::warn!(
+                        pid,
+                        runtime_id,
+                        %err,
+                        "ORCHESTRATOR: failed to register spawned pid"
+                    );
+                }
                 orchestrator.register_pid(pid, req.orch_id, &req.task_id);
                 pending_events.push(KernelEvent::SessionStarted {
+                    session_id: spawned_process.session_id.clone(),
                     pid,
                     workload: format!("{:?}", req.workload).to_lowercase(),
                     prompt: req.prompt.clone(),
@@ -175,20 +308,29 @@ pub(super) fn advance_orchestrator(
 }
 
 pub(super) fn checkout_active_processes(
-    engine: &mut LLMEngine,
+    runtime_registry: &mut RuntimeRegistry,
     scheduler: &mut ProcessScheduler,
     cmd_tx: &mpsc::Sender<InferenceCmd>,
     in_flight: &mut HashSet<u64>,
 ) {
-    let active_pids = engine.list_active_pids();
+    let active_pids = runtime_registry.all_active_pids();
     let ordered_pids = scheduler.scheduling_order(&active_pids);
-    let eos = engine.eos_token_id;
-    let eot = engine.eot_token_id;
 
     for pid in ordered_pids {
         if in_flight.contains(&pid) {
             continue;
         }
+        let Some(runtime_id) = runtime_registry
+            .runtime_id_for_pid(pid)
+            .map(ToString::to_string)
+        else {
+            continue;
+        };
+        let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
+            continue;
+        };
+        let eos = engine.eos_token_id;
+        let eot = engine.eot_token_id;
         if let Some(mut process) = engine.processes.remove(&pid) {
             if !matches!(process.state, ProcessState::Ready | ProcessState::Running) {
                 engine.processes.insert(pid, process);

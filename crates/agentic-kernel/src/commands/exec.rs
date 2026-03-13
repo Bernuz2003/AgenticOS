@@ -2,8 +2,8 @@ use crate::policy::resolve_exec_policy;
 use crate::process::ProcessLifecyclePolicy;
 use crate::protocol;
 use crate::scheduler::ProcessPriority;
-use crate::services::model_runtime::activate_model_target;
-use crate::services::process_runtime::{spawn_managed_process, ManagedProcessRequest};
+use crate::services::model_runtime::{activate_model_target, ModelActivationError};
+use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
 use agentic_control_models::{ExecStartPayload, KernelEvent};
 use agentic_protocol::ControlErrorCode;
 
@@ -19,13 +19,16 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
         client,
         request_id,
         memory,
-        engine_state,
+        runtime_registry,
+        resource_governor,
         model_catalog,
         scheduler,
-        in_flight,
+        in_flight: _in_flight,
         client_id,
         pending_events,
         metrics,
+        session_registry,
+        storage,
     } = ctx;
 
     let prompt_raw = String::from_utf8_lossy(payload).to_string();
@@ -37,68 +40,49 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
 
     let _ = model_catalog.refresh();
     let can_scheduler_switch = auto_switch || hinted_workload.is_some();
+    let mut runtime_id = runtime_registry
+        .current_runtime_id()
+        .map(ToString::to_string);
     if can_scheduler_switch {
         match model_catalog.resolve_workload_target(workload) {
             Ok(Some(target)) => {
-                let selected_path = target.display_path().to_string_lossy().to_string();
-                let should_reload = match engine_state.as_ref() {
-                    Some(engine) => {
-                        engine.loaded_model_path() != selected_path
-                            || engine.loaded_family() != target.family()
-                            || engine.loaded_backend_id()
-                                != target.driver_resolution().resolved_backend_id
+                match activate_model_target(
+                    runtime_registry,
+                    resource_governor,
+                    session_registry,
+                    storage,
+                    model_catalog,
+                    &target,
+                ) {
+                    Ok(loaded) => {
+                        runtime_id = Some(loaded.runtime_id.clone());
+                        log_event(
+                            "scheduler_model_switch",
+                            client_id,
+                            None,
+                            &format!(
+                                "workload={:?} runtime_id={} model_id={} family={:?} backend={}",
+                                workload,
+                                loaded.runtime_id,
+                                target
+                                    .local_model_id()
+                                    .or_else(|| target.remote_model_id())
+                                    .unwrap_or("<external-path>"),
+                                target.family(),
+                                loaded.backend_id
+                            ),
+                        );
                     }
-                    None => true,
-                };
-                if should_reload {
-                    let live_processes = engine_state
-                        .as_ref()
-                        .map(|engine| engine.processes.len())
-                        .unwrap_or(0);
-                    if !in_flight.is_empty() || live_processes > 0 {
+                    Err(e) => {
                         let response = protocol::response_protocol_err_typed(
                             client,
                             request_id,
-                            ControlErrorCode::LoadBusy,
+                            ControlErrorCode::SchedulerLoadFailed,
                             protocol::schema::ERROR,
-                            &format!(
-                                "Cannot switch model while {} process(es) are live and {} are in-flight",
-                                live_processes,
-                                in_flight.len()
-                            ),
+                            e.message(),
                         );
                         client.output_buffer.extend(response);
                         return None;
-                    }
-                    match activate_model_target(engine_state, model_catalog, &target) {
-                        Ok(loaded) => {
-                            log_event(
-                                "scheduler_model_switch",
-                                client_id,
-                                None,
-                                &format!(
-                                    "workload={:?} model_id={} family={:?} backend={}",
-                                    workload,
-                                    target
-                                        .local_model_id()
-                                        .or_else(|| target.remote_model_id())
-                                        .unwrap_or("<external-path>"),
-                                    target.family(),
-                                    loaded.backend_id
-                                ),
-                            );
-                        }
-                        Err(e) => {
-                            let response = protocol::response_protocol_err_typed(
-                                client,
-                                request_id,
-                                ControlErrorCode::SchedulerLoadFailed,
-                                protocol::schema::ERROR,
-                                &e.to_string(),
-                            );
-                            client.output_buffer.extend(response);
-                            return None;
-                        }
                     }
                 }
             }
@@ -117,26 +101,98 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
         }
     }
 
-    if let Some(engine) = engine_state.as_mut() {
-        match spawn_managed_process(
-            engine,
-            memory,
-            scheduler,
-            ManagedProcessRequest {
-                prompt: prompt.clone(),
-                owner_id: client_id,
-                workload,
-                required_backend_class: None,
-                priority: ProcessPriority::Normal,
-                lifecycle_policy: ProcessLifecyclePolicy::Interactive,
-                context_policy: Some(resolved.context_policy.clone()),
-            },
-        ) {
+    if runtime_id.is_none() && runtime_registry.current_engine().is_none() {
+        match model_catalog.resolve_load_target("") {
+            Ok(target) => {
+                match activate_model_target(
+                    runtime_registry,
+                    resource_governor,
+                    session_registry,
+                    storage,
+                    model_catalog,
+                    &target,
+                ) {
+                    Ok(loaded) => {
+                        runtime_id = Some(loaded.runtime_id);
+                    }
+                    Err(ModelActivationError::Busy(e)) => {
+                        return Some(protocol::response_protocol_err_typed(
+                            client,
+                            request_id,
+                            ControlErrorCode::LoadBusy,
+                            protocol::schema::ERROR,
+                            &e,
+                        ));
+                    }
+                    Err(ModelActivationError::Failed(e)) => {
+                        return Some(protocol::response_protocol_err_typed(
+                            client,
+                            request_id,
+                            ControlErrorCode::LoadFailed,
+                            protocol::schema::ERROR,
+                            &e,
+                        ));
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    let runtime_id = runtime_id.or_else(|| {
+        runtime_registry
+            .current_runtime_id()
+            .map(ToString::to_string)
+    });
+
+    if let Some(runtime_id) = runtime_id {
+        let pid_floor = runtime_registry.next_pid_floor();
+        let spawn_result = {
+            let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
+                return Some(protocol::response_protocol_err_typed(
+                    client,
+                    request_id,
+                    ControlErrorCode::NoModel,
+                    protocol::schema::ERROR,
+                    "No Model Loaded",
+                ));
+            };
+            spawn_managed_process_with_session(
+                &runtime_id,
+                pid_floor,
+                engine,
+                memory,
+                scheduler,
+                session_registry,
+                storage,
+                ManagedProcessRequest {
+                    prompt: prompt.clone(),
+                    owner_id: client_id,
+                    workload,
+                    required_backend_class: None,
+                    priority: ProcessPriority::Normal,
+                    lifecycle_policy: ProcessLifecyclePolicy::Interactive,
+                    context_policy: Some(resolved.context_policy.clone()),
+                },
+            )
+        };
+
+        match spawn_result {
             Ok(spawned) => {
+                let session_id = spawned.session_id.clone();
                 let pid = spawned.pid;
+                if let Err(err) = runtime_registry.register_pid(storage, &runtime_id, pid) {
+                    tracing::warn!(
+                        pid,
+                        runtime_id,
+                        %err,
+                        "EXEC: failed to register pid in runtime registry"
+                    );
+                }
 
                 metrics.inc_exec_started();
                 pending_events.push(KernelEvent::SessionStarted {
+                    session_id: session_id.clone(),
                     pid,
                     workload: format!("{:?}", workload).to_lowercase(),
                     prompt: prompt.clone(),
@@ -155,6 +211,7 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                     &format!("exec_started workload={:?} priority=normal", workload),
                 );
                 let payload = ExecStartPayload {
+                    session_id,
                     pid,
                     workload: format!("{:?}", workload).to_lowercase(),
                     priority: "normal".to_string(),

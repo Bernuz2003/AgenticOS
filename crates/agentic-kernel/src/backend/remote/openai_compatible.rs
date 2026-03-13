@@ -7,6 +7,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokenizers::Tokenizer;
 
+use crate::accounting::{AccountingEventStatus, BackendAccountingEvent};
 use crate::config::RemoteProviderRuntimeConfig;
 use crate::model_catalog::RemoteModelEntry;
 use crate::prompting::PromptFamily;
@@ -89,6 +90,7 @@ pub(crate) struct RemoteOpenAICompatibleBackend {
     output_price_usd_per_mtok: f64,
     http_referer: Option<String>,
     app_title: Option<String>,
+    last_accounting_event: Option<BackendAccountingEvent>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -117,6 +119,13 @@ struct DecodedResponse {
     emitted_text: String,
     finished: bool,
     usage: UsageSnapshot,
+}
+
+#[derive(Debug, Clone)]
+struct RequestFailure {
+    status: AccountingEventStatus,
+    error_code: Option<String>,
+    error_message: String,
 }
 
 impl RemoteOpenAICompatibleBackend {
@@ -222,6 +231,7 @@ impl RemoteOpenAICompatibleBackend {
                 .max(0.0),
             http_referer: trimmed_option(&config.http_referer),
             app_title: trimmed_option(&config.app_title),
+            last_accounting_event: None,
         })
     }
 
@@ -265,10 +275,12 @@ impl RemoteOpenAICompatibleBackend {
     }
 
     fn send_request(
-        &self,
+        &mut self,
         payload: &serde_json::Value,
         tokenizer: &Tokenizer,
+        estimated_input_tokens: u64,
     ) -> Result<DecodedResponse> {
+        self.last_accounting_event = None;
         let request_body = payload.to_string();
         if request_body.len() > self.max_request_bytes {
             return Err(E::msg(format!(
@@ -306,9 +318,11 @@ impl RemoteOpenAICompatibleBackend {
             request = request.set("X-OpenRouter-Title", app_title);
         }
 
-        let response = request
-            .send_string(&request_body)
-            .map_err(|err| map_ureq_error(self.profile, err, &self.model))?;
+        let response = request.send_string(&request_body).map_err(|err| {
+            let failure = map_ureq_error(self.profile, err, &self.model);
+            self.record_failure_event(&failure, estimated_input_tokens);
+            E::msg(format_failure_message(self.profile, &failure))
+        })?;
 
         if self.stream {
             decode_streaming_response(
@@ -317,22 +331,156 @@ impl RemoteOpenAICompatibleBackend {
                 self.max_response_bytes,
                 tokenizer,
             )
+            .map_err(|err| {
+                let failure = RequestFailure {
+                    status: AccountingEventStatus::HttpError,
+                    error_code: None,
+                    error_message: err.to_string(),
+                };
+                record_transport_error(
+                    self.profile.backend_id,
+                    &self.model,
+                    &failure.error_message,
+                );
+                self.record_failure_event(&failure, estimated_input_tokens);
+                E::msg(failure.error_message)
+            })
         } else {
             let body = response.into_string().map_err(|err| {
-                E::msg(format!(
-                    "Failed to read {} payload for model '{}': {}",
-                    self.profile.display_name, self.model, err
-                ))
+                let failure = RequestFailure {
+                    status: AccountingEventStatus::TransportError,
+                    error_code: None,
+                    error_message: format!(
+                        "Failed to read {} payload for model '{}': {}",
+                        self.profile.display_name, self.model, err
+                    ),
+                };
+                record_transport_error(
+                    self.profile.backend_id,
+                    &self.model,
+                    &failure.error_message,
+                );
+                self.record_failure_event(&failure, estimated_input_tokens);
+                E::msg(failure.error_message)
             })?;
             if body.len() > self.max_response_bytes {
-                return Err(E::msg(format!(
-                    "{} payload exceeded limit ({} > {} bytes).",
-                    self.profile.display_name,
-                    body.len(),
-                    self.max_response_bytes
-                )));
+                let failure = RequestFailure {
+                    status: AccountingEventStatus::TransportError,
+                    error_code: None,
+                    error_message: format!(
+                        "{} payload exceeded limit ({} > {} bytes).",
+                        self.profile.display_name,
+                        body.len(),
+                        self.max_response_bytes
+                    ),
+                };
+                record_transport_error(
+                    self.profile.backend_id,
+                    &self.model,
+                    &failure.error_message,
+                );
+                self.record_failure_event(&failure, estimated_input_tokens);
+                return Err(E::msg(failure.error_message));
             }
-            decode_non_streaming_response(self.profile, &body, tokenizer)
+            decode_non_streaming_response(self.profile, &body, tokenizer).map_err(|err| {
+                let failure = RequestFailure {
+                    status: AccountingEventStatus::HttpError,
+                    error_code: None,
+                    error_message: err.to_string(),
+                };
+                record_transport_error(
+                    self.profile.backend_id,
+                    &self.model,
+                    &failure.error_message,
+                );
+                self.record_failure_event(&failure, estimated_input_tokens);
+                E::msg(failure.error_message)
+            })
+        }
+    }
+
+    fn record_success_event(
+        &mut self,
+        input_tokens: u64,
+        output_tokens: u64,
+        provider_reported_cost_usd: Option<f64>,
+    ) {
+        self.last_accounting_event = Some(BackendAccountingEvent {
+            backend_id: self.profile.backend_id.to_string(),
+            model_id: Some(self.model.clone()),
+            request_count: 1,
+            stream: self.stream,
+            input_tokens,
+            output_tokens,
+            estimated_cost_usd: resolve_cost_usd(
+                input_tokens,
+                output_tokens,
+                self.input_price_usd_per_mtok,
+                self.output_price_usd_per_mtok,
+                provider_reported_cost_usd,
+            ),
+            status: AccountingEventStatus::Success,
+            error_code: None,
+            error_message: None,
+        });
+    }
+
+    fn record_failure_event(&mut self, failure: &RequestFailure, estimated_input_tokens: u64) {
+        self.last_accounting_event = Some(BackendAccountingEvent {
+            backend_id: self.profile.backend_id.to_string(),
+            model_id: Some(self.model.clone()),
+            request_count: 1,
+            stream: self.stream,
+            input_tokens: estimated_input_tokens,
+            output_tokens: 0,
+            estimated_cost_usd: 0.0,
+            status: failure.status,
+            error_code: failure.error_code.clone(),
+            error_message: Some(failure.error_message.clone()),
+        });
+    }
+
+    fn duplicate_for_process(&self) -> Self {
+        let mut cloned = self.clone();
+        cloned.last_accounting_event = None;
+        cloned
+    }
+}
+
+fn resolve_cost_usd(
+    input_tokens: u64,
+    output_tokens: u64,
+    input_price_usd_per_mtok: f64,
+    output_price_usd_per_mtok: f64,
+    provider_reported_cost_usd: Option<f64>,
+) -> f64 {
+    provider_reported_cost_usd.unwrap_or_else(|| {
+        (input_tokens as f64 / 1_000_000.0) * input_price_usd_per_mtok
+            + (output_tokens as f64 / 1_000_000.0) * output_price_usd_per_mtok
+    })
+}
+
+fn format_failure_message(
+    profile: &RemoteOpenAIProviderProfile,
+    failure: &RequestFailure,
+) -> String {
+    match failure.status {
+        AccountingEventStatus::RateLimitError | AccountingEventStatus::AuthError => {
+            format!(
+                "{} returned {}: {}",
+                profile.display_name,
+                failure.error_code.as_deref().unwrap_or("error"),
+                failure.error_message
+            )
+        }
+        AccountingEventStatus::TransportError => {
+            format!(
+                "{} transport error: {}",
+                profile.display_name, failure.error_message
+            )
+        }
+        AccountingEventStatus::HttpError | AccountingEventStatus::Success => {
+            failure.error_message.clone()
         }
     }
 }
@@ -370,7 +518,7 @@ impl InferenceBackend for RemoteOpenAICompatibleBackend {
         let payload =
             self.request_payload(rendered_prompt, remaining_generation_budget, generation);
         let estimated_input_tokens = estimate_token_count(tokenizer, rendered_prompt) as u64;
-        let decoded = self.send_request(&payload, tokenizer)?;
+        let decoded = self.send_request(&payload, tokenizer, estimated_input_tokens)?;
         let appended_tokens = if decoded.emitted_text.is_empty() {
             Vec::new()
         } else {
@@ -385,16 +533,23 @@ impl InferenceBackend for RemoteOpenAICompatibleBackend {
                 .get_ids()
                 .to_vec()
         };
+        let input_tokens = decoded.usage.input_tokens.unwrap_or(estimated_input_tokens);
+        let output_tokens = decoded
+            .usage
+            .output_tokens
+            .unwrap_or(appended_tokens.len() as u64);
         record_success(
             self.profile.backend_id,
             &self.model,
-            decoded.usage.input_tokens.unwrap_or(estimated_input_tokens),
-            decoded
-                .usage
-                .output_tokens
-                .unwrap_or(appended_tokens.len() as u64),
+            input_tokens,
+            output_tokens,
             self.input_price_usd_per_mtok,
             self.output_price_usd_per_mtok,
+            decoded.usage.estimated_cost_usd,
+        );
+        self.record_success_event(
+            input_tokens,
+            output_tokens,
             decoded.usage.estimated_cost_usd,
         );
         let finished_due_to_budget =
@@ -416,7 +571,11 @@ impl InferenceBackend for RemoteOpenAICompatibleBackend {
     }
 
     fn duplicate_boxed(&self) -> Option<Box<dyn crate::backend::ModelBackend>> {
-        Some(Box::new(self.clone()))
+        Some(Box::new(self.duplicate_for_process()))
+    }
+
+    fn take_last_accounting_event(&mut self) -> Option<BackendAccountingEvent> {
+        self.last_accounting_event.take()
     }
 
     fn runtime_capabilities(&self) -> Option<BackendCapabilities> {
@@ -470,22 +629,30 @@ fn map_ureq_error(
     profile: &RemoteOpenAIProviderProfile,
     err: ureq::Error,
     model: &str,
-) -> anyhow::Error {
+) -> RequestFailure {
     match err {
         ureq::Error::Status(code, response) => {
             let body = response.into_string().unwrap_or_default();
             record_http_error(profile.backend_id, code, model, &body);
-            E::msg(format!(
-                "{} returned HTTP {}: {}",
-                profile.display_name, code, body
-            ))
+            RequestFailure {
+                status: if code == 429 {
+                    AccountingEventStatus::RateLimitError
+                } else if matches!(code, 401 | 403) {
+                    AccountingEventStatus::AuthError
+                } else {
+                    AccountingEventStatus::HttpError
+                },
+                error_code: Some(code.to_string()),
+                error_message: body,
+            }
         }
         ureq::Error::Transport(transport) => {
             record_transport_error(profile.backend_id, model, &transport.to_string());
-            E::msg(format!(
-                "{} transport error: {}",
-                profile.display_name, transport
-            ))
+            RequestFailure {
+                status: AccountingEventStatus::TransportError,
+                error_code: None,
+                error_message: transport.to_string(),
+            }
         }
     }
 }

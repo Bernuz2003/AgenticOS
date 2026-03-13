@@ -5,6 +5,7 @@ import {
   listModels,
   loadModel,
   shutdownKernel,
+  type AuditEvent,
   type BackendCapabilities,
   type BackendTelemetry,
   type ModelCatalogSnapshot,
@@ -90,6 +91,34 @@ function summarizeCloudPricing(model: RemoteRuntimeModel | null): string {
   return `${input} · ${output}`;
 }
 
+function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "n/a";
+  }
+
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let scaled = value;
+  let unitIndex = 0;
+  while (scaled >= 1024 && unitIndex < units.length - 1) {
+    scaled /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${scaled.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function formatAuditTime(recordedAtMs: number): string {
+  if (recordedAtMs <= 0) {
+    return "replay";
+  }
+
+  return new Date(recordedAtMs).toLocaleTimeString("it-IT", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 export function LobbyPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -106,10 +135,16 @@ export function LobbyPage() {
   const loadedBackendCapabilities = useSessionsStore(
     (state) => state.loadedBackendCapabilities,
   );
+  const globalAccounting = useSessionsStore((state) => state.globalAccounting);
   const loadedBackendTelemetry = useSessionsStore(
     (state) => state.loadedBackendTelemetry,
   );
   const loadedRemoteModel = useSessionsStore((state) => state.loadedRemoteModel);
+  const memory = useSessionsStore((state) => state.memory);
+  const runtimeInstances = useSessionsStore((state) => state.runtimeInstances);
+  const resourceGovernor = useSessionsStore((state) => state.resourceGovernor);
+  const runtimeLoadQueue = useSessionsStore((state) => state.runtimeLoadQueue);
+  const globalAuditEvents = useSessionsStore((state) => state.globalAuditEvents);
   const loading = useSessionsStore((state) => state.loading);
   const error = useSessionsStore((state) => state.error);
   const refresh = useSessionsStore((state) => state.refresh);
@@ -303,8 +338,14 @@ export function LobbyPage() {
         loadedBackendId: null,
         loadedBackendClass: null,
         loadedBackendCapabilities: null,
+        globalAccounting: null,
         loadedBackendTelemetry: null,
         loadedRemoteModel: null,
+        memory: null,
+        runtimeInstances: [],
+        resourceGovernor: null,
+        runtimeLoadQueue: [],
+        globalAuditEvents: [],
         orchestrations: [],
         sessions: [],
         error: null,
@@ -336,7 +377,7 @@ export function LobbyPage() {
             Lobby delle sessioni AgenticOS
           </h2>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
-            La Lobby sostituisce il vecchio pannello processi: ogni card rappresenta una sessione osservabile, con PID runtime, strategy context e segnali essenziali di uptime e token usage.
+            La Lobby sostituisce il vecchio pannello processi: ogni card rappresenta una sessione logica persistita, separata dal PID attivo e dal runtime target assegnato.
           </p>
         </div>
         <div className="panel-surface px-6 py-5">
@@ -381,7 +422,18 @@ export function LobbyPage() {
               </dd>
             </div>
             <div className="rounded-2xl bg-slate-950/[0.04] px-4 py-3">
-              <dt className="text-slate-700">Cloud telemetry</dt>
+              <dt className="text-slate-700">Global accounting</dt>
+              <dd className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                {summarizeBackendTelemetry(globalAccounting)}
+              </dd>
+              {globalAccounting?.lastError ? (
+                <div className="mt-2 text-xs leading-5 text-rose-700">
+                  last error: {globalAccounting.lastError}
+                </div>
+              ) : null}
+            </div>
+            <div className="rounded-2xl bg-slate-950/[0.04] px-4 py-3">
+              <dt className="text-slate-700">Loaded backend history</dt>
               <dd className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
                 {summarizeBackendTelemetry(loadedBackendTelemetry)}
               </dd>
@@ -401,6 +453,34 @@ export function LobbyPage() {
                 {loadedRemoteModel ? ` · adapter ${loadedRemoteModel.adapterKind}` : ""}
               </div>
             </div>
+            <div className="rounded-2xl bg-slate-950/[0.04] px-4 py-3">
+              <dt className="text-slate-700">Memory / swap</dt>
+              <dd className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                {memory
+                  ? `alloc ${formatBytes(memory.allocBytes)} · evict ${memory.evictions} · swap ${memory.swapCount}/${memory.swapFaults}`
+                  : "memory snapshot n/a"}
+              </dd>
+              {memory ? (
+                <div className="mt-2 text-xs leading-5 text-slate-600">
+                  active={String(memory.active)} · blocks {memory.freeBlocks}/{memory.totalBlocks} · tracked_pids {memory.trackedPids} · oom {memory.oomEvents}
+                </div>
+              ) : null}
+            </div>
+            <div className="rounded-2xl bg-slate-950/[0.04] px-4 py-3">
+              <dt className="text-slate-700">Resource governor</dt>
+              <dd className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                {resourceGovernor
+                  ? `ram ${formatBytes(resourceGovernor.ramUsedBytes)}/${formatBytes(resourceGovernor.ramBudgetBytes)} · vram ${formatBytes(resourceGovernor.vramUsedBytes)}/${formatBytes(resourceGovernor.vramBudgetBytes)}`
+                  : "governor n/a"}
+              </dd>
+              {resourceGovernor ? (
+                <div className="mt-2 text-xs leading-5 text-slate-600">
+                  headroom ram {formatBytes(resourceGovernor.minRamHeadroomBytes)} · headroom vram {formatBytes(resourceGovernor.minVramHeadroomBytes)}
+                  <br />
+                  pending queue {resourceGovernor.pendingQueueDepth} · loader {resourceGovernor.loaderBusy ? `busy (${resourceGovernor.loaderReason || "n/a"})` : "idle"}
+                </div>
+              ) : null}
+            </div>
           </dl>
           <div className="mt-4 flex items-center gap-3">
             <button
@@ -419,6 +499,144 @@ export function LobbyPage() {
           </div>
         </div>
       </div>
+
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+        <section className="panel-surface p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
+                Runtime inventory
+              </p>
+              <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">
+                Runtime registrati nel kernel
+              </h3>
+            </div>
+            <span className="status-pill border-slate-900/10 bg-slate-100 text-slate-700">
+              {runtimeInstances.length} runtimes
+            </span>
+          </div>
+          <div className="mt-5 grid gap-3 xl:grid-cols-2">
+            {runtimeInstances.map((runtime) => (
+              <article key={runtime.runtimeId} className="rounded-[24px] border border-slate-200 bg-white p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                      {runtime.runtimeId}
+                    </div>
+                    <div className="mt-1 text-base font-semibold text-slate-950">
+                      {runtime.logicalModelId}
+                    </div>
+                  </div>
+                  <span className="status-pill border-slate-900/10 bg-slate-100 text-slate-700">
+                    {runtime.state}
+                  </span>
+                </div>
+                <div className="mt-3 text-sm leading-6 text-slate-600">
+                  backend={runtime.backendId} · class={runtime.backendClass} · family={runtime.family}
+                  <br />
+                  target={runtime.targetKind} · provider={runtime.providerId || "n/a"} · remote_model={runtime.remoteModelId || "n/a"}
+                  <br />
+                  ram={formatBytes(runtime.reservationRamBytes)} · vram={formatBytes(runtime.reservationVramBytes)} · active_pids={runtime.activePids.length ? runtime.activePids.join(", ") : "none"}
+                  <br />
+                  pinned={String(runtime.pinned)} · transition={runtime.transitionState || "steady"} · current={String(runtime.current)}
+                </div>
+              </article>
+            ))}
+            {runtimeInstances.length === 0 ? (
+              <div className="rounded-[24px] border border-dashed border-slate-300 px-4 py-8 text-sm text-slate-500">
+                Nessun runtime persistito o attivo disponibile.
+              </div>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="panel-surface p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
+                Runtime queue
+              </p>
+              <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">
+                Admission e richieste pendenti
+              </h3>
+            </div>
+            <span className="status-pill border-slate-900/10 bg-slate-100 text-slate-700">
+              {runtimeLoadQueue.length} entries
+            </span>
+          </div>
+          <div className="mt-5 space-y-3">
+            {runtimeLoadQueue.map((entry) => (
+              <article key={entry.queueId} className="rounded-[24px] bg-slate-950/[0.04] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-semibold text-slate-950">
+                    {entry.logicalModelId}
+                  </div>
+                  <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                    {entry.state}
+                  </span>
+                </div>
+                <div className="mt-2 text-xs leading-5 text-slate-600">
+                  backend_class={entry.backendClass} · ram={formatBytes(entry.reservationRamBytes)} · vram={formatBytes(entry.reservationVramBytes)}
+                  <br />
+                  {entry.reason}
+                </div>
+              </article>
+            ))}
+            {runtimeLoadQueue.length === 0 ? (
+              <div className="rounded-[24px] border border-dashed border-slate-300 px-4 py-8 text-sm text-slate-500">
+                Nessuna richiesta di load accodata.
+              </div>
+            ) : null}
+          </div>
+        </section>
+      </div>
+
+      <section className="panel-surface px-6 py-5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
+              Global audit
+            </p>
+            <h3 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">
+              Timeline tecnica del kernel
+            </h3>
+          </div>
+          <span className="status-pill border-slate-900/10 bg-slate-100 text-slate-700">
+            {globalAuditEvents.length} recent
+          </span>
+        </div>
+        <div className="mt-5 grid gap-3 lg:grid-cols-2">
+          {globalAuditEvents.map((event: AuditEvent, index) => (
+            <article
+              key={`${event.recordedAtMs}-${event.kind}-${index}`}
+              className="rounded-[24px] border border-slate-200 bg-white p-4"
+            >
+              <div className="flex items-center justify-between gap-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                <span>
+                  {event.category} · {event.kind}
+                </span>
+                <span>{formatAuditTime(event.recordedAtMs)}</span>
+              </div>
+              <div className="mt-2 text-base font-semibold text-slate-950">
+                {event.title}
+              </div>
+              <div className="mt-2 font-mono text-xs leading-5 text-slate-600">
+                {event.detail}
+              </div>
+              <div className="mt-3 text-[11px] text-slate-500">
+                {event.sessionId ? `session ${event.sessionId}` : "global"}
+                {event.pid !== null ? ` · pid ${event.pid}` : ""}
+                {event.runtimeId ? ` · runtime ${event.runtimeId}` : ""}
+              </div>
+            </article>
+          ))}
+          {globalAuditEvents.length === 0 ? (
+            <div className="rounded-[24px] border border-dashed border-slate-300 px-4 py-8 text-sm text-slate-500">
+              Nessun evento audit persistito disponibile.
+            </div>
+          ) : null}
+        </div>
+      </section>
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,0.65fr)]">
         <section className="panel-surface p-6">
