@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { MindPanel } from "../components/workspace/mind-panel";
 import { TimelinePane } from "../components/workspace/timeline-pane";
+import { AuditDrawer } from "../components/workspace/audit-drawer";
+import { ArrowLeft } from "lucide-react";
 import {
   continueSessionOutput,
   sendSessionInput,
@@ -29,6 +31,7 @@ export function WorkspacePage() {
   const [composerError, setComposerError] = useState<string | null>(null);
   const [turnActionLoading, setTurnActionLoading] = useState(false);
   const [turnActionError, setTurnActionError] = useState<string | null>(null);
+  const [auditOpen, setAuditOpen] = useState(false);
 
   const routePid =
     sessionId && sessionId.startsWith("pid-") ? Number(sessionId.slice(4)) : Number.NaN;
@@ -192,51 +195,80 @@ export function WorkspacePage() {
 
   if (!session) {
     return (
-      <div className="panel-surface px-6 py-10 text-center">
-        <h2 className="text-2xl font-bold text-slate-950">Sessione non trovata</h2>
-        <p className="mt-3 text-sm text-slate-600">
-          Questo workspace usa `session_id` come identita' primaria e ricarica i dati da SQLite; la sessione richiesta non e' presente nello store persistito.
-        </p>
-        <Link
-          to="/"
-          className="mt-5 inline-flex rounded-full bg-slate-950 px-5 py-2.5 text-sm font-semibold text-white"
-        >
-          Torna alla Lobby
-        </Link>
+      <div className="flex items-center justify-center p-20">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold text-slate-900">Sessione non trovata</h2>
+          <p className="mt-3 text-sm text-slate-500 max-w-md mx-auto">
+            Questo workspace usa `session_id` come identita' primaria e ricarica i dati da SQLite; la sessione richiesta non e' presente nello store persistito o e' stata cancellata.
+          </p>
+          <Link
+            to="/sessions"
+            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700 transition"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Torna alle Sessioni
+          </Link>
+        </div>
       </div>
     );
   }
 
   return (
-    <section className="space-y-4">
-      <div className="flex justify-end">
-        <Link
-          to="/"
-          className="rounded-full border border-slate-900/10 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-900/20 hover:text-slate-950"
-        >
-          Torna alla Lobby
-        </Link>
+    <>
+      <div className="max-w-[1600px] w-full mx-auto h-[calc(100vh-4rem)] flex gap-6">
+        <div className="flex-1 flex flex-col bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden min-w-[500px]">
+          <div className="border-b border-slate-100 p-4 shrink-0 flex items-center justify-between">
+            <Link
+              to="/sessions"
+              className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition"
+              title="Return to Sessions"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </Link>
+            <div className="text-center">
+               <h1 className="font-bold text-slate-900">{session.title}</h1>
+               <div className="text-xs text-slate-500 uppercase font-semibold tracking-wider">
+                 {session.status} · PID {session.pid}
+               </div>
+            </div>
+            <div className="w-9" /> {/* spacer for alignment */}
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <TimelinePane
+              timeline={timeline}
+              loading={timelineLoading}
+              error={timelineError}
+              awaitingContinuation={awaitingContinuation}
+              composerValue={composerValue}
+              composerLoading={composerLoading}
+              composerError={composerError}
+              turnActionLoading={turnActionLoading}
+              turnActionError={turnActionError}
+              canSend={canSendInput}
+              onComposerChange={setComposerValue}
+              onComposerSubmit={handleComposerSubmit}
+              onContinueOutput={handleContinueOutput}
+              onStopOutput={handleStopOutput}
+            />
+          </div>
+        </div>
+
+        <div className="bg-white border rounded-2xl border-slate-200 overflow-hidden shadow-sm shrink-0">
+          <MindPanel 
+            session={session} 
+            snapshot={snapshot} 
+            loading={loading} 
+            error={error} 
+            onOpenAudit={() => setAuditOpen(true)}
+          />
+        </div>
       </div>
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.9fr)_minmax(320px,0.9fr)]">
-        <TimelinePane
-          session={session}
-          timeline={timeline}
-          loading={timelineLoading}
-          error={timelineError}
-          awaitingContinuation={awaitingContinuation}
-          composerValue={composerValue}
-          composerLoading={composerLoading}
-          composerError={composerError}
-          turnActionLoading={turnActionLoading}
-          turnActionError={turnActionError}
-          canSend={canSendInput}
-          onComposerChange={setComposerValue}
-          onComposerSubmit={handleComposerSubmit}
-          onContinueOutput={handleContinueOutput}
-          onStopOutput={handleStopOutput}
-        />
-        <MindPanel session={session} snapshot={snapshot} loading={loading} error={error} />
-      </div>
-    </section>
+
+      <AuditDrawer 
+        isOpen={auditOpen} 
+        onClose={() => setAuditOpen(false)} 
+        snapshot={snapshot} 
+      />
+    </>
   );
 }

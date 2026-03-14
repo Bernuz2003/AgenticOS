@@ -1,6 +1,8 @@
 import { createHashRouter } from "react-router-dom";
 import { AppLayout } from "./layout";
-import { LobbyPage } from "../pages/lobby-page";
+import { DashboardPage } from "../pages/dashboard-page";
+import { SessionsPage } from "../pages/sessions-page";
+import { ResourcesPage } from "../pages/resources-page";
 import { WorkspacePage } from "../pages/workspace-page";
 
 export const appRouter = createHashRouter([
@@ -10,7 +12,15 @@ export const appRouter = createHashRouter([
     children: [
       {
         index: true,
-        element: <LobbyPage />,
+        element: <DashboardPage />,
+      },
+      {
+        path: "sessions",
+        element: <SessionsPage />,
+      },
+      {
+        path: "resources",
+        element: <ResourcesPage />,
       },
       {
         path: "workspace/:sessionId",

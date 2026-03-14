@@ -38,6 +38,7 @@ pub fn run() {
             commands::kernel::start_session,
             commands::kernel::stop_session_output,
             commands::kernel::shutdown_kernel,
+            commands::kernel::delete_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1260,3 +1260,7 @@ export async function fetchTimelineSnapshot(
   });
   return normalizeTimelineSnapshot(snapshot);
 }
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  await invoke("delete_session", { sessionId });
+}

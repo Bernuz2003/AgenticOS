@@ -242,6 +242,23 @@ fn open_connection(workspace_root: &Path) -> Result<Option<Connection>, String> 
     Ok(Some(connection))
 }
 
+pub fn delete_session(workspace_root: &Path, session_id: &str) -> Result<(), String> {
+    let Some(connection) = open_connection(workspace_root)? else {
+        return Ok(());
+    };
+    
+    connection.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|err| err.to_string())?;
+
+    connection.execute(
+        "DELETE FROM sessions WHERE session_id = ?1",
+        params![session_id],
+    )
+    .map_err(|err| err.to_string())?;
+
+    Ok(())
+}
+
 fn database_path(workspace_root: &Path) -> PathBuf {
     workspace_root.join("workspace").join("agenticos.db")
 }

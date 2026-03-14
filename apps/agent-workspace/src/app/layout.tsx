@@ -11,6 +11,7 @@ import {
 } from "../lib/api";
 import { useSessionsStore } from "../store/sessions-store";
 import { useWorkspaceStore } from "../store/workspace-store";
+import { Sidebar } from "../components/layout/sidebar";
 
 export function AppLayout() {
   const refresh = useSessionsStore((state) => state.refresh);
@@ -63,15 +64,12 @@ export function AppLayout() {
   }, [applyLobbySnapshot, applyTimeline, applyWorkspaceSnapshot, setBridgeStatus]);
 
   return (
-    <div className="min-h-screen px-5 py-6 text-slate-900 sm:px-8 lg:px-10">
-      <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <main>
+    <div className="min-h-screen bg-white text-slate-900 flex">
+      <Sidebar />
+      <div className="flex-1 ml-64 flex flex-col min-h-screen">
+        <main className="flex-1 p-6 md:p-8 overflow-y-auto">
           <Outlet />
         </main>
-
-        <footer className="px-2 text-xs text-slate-500">
-          Tauri shell, React workspace UI, Rust bridge TCP autenticato verso AgenticOS.
-        </footer>
       </div>
     </div>
   );
