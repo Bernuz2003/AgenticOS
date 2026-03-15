@@ -43,9 +43,6 @@ pub fn should_stop_on_text_with_metadata(
     text: &str,
     metadata: Option<&ModelMetadata>,
 ) -> bool {
-    if text.contains("]]") {
-        return true;
-    }
 
     if let Some(markers) = metadata.and_then(|meta| meta.stop_markers.as_ref()) {
         if markers.iter().any(|marker| text.contains(marker)) {

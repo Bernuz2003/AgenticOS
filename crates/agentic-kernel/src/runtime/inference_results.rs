@@ -140,12 +140,7 @@ pub(super) fn drain_worker_results(
                         }
 
                         let syscall_dispatch = if let Some(full_command) = pending_syscall {
-                            let content = full_command
-                                .trim()
-                                .trim_start_matches("[[")
-                                .trim_end_matches("]]")
-                                .trim()
-                                .to_string();
+                            let content = full_command.trim().to_string();
                             tracing::info!(pid, owner_id, command = %full_command, "OS: SysCall intercepted");
                             dispatch_process_syscall(
                                 &runtime_id,

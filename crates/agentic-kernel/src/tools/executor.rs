@@ -8,12 +8,13 @@ use super::error::ToolError;
 use super::invocation::{ToolContext, ToolInvocation};
 
 #[derive(Debug, Clone)]
-pub struct ToolExecution {
+#[allow(dead_code)] // Intentionally kept as raw dispatch layer for future control-plane use.
+pub(crate) struct ToolExecution {
     pub invocation: ToolInvocation,
     pub result: ToolResult,
 }
 
-pub fn build_structured_invocation(
+pub(crate) fn build_structured_invocation(
     name: impl Into<String>,
     input: Value,
     call_id: Option<String>,
@@ -21,7 +22,8 @@ pub fn build_structured_invocation(
     ToolInvocation::new(name, input, call_id)
 }
 
-pub fn execute_structured_invocation(
+#[allow(dead_code)] // Intentionally kept as raw dispatch layer for future control-plane use.
+pub(crate) fn execute_structured_invocation(
     invocation: ToolInvocation,
     context: &ToolContext,
     registry: &ToolRegistry,
@@ -31,7 +33,8 @@ pub fn execute_structured_invocation(
     Ok(ToolExecution { invocation, result })
 }
 
-pub fn execute_text_invocation(
+#[allow(dead_code)] // Intentionally kept as raw dispatch layer for future control-plane use.
+pub(crate) fn execute_text_invocation(
     text: &str,
     context: &ToolContext,
     registry: &ToolRegistry,

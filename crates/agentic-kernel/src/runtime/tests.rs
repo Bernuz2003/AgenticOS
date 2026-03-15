@@ -12,8 +12,8 @@ fn scan_finds_complete_action_command() {
 }
 
 #[test]
-fn scan_returns_none_for_incomplete() {
-    let mut buf = "some text [[ no closing bracket".to_string();
+fn scan_returns_none_for_plain_text() {
+    let mut buf = "some text without any canonical prefix\n".to_string();
     let result = scan_syscall_buffer(&mut buf);
     assert!(result.is_none());
     assert!(!buf.is_empty());
@@ -35,8 +35,8 @@ fn scan_empty_buffer_returns_none() {
 }
 
 #[test]
-fn scan_only_opening_brackets() {
-    let mut buf = "[[start but never ends".to_string();
+fn scan_ignores_non_prefixed_content() {
+    let mut buf = "random output with brackets [[ but no prefix".to_string();
     let result = scan_syscall_buffer(&mut buf);
     assert!(result.is_none());
     assert!(!buf.is_empty());
