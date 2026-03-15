@@ -7,8 +7,8 @@ use crate::prompting::PromptFamily;
 
 use crate::backend::http::{HttpEndpoint, HttpJsonResponse, HttpRequestOptions, HttpStreamControl};
 use crate::backend::remote_adapter::{
-    build_completion_request, decode_completion_response, drain_json_objects,
-    select_completion_prompt_transport, tool_invocation_end, PromptTransportStrategy,
+    agent_invocation_end, build_completion_request, decode_completion_response, drain_json_objects,
+    select_completion_prompt_transport, PromptTransportStrategy,
 };
 use crate::backend::{
     ContextSlotPersistence, InferenceBackend, InferenceFinishReason, InferenceStepRequest,
@@ -268,7 +268,7 @@ impl StreamingCompletionAccumulator {
             self.emitted_text.push_str(&decoded.emitted_text);
             self.finished = decoded.finished;
 
-            if let Some(end) = tool_invocation_end(&self.emitted_text) {
+            if let Some(end) = agent_invocation_end(&self.emitted_text) {
                 self.emitted_text.truncate(end);
                 self.stopped_on_tool_marker = true;
                 self.finished = false;

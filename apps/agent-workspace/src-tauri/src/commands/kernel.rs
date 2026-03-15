@@ -364,13 +364,7 @@ fn is_expected_shutdown_disconnect(err: &KernelBridgeError) -> bool {
 }
 
 #[tauri::command]
-pub async fn delete_session(
-    session_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn delete_session(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let workspace_root = state.workspace_root.clone();
-    run_blocking(move || {
-        history_db::delete_session(&workspace_root, &session_id)
-    })
-    .await
+    run_blocking(move || history_db::delete_session(&workspace_root, &session_id)).await
 }

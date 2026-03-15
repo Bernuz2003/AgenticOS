@@ -1,9 +1,9 @@
+use super::kernel_config;
+use super::models::*;
 /// Parsing and environment overrides for configuration.
 use std::fs;
 use std::path::{Path, PathBuf};
 use toml::Value as TomlValue;
-use super::models::*;
-use super::kernel_config;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ConfigBootstrapPaths {
@@ -74,7 +74,9 @@ pub(crate) fn resolve_config_bootstrap_paths() -> ConfigBootstrapPaths {
     }
 }
 
-pub(crate) fn load_merged_toml_config(config_files: &[PathBuf]) -> Result<Option<TomlValue>, String> {
+pub(crate) fn load_merged_toml_config(
+    config_files: &[PathBuf],
+) -> Result<Option<TomlValue>, String> {
     let mut merged: Option<TomlValue> = None;
 
     for path in config_files {

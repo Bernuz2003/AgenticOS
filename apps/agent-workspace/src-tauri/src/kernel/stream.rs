@@ -466,12 +466,13 @@ pub(super) fn parse_stream_segments(
                 let tool_start = cursor + offset + 2;
                 let tool_rest = &stream[tool_start..];
                 if let Some(end_offset) = tool_rest.find("]]") {
+                    let invocation = &tool_rest[..end_offset];
                     push_timeline_text_item(
                         &mut items,
                         item_prefix,
                         &mut item_index,
-                        TimelineItemKind::ToolCall,
-                        &tool_rest[..end_offset],
+                        timeline_item_kind_for_invocation(invocation),
+                        invocation,
                         "complete",
                     );
                     cursor = tool_start + end_offset + 2;
@@ -502,12 +503,13 @@ pub(super) fn parse_stream_segments(
                 let tool_start = cursor + offset;
                 let tool_rest = &stream[tool_start..];
                 if let Some(line_end_offset) = tool_rest.find('\n') {
+                    let invocation = &tool_rest[..line_end_offset];
                     push_timeline_text_item(
                         &mut items,
                         item_prefix,
                         &mut item_index,
-                        TimelineItemKind::ToolCall,
-                        &tool_rest[..line_end_offset],
+                        timeline_item_kind_for_invocation(invocation),
+                        invocation,
                         "complete",
                     );
                     cursor = tool_start + line_end_offset + 1;
@@ -602,6 +604,7 @@ fn looks_like_syscall_invocation(content: &str) -> bool {
 
     for prefix in [
         "TOOL:",
+        "ACTION:",
         "SEND:",
         "SPAWN:",
         "PYTHON:",
@@ -615,6 +618,18 @@ fn looks_like_syscall_invocation(content: &str) -> bool {
     }
 
     trimmed == "LS" || trimmed.starts_with("LS ")
+}
+
+fn timeline_item_kind_for_invocation(content: &str) -> TimelineItemKind {
+    let trimmed = content.trim();
+    if trimmed.starts_with("ACTION:")
+        || trimmed.starts_with("SPAWN:")
+        || trimmed.starts_with("SEND:")
+    {
+        TimelineItemKind::ActionCall
+    } else {
+        TimelineItemKind::ToolCall
+    }
 }
 
 fn push_timeline_text_item(
@@ -732,6 +747,18 @@ mod tests {
         assert!(matches!(items[1].kind, TimelineItemKind::ToolCall));
         assert_eq!(items[1].text, "TOOL:python {\"code\":\"print(1)\"}");
         assert!(matches!(items[2].kind, TimelineItemKind::AssistantMessage));
+    }
+
+    #[test]
+    fn parse_stream_segments_supports_action_lines() {
+        let stream = "Prelude\nACTION:send {\"pid\":42,\"message\":\"hello\"}\nFinal answer";
+        let items = parse_stream_segments("pid-action", stream, false);
+        assert_eq!(items.len(), 3);
+        assert!(matches!(items[1].kind, TimelineItemKind::ActionCall));
+        assert_eq!(
+            items[1].text,
+            "ACTION:send {\"pid\":42,\"message\":\"hello\"}"
+        );
     }
 
     #[test]

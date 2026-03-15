@@ -47,7 +47,7 @@ Il dettaglio storico fine-grained vive nella git history e nei documenti di crit
 **Completato**
 - `ToolDescriptor` + `ToolBackendConfig` + `ToolRegistry` in-memory con bootstrap built-in.
 - OpCodes: `REGISTER_TOOL`, `UNREGISTER_TOOL`, `LIST_TOOLS`, `TOOL_INFO`.
-- Invocazione canonica `TOOL:<name> <json>` + alias legacy instradati via registry.
+- Invocazione canonica separata per piani distinti: `TOOL:<name> <json-object>` per il tool plane e `ACTION:<name> <json-object>` per il runtime/process-control plane.
 - Backend `remote_http` con policy di sicurezza (allowlist, timeout, payload/header checks).
 - Integrazione GUI completa (list/info/register/unregister) + test parser/client.
 - Validazione: `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, test Python GUI.

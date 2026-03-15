@@ -254,4 +254,3 @@ fn apply_restore_snapshot(
 #[cfg(test)]
 #[path = "checkpoint_cmd_tests.rs"]
 mod tests;
-

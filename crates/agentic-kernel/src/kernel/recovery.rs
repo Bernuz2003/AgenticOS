@@ -27,4 +27,3 @@ pub(crate) fn run_boot_recovery(storage: &mut StorageService) -> io::Result<Boot
 #[cfg(test)]
 #[path = "recovery_tests.rs"]
 mod tests;
-

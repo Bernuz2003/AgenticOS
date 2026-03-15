@@ -246,15 +246,17 @@ pub fn delete_session(workspace_root: &Path, session_id: &str) -> Result<(), Str
     let Some(connection) = open_connection(workspace_root)? else {
         return Ok(());
     };
-    
-    connection.execute("PRAGMA foreign_keys = ON", [])
+
+    connection
+        .execute("PRAGMA foreign_keys = ON", [])
         .map_err(|err| err.to_string())?;
 
-    connection.execute(
-        "DELETE FROM sessions WHERE session_id = ?1",
-        params![session_id],
-    )
-    .map_err(|err| err.to_string())?;
+    connection
+        .execute(
+            "DELETE FROM sessions WHERE session_id = ?1",
+            params![session_id],
+        )
+        .map_err(|err| err.to_string())?;
 
     Ok(())
 }

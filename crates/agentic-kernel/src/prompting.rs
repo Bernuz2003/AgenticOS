@@ -245,4 +245,3 @@ fn default_assistant_preamble(family: PromptFamily) -> String {
 #[cfg(test)]
 #[path = "prompting_tests.rs"]
 mod tests;
-

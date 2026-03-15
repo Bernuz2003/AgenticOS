@@ -23,6 +23,7 @@ mod scheduler;
 mod services;
 mod session;
 mod storage;
+mod text_invocation;
 mod tool_registry;
 mod tools;
 mod transport;

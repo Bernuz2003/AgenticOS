@@ -236,4 +236,3 @@ fn load_summary<const N: usize, const M: usize>(
 #[cfg(test)]
 #[path = "accounting_tests.rs"]
 mod tests;
-

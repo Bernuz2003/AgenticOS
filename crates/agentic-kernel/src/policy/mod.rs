@@ -119,4 +119,3 @@ pub fn scheduler_quota_defaults(workload: WorkloadClass) -> (usize, usize) {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

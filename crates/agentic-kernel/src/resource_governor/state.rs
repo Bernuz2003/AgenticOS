@@ -1,7 +1,7 @@
-/// State tracking and errors for the resource governor.
-use thiserror::Error;
 use crate::runtimes::RuntimeReservation;
 use crate::storage::StorageError;
+/// State tracking and errors for the resource governor.
+use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResourceGovernorStatus {

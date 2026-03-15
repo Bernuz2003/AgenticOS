@@ -26,6 +26,7 @@
                       "description",
                       "input_schema",
                       "output_schema",
+                      "allowed_callers",
                       "backend_kind",
                       "capabilities",
                       "dangerous",
@@ -38,6 +39,13 @@
                       "description": {"type": "string"},
                       "input_schema": {"type": "object"},
                       "output_schema": {"type": "object"},
+                      "allowed_callers": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": ["agent_text", "programmatic", "control_plane"]
+                        }
+                      },
                       "backend_kind": {"type": "string"},
                       "capabilities": {"type": "array", "items": {"type": "string"}},
                       "dangerous": {"type": "boolean"},

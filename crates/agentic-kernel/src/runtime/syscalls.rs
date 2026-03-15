@@ -17,6 +17,8 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use super::actions::{self, ActionInvocation, ActionName};
+
 #[derive(Debug)]
 pub(crate) enum SyscallCmd {
     Execute {
@@ -86,23 +88,29 @@ pub(crate) fn spawn_syscall_worker(
 }
 
 pub(super) fn scan_syscall_buffer(buffer: &mut String) -> Option<String> {
-    if let Some(start) = buffer.find("[[") {
-        if let Some(end_offset) = buffer[start..].find("]]") {
-            let end = start + end_offset + 2;
-            let full_command = buffer[start..end].to_string();
+    for line in buffer.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("ACTION:") {
+            let candidate = trimmed.trim_end_matches(['\n', '\r']);
+            if actions::is_streaming_action_invocation(candidate) {
+                return None;
+            }
+            let command = candidate.to_string();
             buffer.clear();
-            return Some(full_command);
+            return Some(command);
+        }
+
+        if trimmed.starts_with("TOOL:") {
+            let candidate = trimmed.trim_end_matches(['\n', '\r']);
+            if crate::tools::parser::is_streaming_tool_invocation(candidate) {
+                return None;
+            }
+            let command = candidate.to_string();
+            buffer.clear();
+            return Some(command);
         }
     }
-    if let Some(command) = buffer
-        .lines()
-        .map(str::trim)
-        .find(|line| line.starts_with("TOOL:") && crate::tools::validates_tool_invocation(line))
-        .map(str::to_string)
-    {
-        buffer.clear();
-        return Some(command);
-    }
+
     if buffer.len() > 8000 {
         buffer.clear();
     }
@@ -138,81 +146,30 @@ pub(super) fn dispatch_process_syscall(
         return SyscallDispatchOutcome::Killed;
     }
 
-    if content.starts_with("SPAWN:") {
-        let prompt = content.trim_start_matches("SPAWN:").trim();
-        let owner_id = engine.process_owner_id(pid).unwrap_or(0);
-        let parent_sched = scheduler.snapshot(pid);
-        let workload = parent_sched
-            .as_ref()
-            .map(|snapshot| snapshot.workload)
-            .unwrap_or(WorkloadClass::General);
-        let priority = parent_sched
-            .as_ref()
-            .map(|snapshot| snapshot.priority)
-            .unwrap_or(ProcessPriority::Normal);
-        let inherited_context_policy = engine
-            .processes
-            .get(&pid)
-            .map(|process| process.context_policy.clone());
-
-        if runtime_id.is_empty() {
-            let _ = engine.inject_context(
-                pid,
-                &engine
-                    .format_system_message("ERROR: Runtime binding not found for SPAWN syscall."),
-            );
-            return SyscallDispatchOutcome::None;
-        }
-
-        match spawn_managed_process_with_session(
-            runtime_id,
-            pid_floor,
-            engine,
-            memory,
-            scheduler,
-            session_registry,
-            storage,
-            ManagedProcessRequest {
-                prompt: prompt.to_string(),
-                owner_id,
-                workload,
-                required_backend_class: None,
-                priority,
-                lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
-                context_policy: inherited_context_policy,
-            },
-        ) {
-            Ok(new_pid) => {
-                pending_events.push(KernelEvent::SessionStarted {
-                    session_id: new_pid.session_id.clone(),
-                    pid: new_pid.pid,
-                    workload: format!("{:?}", workload).to_lowercase(),
-                    prompt: prompt.to_string(),
-                });
-                pending_events.push(KernelEvent::WorkspaceChanged {
-                    pid: new_pid.pid,
-                    reason: "syscall_spawned".to_string(),
-                });
-                pending_events.push(KernelEvent::LobbyChanged {
-                    reason: "syscall_spawned".to_string(),
-                });
-                let msg = format!(
-                    "SUCCESS: Worker Created (PID {}).\nSTOP SPAWNING NEW PROCESSES.\nNEXT ACTION: Use [[SEND: {} | <your_question>]] immediately.",
-                    new_pid.pid, new_pid.pid
+    if content.starts_with("ACTION:") {
+        match actions::parse_text_invocation(content) {
+            Ok(invocation) => {
+                return dispatch_action_invocation(
+                    runtime_id,
+                    pid_floor,
+                    engine,
+                    memory,
+                    scheduler,
+                    pid,
+                    invocation,
+                    session_registry,
+                    storage,
+                    pending_events,
                 );
-                let feedback = engine.format_system_message(&msg);
-                let _ = engine.inject_context(pid, &feedback);
-                SyscallDispatchOutcome::Spawned(new_pid.pid)
             }
-            Err(e) => {
-                let _ = engine
-                    .inject_context(pid, &engine.format_system_message(&format!("ERROR: {}", e)));
-                SyscallDispatchOutcome::None
+            Err(err) => {
+                let _ = engine.inject_context(
+                    pid,
+                    &engine.format_system_message(&format!("ACTION Error: {}", err)),
+                );
+                return SyscallDispatchOutcome::None;
             }
         }
-    } else if content.starts_with("SEND:") {
-        dispatch_send_syscall(engine, pid, content);
-        SyscallDispatchOutcome::None
     } else {
         audit::record(
             storage,
@@ -249,6 +206,171 @@ pub(super) fn dispatch_process_syscall(
             }
         }
         SyscallDispatchOutcome::None
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_action_invocation(
+    runtime_id: &str,
+    pid_floor: u64,
+    engine: &mut LLMEngine,
+    memory: &mut NeuralMemory,
+    scheduler: &mut ProcessScheduler,
+    pid: u64,
+    invocation: ActionInvocation,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
+    pending_events: &mut Vec<KernelEvent>,
+) -> SyscallDispatchOutcome {
+    match invocation.action {
+        ActionName::Spawn => {
+            let Some(prompt) = invocation
+                .input
+                .get("prompt")
+                .and_then(|value| value.as_str())
+            else {
+                let _ = engine.inject_context(
+                    pid,
+                    &engine.format_system_message(
+                        "ACTION Error: ACTION:spawn requires string field 'prompt'.",
+                    ),
+                );
+                return SyscallDispatchOutcome::None;
+            };
+            dispatch_spawn_action(
+                runtime_id,
+                pid_floor,
+                engine,
+                memory,
+                scheduler,
+                pid,
+                prompt,
+                session_registry,
+                storage,
+                pending_events,
+            )
+        }
+        ActionName::Send => {
+            let Some(target_pid) = invocation.input.get("pid").and_then(|value| value.as_u64())
+            else {
+                let _ = engine.inject_context(
+                    pid,
+                    &engine.format_system_message(
+                        "ACTION Error: ACTION:send requires numeric field 'pid'.",
+                    ),
+                );
+                return SyscallDispatchOutcome::None;
+            };
+            let Some(message) = invocation
+                .input
+                .get("message")
+                .and_then(|value| value.as_str())
+            else {
+                let _ = engine.inject_context(
+                    pid,
+                    &engine.format_system_message(
+                        "ACTION Error: ACTION:send requires string field 'message'.",
+                    ),
+                );
+                return SyscallDispatchOutcome::None;
+            };
+            dispatch_send_action(engine, pid, target_pid, message);
+            SyscallDispatchOutcome::None
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_spawn_action(
+    runtime_id: &str,
+    pid_floor: u64,
+    engine: &mut LLMEngine,
+    memory: &mut NeuralMemory,
+    scheduler: &mut ProcessScheduler,
+    pid: u64,
+    prompt: &str,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
+    pending_events: &mut Vec<KernelEvent>,
+) -> SyscallDispatchOutcome {
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        let _ = engine.inject_context(
+            pid,
+            &engine
+                .format_system_message("ACTION Error: ACTION:spawn requires a non-empty 'prompt'."),
+        );
+        return SyscallDispatchOutcome::None;
+    }
+
+    let owner_id = engine.process_owner_id(pid).unwrap_or(0);
+    let parent_sched = scheduler.snapshot(pid);
+    let workload = parent_sched
+        .as_ref()
+        .map(|snapshot| snapshot.workload)
+        .unwrap_or(WorkloadClass::General);
+    let priority = parent_sched
+        .as_ref()
+        .map(|snapshot| snapshot.priority)
+        .unwrap_or(ProcessPriority::Normal);
+    let inherited_context_policy = engine
+        .processes
+        .get(&pid)
+        .map(|process| process.context_policy.clone());
+
+    if runtime_id.is_empty() {
+        let _ = engine.inject_context(
+            pid,
+            &engine.format_system_message("ERROR: Runtime binding not found for SPAWN syscall."),
+        );
+        return SyscallDispatchOutcome::None;
+    }
+
+    match spawn_managed_process_with_session(
+        runtime_id,
+        pid_floor,
+        engine,
+        memory,
+        scheduler,
+        session_registry,
+        storage,
+        ManagedProcessRequest {
+            prompt: prompt.to_string(),
+            owner_id,
+            workload,
+            required_backend_class: None,
+            priority,
+            lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+            context_policy: inherited_context_policy,
+        },
+    ) {
+        Ok(new_pid) => {
+            pending_events.push(KernelEvent::SessionStarted {
+                session_id: new_pid.session_id.clone(),
+                pid: new_pid.pid,
+                workload: format!("{:?}", workload).to_lowercase(),
+                prompt: prompt.to_string(),
+            });
+            pending_events.push(KernelEvent::WorkspaceChanged {
+                pid: new_pid.pid,
+                reason: "syscall_spawned".to_string(),
+            });
+            pending_events.push(KernelEvent::LobbyChanged {
+                reason: "syscall_spawned".to_string(),
+            });
+            let msg = format!(
+                    "SUCCESS: Worker Created (PID {}).\nSTOP SPAWNING NEW PROCESSES.\nNEXT ACTION: Use ACTION:send {{\"pid\":{},\"message\":\"<your_question>\"}} immediately.",
+                    new_pid.pid, new_pid.pid
+                );
+            let feedback = engine.format_system_message(&msg);
+            let _ = engine.inject_context(pid, &feedback);
+            SyscallDispatchOutcome::Spawned(new_pid.pid)
+        }
+        Err(e) => {
+            let _ =
+                engine.inject_context(pid, &engine.format_system_message(&format!("ERROR: {}", e)));
+            SyscallDispatchOutcome::None
+        }
     }
 }
 
@@ -376,37 +498,33 @@ pub(super) fn drain_syscall_results(
     }
 }
 
-fn dispatch_send_syscall(engine: &mut LLMEngine, pid: u64, content: &str) {
-    let parts: Vec<&str> = content.trim_start_matches("SEND:").splitn(2, '|').collect();
-    if parts.len() == 2 {
-        let message = parts[1].trim();
-        let target_pid_str = parts[0].trim();
-        if let Ok(target_pid) = target_pid_str.parse::<u64>() {
-            let msg_target = engine.format_interprocess_message(pid, message);
-            match engine.inject_context(target_pid, &msg_target) {
-                Ok(_) => {
-                    let _ = engine.inject_context(
-                        pid,
-                        &engine.format_system_message(
-                            "MESSAGE SENT. Waiting for reply... (Do not send again).",
-                        ),
-                    );
-                }
-                Err(_) => {
-                    let _ = engine.inject_context(
-                        pid,
-                        &engine.format_system_message(
-                            "ERROR: Target PID not found (Process does not exist).",
-                        ),
-                    );
-                }
-            }
-        } else {
-            let err_msg = format!(
-                "ERROR: Invalid PID format '{}'. You must use a numeric PID (e.g., [[SEND: 2 | ...]]).",
-                target_pid_str
+fn dispatch_send_action(engine: &mut LLMEngine, pid: u64, target_pid: u64, message: &str) {
+    let message = message.trim();
+    if message.is_empty() {
+        let _ = engine.inject_context(
+            pid,
+            &engine
+                .format_system_message("ACTION Error: ACTION:send requires a non-empty 'message'."),
+        );
+        return;
+    }
+
+    let msg_target = engine.format_interprocess_message(pid, message);
+    match engine.inject_context(target_pid, &msg_target) {
+        Ok(_) => {
+            let _ = engine.inject_context(
+                pid,
+                &engine.format_system_message(
+                    "MESSAGE SENT. Waiting for reply... (Do not send again).",
+                ),
             );
-            let _ = engine.inject_context(pid, &engine.format_system_message(&err_msg));
+        }
+        Err(_) => {
+            let _ = engine.inject_context(
+                pid,
+                &engine
+                    .format_system_message("ERROR: Target PID not found (Process does not exist)."),
+            );
         }
     }
 }

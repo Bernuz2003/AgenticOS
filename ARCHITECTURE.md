@@ -60,7 +60,7 @@ Questo documento descrive l'architettura interna del kernel, i flussi end-to-end
 - **Process-centric** — ogni `EXEC` crea un processo con la propria copia del modello, stato di generazione e buffer syscall.
 - **Resident-slot memory** — residency manager per PID, parking asincrono e restore backend-owned dei context slot.
 - **Priority scheduler** — 4 livelli di priorità (Low → Critical), quote token e syscall per workload class. Governa ordine e limiti locali; non e' un motore di parallelismo forte.
-- **Syscall sandbox** — i processi LLM invocano tool (Python, file I/O, calc) tramite pattern `[[COMMAND: args]]`, con rate-limit, timeout e audit.
+- **Tool plane + action plane** — i processi LLM invocano tool registrati tramite `TOOL:<name> <json-object>` e mutazioni del runtime tramite `ACTION:<name> <json-object>`, con parser stretti, rate-limit, timeout e audit separati.
 - **Multi-model** — catalogo auto-discovery, routing capability-aware, hot-swap tra famiglie LLM.
 
 ---
@@ -220,11 +220,11 @@ sequenceDiagram
         K-->>C: DATA raw 10<br/>```python\n
     end
 
-    Note over C,S: 4. Syscall (opzionale)
-    K->>K: scan detects [[PYTHON: print('hello')]]
+    Note over C,S: 4. Tool/action interception (opzionale)
+    K->>K: scan detects TOOL:python {"code":"print('hello')"}
     K->>K: dispatch_process_syscall
     K->>S: record_syscall(1) → false
-    K->>K: tools::handle_syscall(PYTHON, pid=1)
+    K->>K: tools::handle_syscall(TOOL:python, pid=1)
     K->>E: inject_context(pid=1, "output: hello\n")
 
     Note over C,S: 5. Fine processo
@@ -484,21 +484,30 @@ flowchart LR
 
 ---
 
-## 9. Syscall sandbox
+## 9. Tool e action plane
 
-Quando un processo genera testo contenente il pattern `[[COMMAND: args]]`, il kernel intercetta il comando e lo esegue in un ambiente sandboxed.
+Quando un processo genera una linea canonica `TOOL:<name> <json-object>` oppure `ACTION:<name> <json-object>`, il kernel intercetta l'invocazione e la instrada al piano corretto.
 
-### Comandi supportati
+### Tool plane
 
-| Syscall | Pattern | Descrizione |
-|---------|---------|-------------|
-| Python | `[[PYTHON: code]]` | Esegue script Python (host/container) |
-| Write file | `[[WRITE_FILE: path\|content]]` | Scrive file in workspace |
-| Read file | `[[READ_FILE: path]]` | Legge file da workspace (max 1MB) |
-| List dir | `[[LS]]` | Lista contenuto workspace |
-| Calculator | `[[CALC: expr]]` | Valuta espressione matematica via Python |
-| Spawn | `[[SPAWN: prompt]]` | Crea sotto-processo LLM |
-| Send | `[[SEND: pid \| message]]` | Invio messaggio inter-processo |
+`TOOL:` e' riservato ai tool registrati nel `ToolRegistry`. Il parser testuale e' solo un adapter verso una `ToolInvocation` strutturata, cosi' lo stesso contratto puo' essere riusato in futuro da Programmatic Tool Calling.
+
+| Tool | Pattern | Descrizione |
+|------|---------|-------------|
+| Python | `TOOL:python {"code":"print(1)"}` | Esegue script Python (host/container) |
+| Write file | `TOOL:write_file {"path":"notes.txt","content":"hello"}` | Scrive file in workspace |
+| Read file | `TOOL:read_file {"path":"notes.txt"}` | Legge file da workspace (max 1MB) |
+| List dir | `TOOL:list_files {}` | Lista contenuto workspace |
+| Calculator | `TOOL:calc {"expression":"(12+3)*7"}` | Valuta espressione matematica via Python |
+
+### Action plane
+
+`ACTION:` resta fuori dal tool plane ed e' riservato alle primitive di controllo del runtime/process graph.
+
+| Action | Pattern | Descrizione |
+|--------|---------|-------------|
+| Spawn | `ACTION:spawn {"prompt":"..."}` | Crea sotto-processo LLM |
+| Send | `ACTION:send {"pid":42,"message":"..."}` | Invia messaggio inter-processo |
 
 ### Modalità sandbox
 
@@ -514,7 +523,7 @@ Quando un processo genera testo contenente il pattern `[[COMMAND: args]]`, il ke
 - **Rate limiting** — sliding window per PID (`max_calls_per_window` in `window_s` secondi).
 - **Error burst kill** — se un processo accumula N errori consecutivi, viene terminato.
 - **Timeout** — ogni esecuzione ha un timeout configurabile (default 8s).
-- **Audit log** — ogni syscall viene registrato in `workspace/syscall_audit.log`.
+- **Audit log** — ogni tool dispatch viene registrato in `workspace/syscall_audit.log`; le runtime action restano nel control/runtime plane.
 
 ---
 

@@ -1,10 +1,10 @@
+use super::migrations;
+use rusqlite::Connection;
 /// Core SQLite connection orchestration and configuration.
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use rusqlite::Connection;
 use thiserror::Error;
-use super::migrations;
 
 pub(crate) use super::sessions_repo::StoredSessionRecord;
 
@@ -75,7 +75,6 @@ impl StorageService {
             .connection
             .query_row("PRAGMA user_version;", [], |row| row.get(0))?)
     }
-
 }
 
 fn ensure_parent_dir(path: &Path) -> Result<(), StorageError> {
@@ -117,4 +116,3 @@ pub(crate) fn current_timestamp_ms() -> i64 {
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
 }
-

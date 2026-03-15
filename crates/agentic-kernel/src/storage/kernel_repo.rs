@@ -1,7 +1,7 @@
+use super::service::{current_timestamp_ms, StorageError, StorageService};
 /// Kernel boot history and metadata storage.
 use rusqlite::params;
 use rusqlite::Connection;
-use super::service::{StorageError, StorageService, current_timestamp_ms};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct KernelBootRecord {

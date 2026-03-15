@@ -559,4 +559,3 @@ fn resolve_loadable_driver_descriptor(
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

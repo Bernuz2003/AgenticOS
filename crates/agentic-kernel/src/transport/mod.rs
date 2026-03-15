@@ -23,4 +23,3 @@ pub fn writable_interest() -> Interest {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

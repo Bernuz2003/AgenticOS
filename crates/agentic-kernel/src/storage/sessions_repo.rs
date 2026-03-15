@@ -1,6 +1,6 @@
+use super::service::{current_timestamp_ms, StorageError, StorageService};
 /// Session and PID lifecycle storage.
 use rusqlite::params;
-use super::service::{StorageError, StorageService, current_timestamp_ms};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredSessionRecord {

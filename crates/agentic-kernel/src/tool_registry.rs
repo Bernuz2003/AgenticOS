@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::tools::invocation::ToolCaller;
+use crate::tools::schema::ensure_valid_schema;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolBackendKind {
@@ -18,11 +21,21 @@ pub enum ToolSource {
     Runtime,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum HostExecutor {
+    Python,
+    WriteFile,
+    ReadFile,
+    ListFiles,
+    Calc,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ToolBackendConfig {
     Host {
-        executor: String,
+        executor: HostExecutor,
     },
     Wasm {
         module: String,
@@ -53,6 +66,8 @@ pub struct ToolDescriptor {
     pub description: String,
     pub input_schema: Value,
     pub output_schema: Value,
+    #[serde(default = "default_allowed_callers")]
+    pub allowed_callers: Vec<ToolCaller>,
     pub backend_kind: ToolBackendKind,
     pub capabilities: Vec<String>,
     pub dangerous: bool,
@@ -170,6 +185,21 @@ impl ToolRegistry {
 
 fn validate_entry(entry: &ToolRegistryEntry) -> Result<(), String> {
     let descriptor = &entry.descriptor;
+    if descriptor.allowed_callers.is_empty() {
+        return Err(format!(
+            "Tool '{}' must allow at least one caller.",
+            descriptor.name
+        ));
+    }
+    ensure_valid_schema(
+        &descriptor.input_schema,
+        &format!("tool '{}'.input_schema", descriptor.name),
+    )?;
+    ensure_valid_schema(
+        &descriptor.output_schema,
+        &format!("tool '{}'.output_schema", descriptor.name),
+    )?;
+
     if descriptor.backend_kind != entry.backend.kind() {
         return Err(format!(
             "Tool '{}' declares backend kind '{:?}' but backend config is '{:?}'.",
@@ -190,14 +220,7 @@ fn validate_entry(entry: &ToolRegistryEntry) -> Result<(), String> {
     }
 
     match &entry.backend {
-        ToolBackendConfig::Host { executor } => {
-            if executor.trim().is_empty() {
-                return Err(format!(
-                    "Tool '{}' host executor cannot be empty.",
-                    descriptor.name
-                ));
-            }
-        }
+        ToolBackendConfig::Host { .. } => {}
         ToolBackendConfig::Wasm { module, export } => {
             if module.trim().is_empty() || export.trim().is_empty() {
                 return Err(format!(
@@ -256,6 +279,10 @@ fn validate_entry(entry: &ToolRegistryEntry) -> Result<(), String> {
     Ok(())
 }
 
+fn default_allowed_callers() -> Vec<ToolCaller> {
+    vec![ToolCaller::AgentText]
+}
+
 fn normalize_name(name: &str) -> Result<String, String> {
     let normalized = name.trim().to_ascii_lowercase();
     if normalized.is_empty() {
@@ -279,7 +306,7 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
         ToolRegistryEntry {
             descriptor: ToolDescriptor {
                 name: "python".to_string(),
-                aliases: vec!["PYTHON".to_string()],
+                aliases: vec![],
                 description: "Execute Python code under the syscall sandbox policy.".to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -297,6 +324,7 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
                     },
                     "additionalProperties": false
                 }),
+                allowed_callers: vec![ToolCaller::AgentText, ToolCaller::Programmatic],
                 backend_kind: ToolBackendKind::Host,
                 capabilities: vec!["python".to_string(), "sandboxed".to_string()],
                 dangerous: true,
@@ -304,13 +332,13 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
                 source: ToolSource::BuiltIn,
             },
             backend: ToolBackendConfig::Host {
-                executor: "builtin_python".to_string(),
+                executor: HostExecutor::Python,
             },
         },
         ToolRegistryEntry {
             descriptor: ToolDescriptor {
                 name: "write_file".to_string(),
-                aliases: vec!["WRITE_FILE".to_string()],
+                aliases: vec![],
                 description: "Write a file inside the workspace root.".to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -323,12 +351,15 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
                 }),
                 output_schema: json!({
                     "type": "object",
-                    "required": ["output"],
+                    "required": ["output", "path", "bytes_written"],
                     "properties": {
-                        "output": {"type": "string"}
+                        "output": {"type": "string"},
+                        "path": {"type": "string"},
+                        "bytes_written": {"type": "integer", "minimum": 0}
                     },
                     "additionalProperties": false
                 }),
+                allowed_callers: vec![ToolCaller::AgentText, ToolCaller::Programmatic],
                 backend_kind: ToolBackendKind::Host,
                 capabilities: vec!["fs".to_string(), "write".to_string()],
                 dangerous: true,
@@ -336,13 +367,13 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
                 source: ToolSource::BuiltIn,
             },
             backend: ToolBackendConfig::Host {
-                executor: "builtin_write_file".to_string(),
+                executor: HostExecutor::WriteFile,
             },
         },
         ToolRegistryEntry {
             descriptor: ToolDescriptor {
                 name: "read_file".to_string(),
-                aliases: vec!["READ_FILE".to_string()],
+                aliases: vec![],
                 description: "Read a UTF-8 text file inside the workspace root.".to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -354,12 +385,14 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
                 }),
                 output_schema: json!({
                     "type": "object",
-                    "required": ["output"],
+                    "required": ["output", "path"],
                     "properties": {
-                        "output": {"type": "string"}
+                        "output": {"type": "string"},
+                        "path": {"type": "string"}
                     },
                     "additionalProperties": false
                 }),
+                allowed_callers: vec![ToolCaller::AgentText, ToolCaller::Programmatic],
                 backend_kind: ToolBackendKind::Host,
                 capabilities: vec!["fs".to_string(), "read".to_string()],
                 dangerous: false,
@@ -367,13 +400,13 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
                 source: ToolSource::BuiltIn,
             },
             backend: ToolBackendConfig::Host {
-                executor: "builtin_read_file".to_string(),
+                executor: HostExecutor::ReadFile,
             },
         },
         ToolRegistryEntry {
             descriptor: ToolDescriptor {
                 name: "list_files".to_string(),
-                aliases: vec!["LS".to_string()],
+                aliases: vec![],
                 description: "List files in the workspace root.".to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -382,12 +415,17 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
                 }),
                 output_schema: json!({
                     "type": "object",
-                    "required": ["output"],
+                    "required": ["output", "entries"],
                     "properties": {
-                        "output": {"type": "string"}
+                        "output": {"type": "string"},
+                        "entries": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
                     },
                     "additionalProperties": false
                 }),
+                allowed_callers: vec![ToolCaller::AgentText, ToolCaller::Programmatic],
                 backend_kind: ToolBackendKind::Host,
                 capabilities: vec!["fs".to_string(), "list".to_string()],
                 dangerous: false,
@@ -395,13 +433,13 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
                 source: ToolSource::BuiltIn,
             },
             backend: ToolBackendConfig::Host {
-                executor: "builtin_list_files".to_string(),
+                executor: HostExecutor::ListFiles,
             },
         },
         ToolRegistryEntry {
             descriptor: ToolDescriptor {
                 name: "calc".to_string(),
-                aliases: vec!["CALC".to_string()],
+                aliases: vec![],
                 description: "Evaluate a numeric expression through the Python sandbox."
                     .to_string(),
                 input_schema: json!({
@@ -420,6 +458,7 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
                     },
                     "additionalProperties": false
                 }),
+                allowed_callers: vec![ToolCaller::AgentText, ToolCaller::Programmatic],
                 backend_kind: ToolBackendKind::Host,
                 capabilities: vec!["math".to_string(), "python".to_string()],
                 dangerous: false,
@@ -427,7 +466,7 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
                 source: ToolSource::BuiltIn,
             },
             backend: ToolBackendConfig::Host {
-                executor: "builtin_calc".to_string(),
+                executor: HostExecutor::Calc,
             },
         },
     ]
@@ -436,4 +475,3 @@ fn builtin_entries() -> Vec<ToolRegistryEntry> {
 #[cfg(test)]
 #[path = "tool_registry_tests.rs"]
 mod tests;
-

@@ -3,11 +3,11 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
+use super::context::*;
+use super::state::*;
 use crate::backend::RuntimeModel;
 use crate::memory::ContextSlotId;
 use crate::prompting::GenerationConfig;
-use super::state::*;
-use super::context::*;
 
 pub struct AgentProcess {
     pub owner_id: usize,

@@ -12,7 +12,7 @@ use crate::config::RemoteProviderRuntimeConfig;
 use crate::model_catalog::RemoteModelEntry;
 use crate::prompting::PromptFamily;
 
-use crate::backend::remote_adapter::{drain_json_objects, tool_invocation_end};
+use crate::backend::remote_adapter::{agent_invocation_end, drain_json_objects};
 use crate::backend::{
     BackendCapabilities, InferenceBackend, InferenceFinishReason, InferenceStepRequest,
     InferenceStepResult,
@@ -824,7 +824,7 @@ fn decode_responses_stream(
             _ => {}
         }
 
-        if let Some(end) = tool_invocation_end(&emitted_text) {
+        if let Some(end) = agent_invocation_end(&emitted_text) {
             emitted_text.truncate(end);
             return Ok(DecodedResponse {
                 emitted_text,
@@ -877,7 +877,7 @@ fn decode_chat_completions_stream(
             }
         }
 
-        if let Some(end) = tool_invocation_end(&emitted_text) {
+        if let Some(end) = agent_invocation_end(&emitted_text) {
             emitted_text.truncate(end);
             return Ok(DecodedResponse {
                 emitted_text,
@@ -1034,4 +1034,3 @@ fn extract_error_message(json: &serde_json::Value) -> String {
 #[cfg(test)]
 #[path = "openai_compatible_tests.rs"]
 mod tests;
-

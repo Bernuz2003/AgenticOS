@@ -215,21 +215,15 @@ pub(crate) fn drain_json_objects(buffer: &mut Vec<u8>) -> Result<Vec<serde_json:
     }
 }
 
-pub(crate) fn tool_invocation_end(stream: &str) -> Option<usize> {
-    if let Some(start) = stream.find("[[") {
-        let rest = &stream[start + 2..];
-        if let Some(end_offset) = rest.find("]]") {
-            let candidate = rest[..end_offset].trim();
-            if crate::tools::validates_tool_invocation(candidate) {
-                return Some(start + 2 + end_offset + 2);
-            }
-        }
-    }
-
+pub(crate) fn agent_invocation_end(stream: &str) -> Option<usize> {
     let mut offset = 0usize;
     for line in stream.split_inclusive('\n') {
         let trimmed = line.trim();
-        if trimmed.starts_with("TOOL:") && crate::tools::validates_tool_invocation(trimmed) {
+        let is_action = trimmed.starts_with("ACTION:")
+            && crate::runtime::actions::parse_text_invocation(trimmed).is_ok();
+        let is_tool =
+            trimmed.starts_with("TOOL:") && crate::tools::validates_tool_invocation(trimmed);
+        if is_action || is_tool {
             return Some(offset + line.len());
         }
         offset += line.len();
@@ -237,7 +231,11 @@ pub(crate) fn tool_invocation_end(stream: &str) -> Option<usize> {
 
     let last_line_start = stream.rfind('\n').map(|index| index + 1).unwrap_or(0);
     let last_line = stream[last_line_start..].trim();
-    if last_line.starts_with("TOOL:") && crate::tools::validates_tool_invocation(last_line) {
+    let is_action = last_line.starts_with("ACTION:")
+        && crate::runtime::actions::parse_text_invocation(last_line).is_ok();
+    let is_tool =
+        last_line.starts_with("TOOL:") && crate::tools::validates_tool_invocation(last_line);
+    if is_action || is_tool {
         return Some(stream.len());
     }
 
@@ -274,4 +272,3 @@ fn find_complete_json_object_end(bytes: &[u8]) -> Option<usize> {
 #[cfg(test)]
 #[path = "remote_adapter_tests.rs"]
 mod tests;
-

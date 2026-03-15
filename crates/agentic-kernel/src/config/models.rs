@@ -1,7 +1,7 @@
+use super::parser::repository_path;
 /// Configuration models and structures.
 use serde::Deserialize;
 use std::path::PathBuf;
-use super::parser::repository_path;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -505,4 +505,3 @@ impl Default for SchedulerQuotaConfig {
         }
     }
 }
-

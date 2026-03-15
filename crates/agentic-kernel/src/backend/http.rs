@@ -580,4 +580,3 @@ fn timeout_error_message(
 #[cfg(test)]
 #[path = "http_tests.rs"]
 mod tests;
-

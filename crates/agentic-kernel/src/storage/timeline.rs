@@ -5,8 +5,8 @@ use agentic_control_models::KernelEvent;
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::Deserialize;
 
-use super::service::{current_timestamp_ms, StorageError, StorageService};
 use super::kernel_repo::upsert_kernel_meta;
+use super::service::{current_timestamp_ms, StorageError, StorageService};
 
 const LEGACY_IMPORT_META_KEY: &str = "legacy_timeline_import_v1_completed_at_ms";
 
@@ -682,4 +682,3 @@ fn file_timestamp_ms(path: &Path) -> Option<i64> {
 #[cfg(test)]
 #[path = "timeline_tests.rs"]
 mod tests;
-

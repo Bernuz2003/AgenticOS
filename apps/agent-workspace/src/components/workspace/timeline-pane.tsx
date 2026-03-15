@@ -186,6 +186,33 @@ export function TimelinePane({
                 );
               }
 
+              if (item.kind === "action_call") {
+                const liveBadge =
+                  item.status === "streaming"
+                    ? "streaming"
+                    : item.status === "dispatching"
+                      ? "dispatching"
+                      : null;
+                return (
+                  <div key={item.id} className="flex gap-4 ml-12">
+                    <div className="w-full max-w-[80%] rounded-2xl border border-amber-200 bg-amber-50/60 p-4 text-sm text-amber-950 shadow-sm">
+                      <div className="flex items-center gap-2 font-semibold text-amber-700">
+                        <Send className="h-4 w-4" />
+                        Runtime Action
+                        {liveBadge && (
+                          <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-800 animate-pulse">
+                            {liveBadge}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-3 rounded-xl bg-amber-950 px-4 py-3 font-mono text-[12px] text-amber-100 overflow-x-auto">
+                        {item.text}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
               if (item.kind === "tool_result") {
                 const failed = item.status === "error";
                 return (

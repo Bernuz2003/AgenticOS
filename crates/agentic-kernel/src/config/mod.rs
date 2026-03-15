@@ -34,4 +34,3 @@ pub fn kernel_config() -> &'static KernelConfig {
 pub fn config_file_path() -> PathBuf {
     resolve_config_bootstrap_paths().primary_config_path()
 }
-

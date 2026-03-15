@@ -170,6 +170,7 @@ pub enum TimelineItemKind {
     UserMessage,
     Thinking,
     ToolCall,
+    ActionCall,
     ToolResult,
     AssistantMessage,
     SystemEvent,

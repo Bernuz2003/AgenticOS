@@ -159,4 +159,3 @@ fn map_audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAuditEvent> 
 #[cfg(test)]
 #[path = "audit_tests.rs"]
 mod tests;
-

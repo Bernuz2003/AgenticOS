@@ -1,3 +1,4 @@
+pub(crate) mod actions;
 mod inference_results;
 mod orchestration;
 pub(crate) mod syscalls;
@@ -223,4 +224,3 @@ pub fn run_engine_tick(
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

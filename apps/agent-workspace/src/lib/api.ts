@@ -343,6 +343,7 @@ export type TimelineItemKind =
   | "user_message"
   | "thinking"
   | "tool_call"
+  | "action_call"
   | "tool_result"
   | "assistant_message"
   | "system_event";

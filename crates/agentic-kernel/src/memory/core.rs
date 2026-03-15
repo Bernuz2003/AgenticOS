@@ -203,4 +203,3 @@ impl NeuralMemory {
 #[cfg(test)]
 #[path = "core_tests.rs"]
 mod tests;
-

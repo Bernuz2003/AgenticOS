@@ -3,10 +3,20 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::config::kernel_config;
+use serde_json::json;
 
+use crate::backend::http::{HttpEndpoint, HttpRequestOptions};
+use crate::config::kernel_config;
+use crate::tool_registry::ToolBackendConfig;
+
+use super::api::{Tool, ToolResult};
+use super::error::ToolError;
+use super::invocation::{ToolContext, ToolInvocation};
 use super::path_guard::{resolve_safe_path, workspace_root};
-use super::policy::{SandboxMode, SysCallConfig};
+use super::policy::{
+    enforce_remote_http_policy, remote_http_max_request_bytes, remote_http_max_response_bytes,
+    syscall_config, SandboxMode,
+};
 
 fn truncate_output(text: &str) -> String {
     let limit = kernel_config().tools.output_truncate_len;
@@ -46,7 +56,7 @@ fn run_with_timeout(
 }
 
 fn run_host_python(script_path: &Path, timeout_s: u64) -> Result<String, String> {
-    let cwd = workspace_root()?;
+    let cwd = workspace_root().map_err(|e| format!("Safe path error: {}", e))?;
     let script_name = script_path
         .file_name()
         .ok_or_else(|| "SysCall Error: Invalid script filename.".to_string())?
@@ -92,7 +102,7 @@ fn run_host_python(script_path: &Path, timeout_s: u64) -> Result<String, String>
 }
 
 fn run_container_python(script_path: &Path, timeout_s: u64) -> Result<String, String> {
-    let cwd = workspace_root()?;
+    let cwd = workspace_root().map_err(|e| format!("Safe path error: {}", e))?;
     let script_name = script_path
         .file_name()
         .ok_or_else(|| "SysCall Error: Invalid script filename.".to_string())?
@@ -149,109 +159,402 @@ fn run_container_python(script_path: &Path, timeout_s: u64) -> Result<String, St
     }
 }
 
-pub(crate) fn execute_python_with_policy(
-    code: &str,
-    pid: u64,
-    cfg: SysCallConfig,
-) -> Result<String, String> {
-    let clean_code = code
-        .trim()
-        .trim_start_matches("```python")
-        .trim_start_matches("```")
-        .trim_end_matches("```");
+fn classify_timeout(tool_name: &str, detail: &str, timeout_ms: u64) -> ToolError {
+    if detail.contains("timed out after") {
+        ToolError::Timeout(tool_name.to_string(), timeout_ms)
+    } else {
+        ToolError::ExecutionFailed(tool_name.to_string(), detail.to_string())
+    }
+}
 
-    let root = workspace_root()?;
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| Duration::from_secs(0))
-        .as_millis();
-    let temp_filename = format!("agent_script_{}_{}.py", pid, ts);
-    let script_path = root.join(temp_filename);
+fn classify_remote_http_failure(tool_name: &str, detail: String, timeout_ms: u64) -> ToolError {
+    if detail.contains("timed out after") {
+        ToolError::Timeout(tool_name.to_string(), timeout_ms)
+    } else if detail.contains("Failed to resolve")
+        || detail.contains("No address resolved")
+        || detail.contains("Failed to connect")
+    {
+        ToolError::BackendUnavailable(tool_name.to_string(), detail)
+    } else {
+        ToolError::ExecutionFailed(tool_name.to_string(), detail)
+    }
+}
 
-    fs::write(&script_path, clean_code)
-        .map_err(|e| format!("SysCall Error: Failed to write temp file: {}", e))?;
+// ----------------------------------------------------
+// T R A I T   I M P L E M E N T A T I O N S
+// ----------------------------------------------------
 
-    let run_result = match cfg.mode {
-        SandboxMode::Host => run_host_python(&script_path, cfg.timeout_s),
-        SandboxMode::Container => match run_container_python(&script_path, cfg.timeout_s) {
-            Ok(out) => Ok(out),
-            Err(e) if cfg.allow_host_fallback => {
-                let host_out = run_host_python(&script_path, cfg.timeout_s)?;
-                Ok(format!(
-                    "[Sandbox fallback: container->host due to error]\n{}\n{}",
-                    e, host_out
-                ))
-            }
-            Err(e) => Err(e),
-        },
-        SandboxMode::Wasm => {
-            if cfg.allow_host_fallback {
-                let host_out = run_host_python(&script_path, cfg.timeout_s)?;
-                Ok(format!(
-                    "[Sandbox fallback: wasm->host (wasm runner not configured)]\n{}",
-                    host_out
-                ))
-            } else {
-                Err("SysCall Error: Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled.".to_string())
-            }
+pub struct BuiltinPythonTool;
+
+impl Tool for BuiltinPythonTool {
+    fn name(&self) -> &str {
+        "python"
+    }
+
+    fn execute(
+        &self,
+        invocation: &ToolInvocation,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let code = invocation
+            .input
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(); // Schema validation handles missing fields
+        if code.trim().is_empty() {
+            return Err(ToolError::InvalidInput(
+                self.name().into(),
+                "field 'code' cannot be empty".into(),
+            ));
         }
-    };
 
-    let _ = fs::remove_file(&script_path);
-    run_result
-}
+        let clean_code = code
+            .trim()
+            .trim_start_matches("```python")
+            .trim_start_matches("```")
+            .trim_end_matches("```");
 
-pub(crate) fn handle_write_file(args: &str) -> Result<String, String> {
-    let parts: Vec<&str> = args.splitn(2, '|').collect();
-    if parts.len() < 2 {
-        return Err("SysCall Error: Usage [[WRITE_FILE: filename | content]]".to_string());
-    }
+        let pid = context.pid.unwrap_or(0);
+        let cfg = syscall_config();
 
-    let filename = parts[0].trim();
-    let content = parts[1].trim_start();
-    let path = resolve_safe_path(filename)?;
+        let root = workspace_root().map_err(|e| ToolError::Internal(e.to_string()))?;
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_secs(0))
+            .as_millis();
+        let temp_filename = format!("agent_script_{}_{}.py", pid, ts);
+        let script_path = root.join(temp_filename);
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("SysCall Error: Failed to create parent dir: {}", e))?;
-    }
+        fs::write(&script_path, clean_code).map_err(|e| {
+            ToolError::ExecutionFailed(
+                self.name().into(),
+                format!("Failed to write temp file: {}", e),
+            )
+        })?;
 
-    fs::write(&path, content).map_err(|e| format!("SysCall Error: Write failed: {}", e))?;
-    Ok(format!(
-        "Success: File '{}' written ({} bytes).",
-        filename,
-        content.len()
-    ))
-}
-
-pub(crate) fn handle_read_file(filename: &str) -> Result<String, String> {
-    let path = resolve_safe_path(filename)?;
-    let meta = fs::metadata(&path).map_err(|e| format!("SysCall Error: Read failed: {}", e))?;
-    if meta.len() > 1024 * 1024 {
-        return Err("SysCall Error: Refusing to read files larger than 1MB.".to_string());
-    }
-    fs::read_to_string(&path).map_err(|e| format!("SysCall Error: Read failed: {}", e))
-}
-
-pub(crate) fn handle_list_files() -> Result<String, String> {
-    let root = workspace_root()?;
-    match fs::read_dir(root) {
-        Ok(entries) => {
-            let files: Vec<String> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            if files.is_empty() {
-                Ok("Workspace is empty.".to_string())
-            } else {
-                Ok(format!("Files:\n- {}", files.join("\n- ")))
+        let run_result = match cfg.mode {
+            SandboxMode::Host => run_host_python(&script_path, cfg.timeout_s)
+                .map_err(|e| classify_timeout(self.name(), &e, cfg.timeout_s.max(1) * 1_000))?,
+            SandboxMode::Container => match run_container_python(&script_path, cfg.timeout_s) {
+                Ok(out) => Ok(out),
+                Err(e) if cfg.allow_host_fallback => {
+                    let host_out = run_host_python(&script_path, cfg.timeout_s).map_err(|he| {
+                        classify_timeout(self.name(), &he, cfg.timeout_s.max(1) * 1_000)
+                    })?;
+                    Ok(format!(
+                        "[Sandbox fallback: container->host due to error]\n{}\n{}",
+                        e, host_out
+                    ))
+                }
+                Err(e) => Err(e),
             }
+            .map_err(|e| classify_timeout(self.name(), &e, cfg.timeout_s.max(1) * 1_000))?,
+            SandboxMode::Wasm => {
+                if cfg.allow_host_fallback {
+                    let host_out = run_host_python(&script_path, cfg.timeout_s).map_err(|he| {
+                        classify_timeout(self.name(), &he, cfg.timeout_s.max(1) * 1_000)
+                    })?;
+                    format!(
+                        "[Sandbox fallback: wasm->host (wasm runner not configured)]\n{}",
+                        host_out
+                    )
+                } else {
+                    return Err(ToolError::ExecutionFailed(self.name().into(), "Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled.".into()));
+                }
+            }
+        };
+
+        let _ = fs::remove_file(&script_path);
+
+        Ok(ToolResult::json_with_text(
+            json!({ "output": run_result.clone() }),
+            run_result,
+        ))
+    }
+}
+
+pub struct BuiltinWriteFileTool;
+
+impl Tool for BuiltinWriteFileTool {
+    fn name(&self) -> &str {
+        "write_file"
+    }
+
+    fn execute(
+        &self,
+        invocation: &ToolInvocation,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let filename = invocation
+            .input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let content = invocation
+            .input
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if filename.trim().is_empty() {
+            return Err(ToolError::InvalidInput(
+                self.name().into(),
+                "field 'path' cannot be empty".into(),
+            ));
         }
-        Err(e) => Err(format!("SysCall Error: LS failed: {}", e)),
+
+        let path = resolve_safe_path(filename)
+            .map_err(|e| ToolError::ExecutionFailed(self.name().into(), e.to_string()))?;
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                ToolError::ExecutionFailed(
+                    self.name().into(),
+                    format!("Failed to create parent dir: {}", e),
+                )
+            })?;
+        }
+
+        fs::write(&path, content).map_err(|e| {
+            ToolError::ExecutionFailed(self.name().into(), format!("Write failed: {}", e))
+        })?;
+
+        let message = format!(
+            "Success: File '{}' written ({} bytes).",
+            filename,
+            content.len()
+        );
+        Ok(ToolResult::json_with_text(
+            json!({
+                "output": message.clone(),
+                "path": filename,
+                "bytes_written": content.len()
+            }),
+            message,
+        ))
+    }
+}
+
+pub struct BuiltinReadFileTool;
+
+impl Tool for BuiltinReadFileTool {
+    fn name(&self) -> &str {
+        "read_file"
+    }
+
+    fn execute(
+        &self,
+        invocation: &ToolInvocation,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let filename = invocation
+            .input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if filename.trim().is_empty() {
+            return Err(ToolError::InvalidInput(
+                self.name().into(),
+                "field 'path' cannot be empty".into(),
+            ));
+        }
+        let path = resolve_safe_path(filename)
+            .map_err(|e| ToolError::ExecutionFailed(self.name().into(), e.to_string()))?;
+
+        let meta = fs::metadata(&path).map_err(|e| {
+            ToolError::ExecutionFailed(self.name().into(), format!("Read failed: {}", e))
+        })?;
+
+        if meta.len() > 1024 * 1024 {
+            return Err(ToolError::ExecutionFailed(
+                self.name().into(),
+                "Refusing to read files larger than 1MB.".into(),
+            ));
+        }
+
+        let content = fs::read_to_string(&path).map_err(|e| {
+            ToolError::ExecutionFailed(self.name().into(), format!("Read failed: {}", e))
+        })?;
+
+        Ok(ToolResult::json_with_text(
+            json!({
+                "output": content.clone(),
+                "path": filename
+            }),
+            content,
+        ))
+    }
+}
+
+pub struct BuiltinListFilesTool;
+
+impl Tool for BuiltinListFilesTool {
+    fn name(&self) -> &str {
+        "list_files"
+    }
+
+    fn execute(
+        &self,
+        _invocation: &ToolInvocation,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let root = workspace_root().map_err(|e| ToolError::Internal(e.to_string()))?;
+        match fs::read_dir(root) {
+            Ok(entries) => {
+                let files: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                if files.is_empty() {
+                    Ok(ToolResult::json_with_text(
+                        json!({
+                            "output": "Workspace is empty.",
+                            "entries": []
+                        }),
+                        "Workspace is empty.",
+                    ))
+                } else {
+                    let message = format!("Files:\n- {}", files.join("\n- "));
+                    Ok(ToolResult::json_with_text(
+                        json!({
+                            "output": message.clone(),
+                            "entries": files
+                        }),
+                        message,
+                    ))
+                }
+            }
+            Err(e) => Err(ToolError::ExecutionFailed(
+                self.name().into(),
+                format!("LS failed: {}", e),
+            )),
+        }
+    }
+}
+
+pub struct BuiltinCalcTool;
+
+impl Tool for BuiltinCalcTool {
+    fn name(&self) -> &str {
+        "calc"
+    }
+
+    fn execute(
+        &self,
+        invocation: &ToolInvocation,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let expression = invocation
+            .input
+            .get("expression")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if expression.trim().is_empty() {
+            return Err(ToolError::InvalidInput(
+                self.name().into(),
+                "field 'expression' cannot be empty".into(),
+            ));
+        }
+        let python_code = format!("print({})", expression);
+
+        // Risolviamo delegando al python tool built-in per il calcolo sicuro in sandbox
+        let pt = BuiltinPythonTool;
+        let mut py_inv = invocation.clone();
+        py_inv.input = serde_json::json!({ "code": python_code });
+
+        pt.execute(&py_inv, context).map_err(|e| {
+            ToolError::ExecutionFailed(
+                self.name().into(),
+                format!("Calc evaluation failed: {:?}", e),
+            )
+        })
+    }
+}
+
+pub struct RemoteHttpTool {
+    pub name: String,
+    pub backend: ToolBackendConfig,
+}
+
+impl Tool for RemoteHttpTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn execute(
+        &self,
+        invocation: &ToolInvocation,
+        _context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let ToolBackendConfig::RemoteHttp {
+            url,
+            method,
+            timeout_ms,
+            headers,
+        } = &self.backend
+        else {
+            return Err(ToolError::Internal(format!(
+                "Wrong backend for RemoteHttpTool: {:?}",
+                self.backend
+            )));
+        };
+
+        let endpoint = HttpEndpoint::parse(url).map_err(|e| {
+            ToolError::ExecutionFailed(self.name().into(), format!("Invalid endpoint: {}", e))
+        })?;
+
+        enforce_remote_http_policy(self.name(), &endpoint)
+            .map_err(|e| ToolError::PolicyDenied(self.name().into(), e))?;
+
+        let path = if endpoint.base_path.is_empty() {
+            "/"
+        } else {
+            endpoint.base_path.as_str()
+        };
+
+        let response = endpoint
+            .request_json_with_options(
+                &method.to_ascii_uppercase(),
+                path,
+                Some(&invocation.input),
+                HttpRequestOptions {
+                    timeout_ms: *timeout_ms,
+                    max_request_bytes: remote_http_max_request_bytes(),
+                    max_response_bytes: remote_http_max_response_bytes(),
+                    extra_headers: Some(headers),
+                },
+            )
+            .map_err(|e| {
+                classify_remote_http_failure(
+                    self.name(),
+                    format!("Request failed: {}", e),
+                    *timeout_ms,
+                )
+            })?;
+
+        if !(200..300).contains(&response.status_code) {
+            return Err(ToolError::ExecutionFailed(
+                self.name().into(),
+                format!(
+                    "HTTP {} ({}). {}",
+                    response.status_code, response.status_line, response.body
+                ),
+            ));
+        }
+
+        if let Some(json_body) = response.json {
+            let display_text = json_body
+                .get("output")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string)
+                .or_else(|| serde_json::to_string_pretty(&json_body).ok())
+                .unwrap_or_else(|| "Valid JSON response".into());
+            Ok(ToolResult::json_with_text(json_body, display_text))
+        } else {
+            Ok(ToolResult::plain_text(response.body))
+        }
     }
 }
 
 #[cfg(test)]
 #[path = "runner_tests.rs"]
 mod tests;
-

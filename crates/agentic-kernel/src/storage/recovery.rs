@@ -224,4 +224,3 @@ fn count_rows(transaction: &Transaction<'_>, sql: &str) -> Result<usize, rusqlit
 #[cfg(test)]
 #[path = "recovery_tests.rs"]
 mod tests;
-

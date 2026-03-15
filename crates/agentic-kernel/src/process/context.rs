@@ -2,9 +2,9 @@
 ///
 /// **Context Budgeting Math Rules:**
 /// The context window defines a strict upper bound (`window_size_tokens`). When the
-/// prompt size exceeds `compaction_trigger_tokens`, a compaction strategy is invoked 
-/// (SlidingWindow, Summarize, Retrieve). Compaction must forcefully reduce the token 
-/// footprint to at or below `compaction_target_tokens` to ensure the next generation 
+/// prompt size exceeds `compaction_trigger_tokens`, a compaction strategy is invoked
+/// (SlidingWindow, Summarize, Retrieve). Compaction must forcefully reduce the token
+/// footprint to at or below `compaction_target_tokens` to ensure the next generation
 /// cycle has ample headroom for the model's output without risking context overflow.
 use serde::{Deserialize, Serialize};
 
