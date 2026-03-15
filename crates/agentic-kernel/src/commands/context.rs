@@ -72,6 +72,7 @@ pub(crate) struct ExecCommandContext<'a> {
     pub metrics: &'a mut MetricsState,
     pub session_registry: &'a mut SessionRegistry,
     pub storage: &'a mut StorageService,
+    pub tool_registry: &'a ToolRegistry,
 }
 
 pub(crate) struct ProcessCommandContext<'a> {
@@ -111,6 +112,7 @@ pub(crate) struct OrchestrationCommandContext<'a> {
     pub client_id: usize,
     pub session_registry: &'a mut SessionRegistry,
     pub storage: &'a mut StorageService,
+    pub tool_registry: &'a ToolRegistry,
 }
 
 pub(crate) struct ToolsCommandContext<'a> {
@@ -199,6 +201,7 @@ impl<'a> CommandContext<'a> {
             metrics: &mut *self.metrics,
             session_registry: &mut *self.session_registry,
             storage: &mut *self.storage,
+            tool_registry: &*self.tool_registry,
         }
     }
 
@@ -244,6 +247,7 @@ impl<'a> CommandContext<'a> {
             client_id: self.client_id,
             session_registry: &mut *self.session_registry,
             storage: &mut *self.storage,
+            tool_registry: &*self.tool_registry,
         }
     }
 

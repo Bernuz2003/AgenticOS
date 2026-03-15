@@ -4,6 +4,7 @@ use crate::protocol;
 use crate::scheduler::ProcessPriority;
 use crate::services::model_runtime::{activate_model_target, ModelActivationError};
 use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
+use crate::tools::invocation::ToolCaller;
 use agentic_control_models::{ExecStartPayload, KernelEvent};
 use agentic_protocol::ControlErrorCode;
 
@@ -29,6 +30,7 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
         metrics,
         session_registry,
         storage,
+        tool_registry,
     } = ctx;
 
     let prompt_raw = String::from_utf8_lossy(payload).to_string();
@@ -36,6 +38,8 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
     let workload = resolved.workload;
     let hinted_workload = resolved.hinted_workload;
     let prompt = resolved.prompt;
+    let system_prompt =
+        crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentText);
     let auto_switch = crate::config::kernel_config().exec.auto_switch;
 
     let _ = model_catalog.refresh();
@@ -102,40 +106,37 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
     }
 
     if runtime_id.is_none() && runtime_registry.current_engine().is_none() {
-        match model_catalog.resolve_load_target("") {
-            Ok(target) => {
-                match activate_model_target(
-                    runtime_registry,
-                    resource_governor,
-                    session_registry,
-                    storage,
-                    model_catalog,
-                    &target,
-                ) {
-                    Ok(loaded) => {
-                        runtime_id = Some(loaded.runtime_id);
-                    }
-                    Err(ModelActivationError::Busy(e)) => {
-                        return Some(protocol::response_protocol_err_typed(
-                            client,
-                            request_id,
-                            ControlErrorCode::LoadBusy,
-                            protocol::schema::ERROR,
-                            &e,
-                        ));
-                    }
-                    Err(ModelActivationError::Failed(e)) => {
-                        return Some(protocol::response_protocol_err_typed(
-                            client,
-                            request_id,
-                            ControlErrorCode::LoadFailed,
-                            protocol::schema::ERROR,
-                            &e,
-                        ));
-                    }
+        if let Ok(target) = model_catalog.resolve_load_target("") {
+            match activate_model_target(
+                runtime_registry,
+                resource_governor,
+                session_registry,
+                storage,
+                model_catalog,
+                &target,
+            ) {
+                Ok(loaded) => {
+                    runtime_id = Some(loaded.runtime_id);
+                }
+                Err(ModelActivationError::Busy(e)) => {
+                    return Some(protocol::response_protocol_err_typed(
+                        client,
+                        request_id,
+                        ControlErrorCode::LoadBusy,
+                        protocol::schema::ERROR,
+                        &e,
+                    ));
+                }
+                Err(ModelActivationError::Failed(e)) => {
+                    return Some(protocol::response_protocol_err_typed(
+                        client,
+                        request_id,
+                        ControlErrorCode::LoadFailed,
+                        protocol::schema::ERROR,
+                        &e,
+                    ));
                 }
             }
-            Err(_) => {}
         }
     }
 
@@ -167,6 +168,7 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                 storage,
                 ManagedProcessRequest {
                     prompt: prompt.clone(),
+                    system_prompt: Some(system_prompt.clone()),
                     owner_id: client_id,
                     workload,
                     required_backend_class: None,

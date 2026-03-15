@@ -492,6 +492,8 @@ Quando un processo genera una linea canonica `TOOL:<name> <json-object>` oppure 
 
 `TOOL:` e' riservato ai tool registrati nel `ToolRegistry`. Il parser testuale e' solo un adapter verso una `ToolInvocation` strutturata, cosi' lo stesso contratto puo' essere riusato in futuro da Programmatic Tool Calling.
 
+All'avvio di ogni nuovo processo agentico, il kernel costruisce un manifest dinamico dei tool visibili per il caller (`ToolCaller`) partendo dal registry reale e lo trasforma in un system prompt operativo. Questo evita drift tra prompt statici e stato del registry: l'agente vede solo i tool abilitati e autorizzati per il proprio caller.
+
 | Tool | Pattern | Descrizione |
 |------|---------|-------------|
 | Python | `TOOL:python {"code":"print(1)"}` | Esegue script Python (host/container) |
@@ -508,6 +510,17 @@ Quando un processo genera una linea canonica `TOOL:<name> <json-object>` oppure 
 |--------|---------|-------------|
 | Spawn | `ACTION:spawn {"prompt":"..."}` | Crea sotto-processo LLM |
 | Send | `ACTION:send {"pid":42,"message":"..."}` | Invia messaggio inter-processo |
+
+Anche le action esposte all'agente entrano nel manifest dinamico, ma restano semanticamente separate dai tool: `TOOL:` usa implementazioni registrate nel tool plane, `ACTION:` muta il grafo dei processi/runtime.
+
+### Manifest, caller e trasporto
+
+- **Manifest dinamico**: `ToolRegistry` + descriptor action costruiscono un manifest serializzabile con sintassi canonica, descrizioni e input example reali.
+- **Caller-aware visibility**: `allowed_callers` filtra sia l'esposizione nel manifest sia l'autorizzazione nel dispatcher.
+- **Transport-agnostic core**: esistono due ingressi equivalenti verso lo stesso dispatcher:
+  - testo agente -> parser -> `ToolInvocation`
+  - invocazione strutturata -> `ToolInvocation`
+- **Audit minimo**: il log JSONL dei tool include caller, transport (`text` o `structured`) e nome tool, cosi' il workspace puo' distinguere come e da chi e' arrivata l'invocazione.
 
 ### Modalità sandbox
 

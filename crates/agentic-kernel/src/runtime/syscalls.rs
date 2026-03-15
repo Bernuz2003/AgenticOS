@@ -10,6 +10,7 @@ use crate::services::process_runtime::{
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
+use crate::tools::invocation::ToolCaller;
 use crate::tools::{handle_syscall, SysCallOutcome, SyscallRateMap};
 use crate::{audit, audit::AuditContext};
 use agentic_control_models::KernelEvent;
@@ -148,33 +149,32 @@ pub(super) fn dispatch_process_syscall(
 
     if content.starts_with("ACTION:") {
         match actions::parse_text_invocation(content) {
-            Ok(invocation) => {
-                return dispatch_action_invocation(
-                    runtime_id,
-                    pid_floor,
-                    engine,
-                    memory,
-                    scheduler,
-                    pid,
-                    invocation,
-                    session_registry,
-                    storage,
-                    pending_events,
-                );
-            }
+            Ok(invocation) => dispatch_action_invocation(
+                runtime_id,
+                pid_floor,
+                engine,
+                memory,
+                scheduler,
+                pid,
+                invocation,
+                session_registry,
+                storage,
+                pending_events,
+                tool_registry,
+            ),
             Err(err) => {
                 let _ = engine.inject_context(
                     pid,
                     &engine.format_system_message(&format!("ACTION Error: {}", err)),
                 );
-                return SyscallDispatchOutcome::None;
+                SyscallDispatchOutcome::None
             }
         }
     } else {
         audit::record(
             storage,
             audit::TOOL_DISPATCHED,
-            format!("command={content}"),
+            format!("command={content} caller=agent_text transport=text"),
             AuditContext::for_process(
                 session_registry.session_id_for_pid(pid),
                 pid,
@@ -221,6 +221,7 @@ fn dispatch_action_invocation(
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
     pending_events: &mut Vec<KernelEvent>,
+    tool_registry: &ToolRegistry,
 ) -> SyscallDispatchOutcome {
     match invocation.action {
         ActionName::Spawn => {
@@ -248,6 +249,7 @@ fn dispatch_action_invocation(
                 session_registry,
                 storage,
                 pending_events,
+                tool_registry,
             )
         }
         ActionName::Send => {
@@ -292,6 +294,7 @@ fn dispatch_spawn_action(
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
     pending_events: &mut Vec<KernelEvent>,
+    tool_registry: &ToolRegistry,
 ) -> SyscallDispatchOutcome {
     let prompt = prompt.trim();
     if prompt.is_empty() {
@@ -336,6 +339,10 @@ fn dispatch_spawn_action(
         storage,
         ManagedProcessRequest {
             prompt: prompt.to_string(),
+            system_prompt: Some(crate::agent_prompt::build_agent_system_prompt(
+                tool_registry,
+                ToolCaller::AgentText,
+            )),
             owner_id,
             workload,
             required_backend_class: None,
@@ -442,7 +449,7 @@ pub(super) fn drain_syscall_results(
                     storage,
                     audit::TOOL_KILLED,
                     format!(
-                        "command={} duration_ms={} success={} detail={}",
+                        "command={} caller=agent_text transport=text duration_ms={} success={} detail={}",
                         completion.command,
                         completion.outcome.duration_ms,
                         completion.outcome.success,
@@ -479,7 +486,7 @@ pub(super) fn drain_syscall_results(
                     storage,
                     spec,
                     format!(
-                        "command={} duration_ms={} detail={}",
+                        "command={} caller=agent_text transport=text duration_ms={} detail={}",
                         completion.command,
                         completion.outcome.duration_ms,
                         completion.outcome.output

@@ -95,6 +95,7 @@ fn remote_stateless_processes_skip_resident_slot_binding() {
         &mut scheduler,
         ManagedProcessRequest {
             prompt: "ping cloud backend".to_string(),
+            system_prompt: None,
             owner_id: 7,
             workload: WorkloadClass::Fast,
             required_backend_class: Some(BackendClass::RemoteStateless),
@@ -152,6 +153,7 @@ fn remote_stateless_engine_rejects_resident_local_task_policy() {
         &mut scheduler,
         ManagedProcessRequest {
             prompt: "this task expects residency".to_string(),
+            system_prompt: None,
             owner_id: 7,
             workload: WorkloadClass::Code,
             required_backend_class: Some(BackendClass::ResidentLocal),
@@ -192,6 +194,7 @@ fn resident_local_engine_rejects_remote_stateless_task_policy() {
         &mut scheduler,
         ManagedProcessRequest {
             prompt: "this task expects cloud execution".to_string(),
+            system_prompt: None,
             owner_id: 7,
             workload: WorkloadClass::Fast,
             required_backend_class: Some(BackendClass::RemoteStateless),
@@ -206,4 +209,59 @@ fn resident_local_engine_rejects_remote_stateless_task_policy() {
 
     assert!(err.contains("remote_stateless"));
     assert!(err.contains("resident_local"));
+}
+
+#[test]
+fn spawn_managed_process_injects_system_prompt_without_losing_user_prompt() {
+    let _openai = TestOpenAIConfigOverrideGuard::set(test_openai_config());
+    let driver_resolution =
+        resolve_driver_for_model(PromptFamily::Unknown, None, Some("openai-responses"))
+            .expect("resolve openai backend");
+    let target = ResolvedModelTarget::remote(
+        "openai-responses",
+        "OpenAI",
+        "openai-responses",
+        "gpt-4.1-mini",
+        RemoteModelEntry {
+            id: "gpt-4.1-mini".to_string(),
+            label: "GPT-4.1 mini".to_string(),
+            context_window_tokens: None,
+            max_output_tokens: None,
+            supports_structured_output: true,
+            input_price_usd_per_mtok: None,
+            output_price_usd_per_mtok: None,
+        },
+        test_openai_config().into(),
+        None,
+        driver_resolution,
+    );
+
+    let mut engine = LLMEngine::load_target(&target).expect("load remote stateless engine");
+    let mut memory = NeuralMemory::new().expect("memory init");
+    let mut scheduler = ProcessScheduler::new();
+
+    let spawned = spawn_managed_process(
+        &mut engine,
+        &mut memory,
+        &mut scheduler,
+        ManagedProcessRequest {
+            prompt: "user task".to_string(),
+            system_prompt: Some("kernel policy".to_string()),
+            owner_id: 7,
+            workload: WorkloadClass::Fast,
+            required_backend_class: Some(BackendClass::RemoteStateless),
+            priority: ProcessPriority::Normal,
+            lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+            context_policy: None,
+        },
+    )
+    .expect("spawn managed process");
+
+    let process = engine
+        .processes
+        .get(&spawned.pid)
+        .expect("spawned process present");
+
+    assert!(process.prompt_text().contains("kernel policy"));
+    assert!(process.prompt_text().contains("user task"));
 }

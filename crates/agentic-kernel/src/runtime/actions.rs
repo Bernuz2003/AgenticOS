@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -9,10 +9,28 @@ pub(crate) enum ActionName {
     Send,
 }
 
+impl ActionName {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Spawn => "spawn",
+            Self::Send => "send",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ActionInvocation {
     pub(crate) action: ActionName,
     pub(crate) input: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ActionDescriptor {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) input_schema: Value,
+    pub(crate) input_example: Value,
+    pub(crate) notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Error, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,6 +57,41 @@ pub(crate) fn parse_text_invocation(text: &str) -> Result<ActionInvocation, Acti
 
 pub(crate) fn is_streaming_action_invocation(text: &str) -> bool {
     crate::text_invocation::is_streaming_prefixed_json_invocation(text, "ACTION:")
+}
+
+pub(crate) fn builtin_action_descriptors() -> Vec<ActionDescriptor> {
+    vec![
+        ActionDescriptor {
+            name: ActionName::Spawn.as_str().to_string(),
+            description: "Create a child LLM process under the current runtime binding."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["prompt"],
+                "properties": {
+                    "prompt": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+            input_example: json!({"prompt": "string"}),
+            notes: vec!["Actions mutate the runtime/process graph and are not tools.".to_string()],
+        },
+        ActionDescriptor {
+            name: ActionName::Send.as_str().to_string(),
+            description: "Send a message to another running PID.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["pid", "message"],
+                "properties": {
+                    "pid": {"type": "integer", "minimum": 0},
+                    "message": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+            input_example: json!({"pid": 0, "message": "string"}),
+            notes: vec!["Use this only when you already know the target PID.".to_string()],
+        },
+    ]
 }
 
 #[cfg(test)]

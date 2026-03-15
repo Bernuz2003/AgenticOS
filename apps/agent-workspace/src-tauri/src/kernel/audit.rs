@@ -13,6 +13,9 @@ pub struct AuditLogEntry {
     pub success: bool,
     pub should_kill: bool,
     pub duration_ms: u128,
+    pub caller: Option<String>,
+    pub transport: Option<String>,
+    pub tool_name: Option<String>,
     pub command: String,
     pub detail: String,
 }
@@ -23,6 +26,9 @@ struct AuditLogJsonLine {
     success: bool,
     kill: bool,
     duration_ms: u128,
+    caller: Option<String>,
+    transport: Option<String>,
+    tool_name: Option<String>,
     cmd: String,
     detail: String,
 }
@@ -56,6 +62,9 @@ fn parse_audit_log_line(line: &str) -> Option<AuditLogEntry> {
             success: json_line.success,
             should_kill: json_line.kill,
             duration_ms: json_line.duration_ms,
+            caller: json_line.caller,
+            transport: json_line.transport,
+            tool_name: json_line.tool_name,
             command: json_line.cmd,
             detail: json_line.detail,
         });
@@ -66,6 +75,9 @@ fn parse_audit_log_line(line: &str) -> Option<AuditLogEntry> {
         success: extract_unquoted(line, "success=")?.parse().ok()?,
         should_kill: extract_unquoted(line, "kill=")?.parse().ok()?,
         duration_ms: extract_unquoted(line, "duration_ms=")?.parse().ok()?,
+        caller: None,
+        transport: None,
+        tool_name: None,
         command: unescape_log_string(extract_quoted(line, "cmd=")?),
         detail: unescape_log_string(extract_quoted(line, "detail=")?),
     })
@@ -100,16 +112,20 @@ mod tests {
         let parsed = parse_audit_log_line(line).expect("parse audit line");
         assert_eq!(parsed.pid, 7);
         assert!(parsed.success);
+        assert_eq!(parsed.caller, None);
         assert_eq!(parsed.command, "[[PYTHON: print(1)]]");
         assert_eq!(parsed.detail, "Output:\n1");
     }
 
     #[test]
     fn parse_audit_log_line_supports_jsonl_with_quotes() {
-        let line = r#"{"format":"jsonl-v1","ts_ms":1,"pid":9,"mode":"Host","success":true,"kill":false,"duration_ms":7,"cmd":"TOOL:python {\"code\":\"print(\\\"hi\\\")\"}","detail":"{\"ok\":true}"}"#;
+        let line = r#"{"format":"jsonl-v1","ts_ms":1,"pid":9,"mode":"Host","caller":"agent_text","transport":"text","tool_name":"python","success":true,"kill":false,"duration_ms":7,"cmd":"TOOL:python {\"code\":\"print(\\\"hi\\\")\"}","detail":"{\"ok\":true}"}"#;
         let parsed = parse_audit_log_line(line).expect("parse jsonl audit line");
         assert_eq!(parsed.pid, 9);
         assert!(parsed.success);
+        assert_eq!(parsed.caller.as_deref(), Some("agent_text"));
+        assert_eq!(parsed.transport.as_deref(), Some("text"));
+        assert_eq!(parsed.tool_name.as_deref(), Some("python"));
         assert_eq!(parsed.command, r#"TOOL:python {"code":"print(\"hi\")"}"#);
         assert_eq!(parsed.detail, r#"{"ok":true}"#);
     }

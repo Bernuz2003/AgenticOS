@@ -19,6 +19,8 @@ use crate::services::process_runtime::{
 };
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
+use crate::tool_registry::ToolRegistry;
+use crate::tools::invocation::ToolCaller;
 use crate::transport::Client;
 use crate::{protocol, scheduler::CheckedOutProcessMetadata};
 
@@ -141,8 +143,11 @@ pub(super) fn advance_orchestrator(
     pending_kills: &mut Vec<u64>,
     pending_events: &mut Vec<KernelEvent>,
     _cmd_tx: &mpsc::Sender<InferenceCmd>,
+    tool_registry: &ToolRegistry,
 ) {
     let (spawn_requests, kill_pids) = orchestrator.advance();
+    let system_prompt =
+        crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentText);
 
     for pid in kill_pids {
         tracing::warn!(pid, "ORCHESTRATOR: killing task (fail_fast policy)");
@@ -254,6 +259,7 @@ pub(super) fn advance_orchestrator(
                 storage,
                 ManagedProcessRequest {
                     prompt: req.prompt.clone(),
+                    system_prompt: Some(system_prompt.clone()),
                     owner_id: req.owner_id,
                     workload: req.workload,
                     required_backend_class: req.required_backend_class,

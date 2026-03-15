@@ -110,6 +110,40 @@ pub fn format_user_message_with_metadata(
     fallback_user_turn(content, family)
 }
 
+pub fn format_initial_prompt_with_metadata(
+    system_content: Option<&str>,
+    user_content: &str,
+    family: PromptFamily,
+    metadata: Option<&ModelMetadata>,
+) -> String {
+    let system_content = system_content
+        .map(str::trim)
+        .filter(|content| !content.is_empty());
+    let messages = match system_content {
+        Some(system) => vec![
+            ChatMessage {
+                role: "system",
+                content: system,
+            },
+            ChatMessage {
+                role: "user",
+                content: user_content,
+            },
+        ],
+        None => vec![ChatMessage {
+            role: "user",
+            content: user_content,
+        }],
+    };
+
+    if let Some(template) = metadata.and_then(|meta| meta.chat_template.as_deref()) {
+        return render_chat_messages(family, metadata, template, &messages)
+            .unwrap_or_else(|| fallback_initial_prompt(system_content, user_content, family));
+    }
+
+    fallback_initial_prompt(system_content, user_content, family)
+}
+
 pub fn format_interprocess_user_message_with_metadata(
     from_pid: u64,
     message: &str,
@@ -147,6 +181,21 @@ fn render_single_chat_turn(
     ))
 }
 
+fn render_chat_messages(
+    family: PromptFamily,
+    metadata: Option<&ModelMetadata>,
+    template: &str,
+    messages: &[ChatMessage<'_>],
+) -> Option<String> {
+    if looks_like_jinja(template) {
+        return render_jinja_chat_template(template, messages, metadata);
+    }
+
+    Some(render_placeholder_chat_messages(
+        messages, family, metadata, template,
+    ))
+}
+
 fn render_placeholder_chat_turn(
     role: &str,
     content: &str,
@@ -168,6 +217,29 @@ fn render_placeholder_chat_turn(
     } else {
         format!("{}{}", rendered, assistant_preamble)
     }
+}
+
+fn render_placeholder_chat_messages(
+    messages: &[ChatMessage<'_>],
+    family: PromptFamily,
+    metadata: Option<&ModelMetadata>,
+    template: &str,
+) -> String {
+    let assistant_preamble = metadata
+        .and_then(|meta| meta.assistant_preamble.clone())
+        .unwrap_or_else(|| default_assistant_preamble(family));
+    let mut rendered = String::new();
+
+    for message in messages {
+        rendered.push_str(
+            &template
+                .replace("{role}", message.role)
+                .replace("{content}", message.content)
+                .replace("{assistant_preamble}", ""),
+        );
+    }
+
+    format!("{}{}", rendered, assistant_preamble)
 }
 
 fn render_jinja_chat_template(
@@ -229,6 +301,31 @@ fn fallback_user_turn(content: &str, family: PromptFamily) -> String {
         ),
         PromptFamily::Mistral => format!("[INST] {} [/INST]", content),
         PromptFamily::Unknown => format!("\n[user]\n{}\n[/user]\n", content),
+    }
+}
+
+fn fallback_initial_prompt(
+    system_content: Option<&str>,
+    user_content: &str,
+    family: PromptFamily,
+) -> String {
+    match (family, system_content) {
+        (PromptFamily::Llama, Some(system)) => format!(
+            "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{}\n<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{}\n<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n",
+            system, user_content
+        ),
+        (PromptFamily::Qwen, Some(system)) => format!(
+            "<|im_start|>system\n{}\n<|im_end|>\n<|im_start|>user\n{}\n<|im_end|>\n<|im_start|>assistant\n",
+            system, user_content
+        ),
+        (PromptFamily::Mistral, Some(system)) => {
+            format!("[INST] [SYSTEM] {} [/SYSTEM]\n{} [/INST]", system, user_content)
+        }
+        (PromptFamily::Unknown, Some(system)) => format!(
+            "\n[system]\n{}\n[/system]\n[user]\n{}\n[/user]\n[assistant]\n",
+            system, user_content
+        ),
+        (_, None) => fallback_user_turn(user_content, family),
     }
 }
 

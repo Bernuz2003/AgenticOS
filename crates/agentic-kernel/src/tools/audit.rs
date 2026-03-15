@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::config::kernel_config;
 use serde::Serialize;
 
+use super::invocation::ToolContext;
 use super::path_guard::workspace_root;
 use super::policy::SandboxMode;
 
@@ -13,6 +14,9 @@ struct AuditLogLine<'a> {
     ts_ms: u128,
     pid: u64,
     mode: &'a str,
+    caller: &'a str,
+    transport: &'a str,
+    tool_name: Option<&'a str>,
     success: bool,
     kill: bool,
     duration_ms: u128,
@@ -20,15 +24,19 @@ struct AuditLogLine<'a> {
     detail: &'a str,
 }
 
-pub(crate) fn append_audit_log(
-    pid: u64,
-    mode: SandboxMode,
-    command: &str,
-    success: bool,
-    duration_ms: u128,
-    should_kill: bool,
-    detail: &str,
-) {
+pub(crate) struct ToolAuditRecord<'a> {
+    pub(crate) pid: u64,
+    pub(crate) mode: SandboxMode,
+    pub(crate) command: &'a str,
+    pub(crate) success: bool,
+    pub(crate) duration_ms: u128,
+    pub(crate) should_kill: bool,
+    pub(crate) detail: &'a str,
+    pub(crate) context: &'a ToolContext,
+    pub(crate) tool_name: Option<&'a str>,
+}
+
+pub(crate) fn append_audit_log(record: ToolAuditRecord<'_>) {
     let root = match workspace_root() {
         Ok(path) => path,
         Err(_) => return,
@@ -39,22 +47,35 @@ pub(crate) fn append_audit_log(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Duration::from_secs(0))
         .as_millis();
-    let mode_label = format!("{mode:?}");
+    let mode_label = format!("{:?}", record.mode);
     let line = serde_json::to_string(&AuditLogLine {
         format: "jsonl-v1",
         ts_ms: ts,
-        pid,
+        pid: record.pid,
         mode: &mode_label,
-        success,
-        kill: should_kill,
-        duration_ms,
-        cmd: command,
-        detail,
+        caller: record.context.caller.as_str(),
+        transport: record.context.transport.as_str(),
+        tool_name: record.tool_name,
+        success: record.success,
+        kill: record.should_kill,
+        duration_ms: record.duration_ms,
+        cmd: record.command,
+        detail: record.detail,
     })
     .unwrap_or_else(|_| {
         format!(
-            "{{\"format\":\"jsonl-v1\",\"ts_ms\":{},\"pid\":{},\"mode\":\"{:?}\",\"success\":{},\"kill\":{},\"duration_ms\":{},\"cmd\":{:?},\"detail\":{:?}}}",
-            ts, pid, mode, success, should_kill, duration_ms, command, detail
+            "{{\"format\":\"jsonl-v1\",\"ts_ms\":{},\"pid\":{},\"mode\":\"{:?}\",\"caller\":{:?},\"transport\":{:?},\"tool_name\":{:?},\"success\":{},\"kill\":{},\"duration_ms\":{},\"cmd\":{:?},\"detail\":{:?}}}",
+            ts,
+            record.pid,
+            record.mode,
+            record.context.caller.as_str(),
+            record.context.transport.as_str(),
+            record.tool_name,
+            record.success,
+            record.should_kill,
+            record.duration_ms,
+            record.command,
+            record.detail
         )
     }) + "\n";
 

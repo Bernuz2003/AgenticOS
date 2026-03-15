@@ -7,12 +7,7 @@ use crate::tools::invocation::ToolInvocation;
 pub fn parse_text_invocation(text: &str) -> Result<ToolInvocation, ToolError> {
     let (name, input) = crate::text_invocation::parse_prefixed_json_invocation(text, "TOOL:")
         .map_err(ToolError::MalformedInvocation)?;
-
-    Ok(ToolInvocation {
-        name,
-        input,
-        call_id: None,
-    })
+    crate::tools::executor::build_structured_invocation(name, input, None)
 }
 
 /// Controlla se il testo corrente che inizia per "TOOL:" sta ancora streammando.

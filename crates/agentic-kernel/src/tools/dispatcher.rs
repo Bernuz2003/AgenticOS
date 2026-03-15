@@ -119,7 +119,9 @@ mod tests {
         ToolRegistryEntry, ToolSource,
     };
     use crate::tools::error::ToolError;
-    use crate::tools::invocation::{ToolCaller, ToolContext, ToolInvocation};
+    use crate::tools::invocation::{
+        ToolCaller, ToolContext, ToolInvocation, ToolInvocationTransport,
+    };
 
     fn register_host_tool(
         registry: &mut ToolRegistry,
@@ -180,6 +182,7 @@ mod tests {
             pid: Some(1),
             session_id: None,
             caller: ToolCaller::AgentText,
+            transport: ToolInvocationTransport::Text,
         };
 
         let err = dispatcher
@@ -214,6 +217,7 @@ mod tests {
             pid: Some(1),
             session_id: None,
             caller: ToolCaller::AgentText,
+            transport: ToolInvocationTransport::Text,
         };
 
         let err = dispatcher

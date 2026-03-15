@@ -12,6 +12,8 @@ use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::services::model_runtime::activate_model_target;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
+use crate::tool_registry::ToolRegistry;
+use crate::tools::invocation::ToolCaller;
 
 use super::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
 
@@ -43,11 +45,14 @@ pub fn start_orchestration(
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
     pending_events: &mut Vec<KernelEvent>,
+    tool_registry: &ToolRegistry,
     owner_id: usize,
     graph: TaskGraphDef,
 ) -> Result<OrchestrationStartResult, OrchestrationStartError> {
     let total_tasks = graph.tasks.len();
     let (orch_id, spawn_requests) = orchestrator.register(graph, owner_id)?;
+    let system_prompt =
+        crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentText);
 
     let mut spawned = 0usize;
     for req in spawn_requests {
@@ -74,6 +79,7 @@ pub fn start_orchestration(
                 storage,
                 ManagedProcessRequest {
                     prompt: req.prompt.clone(),
+                    system_prompt: Some(system_prompt.clone()),
                     owner_id: req.owner_id,
                     workload: req.workload,
                     required_backend_class: req.required_backend_class,

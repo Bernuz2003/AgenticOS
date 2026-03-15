@@ -69,6 +69,7 @@ fn parallel_sessions_can_bind_to_different_runtime_backends() {
             &mut storage,
             ManagedProcessRequest {
                 prompt: "ping remote backend".to_string(),
+                system_prompt: None,
                 owner_id: 10,
                 workload: WorkloadClass::Fast,
                 required_backend_class: Some(BackendClass::RemoteStateless),
@@ -98,6 +99,7 @@ fn parallel_sessions_can_bind_to_different_runtime_backends() {
             &mut storage,
             ManagedProcessRequest {
                 prompt: "ping local backend".to_string(),
+                system_prompt: None,
                 owner_id: 11,
                 workload: WorkloadClass::General,
                 required_backend_class: Some(BackendClass::ResidentLocal),
@@ -139,6 +141,66 @@ fn parallel_sessions_can_bind_to_different_runtime_backends() {
     );
 
     let _ = fs::remove_file(tokenizer_path);
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn session_title_uses_user_prompt_not_system_prompt() {
+    let _openai = TestOpenAIConfigOverrideGuard::set(test_openai_config());
+    let dir = make_temp_dir("agenticos-runtime-registry-title");
+    let db_path = dir.join("agenticos.db");
+
+    let mut storage = StorageService::open(&db_path).expect("open storage");
+    let boot = storage
+        .record_kernel_boot("0.5.0-test")
+        .expect("record boot");
+    let mut runtime_registry = RuntimeRegistry::load(&mut storage).expect("load runtimes");
+    let mut session_registry =
+        SessionRegistry::load(&mut storage, boot.boot_id).expect("load sessions");
+    let mut memory = NeuralMemory::new().expect("memory init");
+    let mut scheduler = ProcessScheduler::new();
+
+    let runtime = runtime_registry
+        .activate_target(
+            &mut storage,
+            &remote_target(),
+            RuntimeReservation::default(),
+        )
+        .expect("activate remote runtime");
+
+    let spawned = {
+        let pid_floor = runtime_registry.next_pid_floor();
+        let engine = runtime_registry
+            .engine_mut(&runtime.runtime_id)
+            .expect("remote engine");
+        spawn_managed_process_with_session(
+            &runtime.runtime_id,
+            pid_floor,
+            engine,
+            &mut memory,
+            &mut scheduler,
+            &mut session_registry,
+            &mut storage,
+            ManagedProcessRequest {
+                prompt: "Solve the task".to_string(),
+                system_prompt: Some("Tool syntax: TOOL:<name> <json-object>.".to_string()),
+                owner_id: 10,
+                workload: WorkloadClass::Fast,
+                required_backend_class: Some(BackendClass::RemoteStateless),
+                priority: ProcessPriority::Normal,
+                lifecycle_policy: ProcessLifecyclePolicy::Interactive,
+                context_policy: None,
+            },
+        )
+        .expect("spawn remote session")
+    };
+
+    let session = session_registry
+        .session(&spawned.session_id)
+        .expect("session should exist");
+    assert!(session.title.contains("Solve the task"));
+    assert!(!session.title.contains("Tool syntax"));
+
     let _ = fs::remove_dir_all(dir);
 }
 

@@ -48,6 +48,8 @@ Il dettaglio storico fine-grained vive nella git history e nei documenti di crit
 - `ToolDescriptor` + `ToolBackendConfig` + `ToolRegistry` in-memory con bootstrap built-in.
 - OpCodes: `REGISTER_TOOL`, `UNREGISTER_TOOL`, `LIST_TOOLS`, `TOOL_INFO`.
 - Invocazione canonica separata per piani distinti: `TOOL:<name> <json-object>` per il tool plane e `ACTION:<name> <json-object>` per il runtime/process-control plane.
+- Manifest dinamico tool/action derivato dal registry reale e usato nel bootstrap dei nuovi agenti.
+- Path structured interno parallelo al parser testuale, convergente sulla stessa `ToolInvocation` e sullo stesso dispatcher.
 - Backend `remote_http` con policy di sicurezza (allowlist, timeout, payload/header checks).
 - Integrazione GUI completa (list/info/register/unregister) + test parser/client.
 - Validazione: `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, test Python GUI.

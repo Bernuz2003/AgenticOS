@@ -27,6 +27,7 @@ pub(crate) fn handle_orchestrate(
                 ctx.session_registry,
                 ctx.storage,
                 ctx.pending_events,
+                ctx.tool_registry,
                 ctx.client_id,
                 graph,
             ) {

@@ -17,6 +17,7 @@ pub struct ManagedProcessSpawn {
 
 pub struct ManagedProcessRequest {
     pub prompt: String,
+    pub system_prompt: Option<String>,
     pub owner_id: usize,
     pub workload: WorkloadClass,
     pub required_backend_class: Option<BackendClass>,
@@ -106,20 +107,27 @@ pub fn spawn_managed_process(
     scheduler: &mut ProcessScheduler,
     request: ManagedProcessRequest,
 ) -> Result<ManagedProcessSpawn, String> {
-    validate_backend_class_policy(
-        engine.loaded_backend_class(),
-        request.required_backend_class,
-    )?;
+    let ManagedProcessRequest {
+        prompt,
+        system_prompt,
+        owner_id,
+        workload,
+        required_backend_class,
+        priority,
+        lifecycle_policy,
+        context_policy,
+    } = request;
 
-    let context_policy = request
-        .context_policy
-        .unwrap_or_else(ContextPolicy::from_kernel_defaults);
+    validate_backend_class_policy(engine.loaded_backend_class(), required_backend_class)?;
+
+    let context_policy = context_policy.unwrap_or_else(ContextPolicy::from_kernel_defaults);
     let pid = engine
         .spawn_process(
-            &request.prompt,
+            &prompt,
+            system_prompt.as_deref(),
             0,
-            request.owner_id,
-            request.lifecycle_policy,
+            owner_id,
+            lifecycle_policy,
             context_policy,
         )
         .map_err(|e| e.to_string())?;
@@ -153,7 +161,7 @@ pub fn spawn_managed_process(
         );
     }
 
-    scheduler.register(pid, request.workload, request.priority);
+    scheduler.register(pid, workload, priority);
     Ok(ManagedProcessSpawn {
         session_id: format!("pid-{pid}"),
         runtime_id: String::new(),

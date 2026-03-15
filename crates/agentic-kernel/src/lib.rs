@@ -1,4 +1,6 @@
 mod accounting;
+mod agent_capabilities;
+mod agent_prompt;
 mod audit;
 mod backend;
 mod checkpoint;

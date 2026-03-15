@@ -662,9 +662,24 @@ fn tool_result_item(session_id: &str, item_index: usize, entry: &AuditLogEntry) 
         .trim_end_matches("]]")
         .to_string();
     let status = if entry.success { "success" } else { "error" };
+    let mut metadata = vec![format!(
+        "duration_ms={} kill={}",
+        entry.duration_ms, entry.should_kill
+    )];
+    if let Some(tool_name) = entry.tool_name.as_deref() {
+        metadata.push(format!("tool={tool_name}"));
+    }
+    if let Some(caller) = entry.caller.as_deref() {
+        metadata.push(format!("caller={caller}"));
+    }
+    if let Some(transport) = entry.transport.as_deref() {
+        metadata.push(format!("transport={transport}"));
+    }
     let text = format!(
-        "Command: {}\n\n{}\n\nduration_ms={} kill={}",
-        normalized_command, entry.detail, entry.duration_ms, entry.should_kill
+        "Command: {}\n\n{}\n\n{}",
+        normalized_command,
+        entry.detail,
+        metadata.join(" ")
     );
     TimelineItem {
         id: format!("{}-tool-result-{}", session_id, item_index),
@@ -836,6 +851,9 @@ mod tests {
             success: true,
             should_kill: false,
             duration_ms: 4,
+            caller: Some("agent_text".to_string()),
+            transport: Some("text".to_string()),
+            tool_name: Some("calc".to_string()),
             command: "[[CALC: 2 + 2]]".to_string(),
             detail: "Output:\n4".to_string(),
         }];

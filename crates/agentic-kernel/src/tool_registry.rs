@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{normalize_tool_name, ToolCaller};
 use crate::tools::schema::ensure_valid_schema;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -105,7 +105,7 @@ impl ToolRegistry {
     pub fn register(&mut self, entry: ToolRegistryEntry) -> Result<(), String> {
         validate_entry(&entry)?;
 
-        let canonical_name = normalize_name(&entry.descriptor.name)?;
+        let canonical_name = normalize_tool_name(&entry.descriptor.name)?;
         if self.entries.contains_key(&canonical_name) {
             return Err(format!(
                 "Tool '{}' is already registered.",
@@ -115,7 +115,7 @@ impl ToolRegistry {
 
         let mut normalized_aliases = Vec::new();
         for alias in &entry.descriptor.aliases {
-            let normalized_alias = normalize_name(alias)?;
+            let normalized_alias = normalize_tool_name(alias)?;
             if normalized_alias == canonical_name {
                 continue;
             }
@@ -174,7 +174,7 @@ impl ToolRegistry {
     }
 
     fn resolve_canonical_name(&self, name: &str) -> Option<String> {
-        let normalized = normalize_name(name).ok()?;
+        let normalized = normalize_tool_name(name).ok()?;
         if self.entries.contains_key(&normalized) {
             Some(normalized)
         } else {
@@ -281,24 +281,6 @@ fn validate_entry(entry: &ToolRegistryEntry) -> Result<(), String> {
 
 fn default_allowed_callers() -> Vec<ToolCaller> {
     vec![ToolCaller::AgentText]
-}
-
-fn normalize_name(name: &str) -> Result<String, String> {
-    let normalized = name.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return Err("Tool name cannot be empty.".to_string());
-    }
-    if normalized
-        .chars()
-        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-' | '.'))
-    {
-        Ok(normalized)
-    } else {
-        Err(format!(
-            "Invalid tool name '{}'. Allowed characters: a-z, 0-9, '_', '-', '.'.",
-            name
-        ))
-    }
 }
 
 fn builtin_entries() -> Vec<ToolRegistryEntry> {

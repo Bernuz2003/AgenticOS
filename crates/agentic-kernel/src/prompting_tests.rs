@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use crate::model_catalog::ModelMetadata;
 
 use super::{
-    format_interprocess_user_message_with_metadata, format_system_injection_with_metadata,
-    format_user_message_with_metadata, should_stop_on_text_with_metadata, PromptFamily,
+    format_initial_prompt_with_metadata, format_interprocess_user_message_with_metadata,
+    format_system_injection_with_metadata, format_user_message_with_metadata,
+    should_stop_on_text_with_metadata, PromptFamily,
 };
 
 #[test]
@@ -100,4 +101,40 @@ fn jinja_chat_template_renders_messages_and_generation_prompt() {
         format_user_message_with_metadata("dimmi ciao", PromptFamily::Qwen, Some(&metadata));
 
     assert_eq!(rendered, "<user>dimmi ciao</user><assistant>");
+}
+
+#[test]
+fn initial_prompt_combines_system_and_user_without_duplicate_assistant_turns() {
+    let rendered = format_initial_prompt_with_metadata(
+        Some("system policy"),
+        "do the task",
+        PromptFamily::Qwen,
+        None,
+    );
+
+    assert!(rendered.contains("<|im_start|>system"));
+    assert!(rendered.contains("<|im_start|>user"));
+    assert_eq!(rendered.matches("<|im_start|>assistant").count(), 1);
+}
+
+#[test]
+fn initial_prompt_uses_metadata_template_for_multiple_messages() {
+    let metadata = ModelMetadata {
+        chat_template: Some(
+            "{% for message in messages %}<{{ message.role }}>{{ message.content }}</{{ message.role }}>{% endfor %}{% if add_generation_prompt %}<assistant>{% endif %}".to_string(),
+        ),
+        ..Default::default()
+    };
+
+    let rendered = format_initial_prompt_with_metadata(
+        Some("policy"),
+        "question",
+        PromptFamily::Qwen,
+        Some(&metadata),
+    );
+
+    assert_eq!(
+        rendered,
+        "<system>policy</system><user>question</user><assistant>"
+    );
 }

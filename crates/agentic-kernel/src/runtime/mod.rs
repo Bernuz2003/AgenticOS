@@ -218,6 +218,7 @@ pub fn run_engine_tick(
         pending_kills,
         pending_events,
         cmd_tx,
+        tool_registry,
     );
 }
 

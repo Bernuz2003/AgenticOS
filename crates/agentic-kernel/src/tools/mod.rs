@@ -8,6 +8,7 @@ pub mod api;
 pub mod audit;
 pub mod dispatcher;
 pub mod error;
+pub mod executor;
 pub mod invocation;
 pub mod parser;
 pub mod path_guard;
@@ -15,7 +16,7 @@ pub mod policy;
 pub mod runner;
 pub mod schema;
 
-use audit::append_audit_log;
+use audit::{append_audit_log, ToolAuditRecord};
 use path_guard::workspace_root;
 use policy::{rate_limit_postcheck, rate_limit_precheck, syscall_config};
 
@@ -65,15 +66,22 @@ pub fn handle_syscall(
 
     if let Err(e) = rate_limit_precheck(pid, cfg, rate_map) {
         let err = error::ToolError::RateLimited(e);
-        append_audit_log(
+        append_audit_log(ToolAuditRecord {
             pid,
-            cfg.mode,
-            clean_cmd,
-            false,
-            start.elapsed().as_millis(),
-            true,
-            &err.to_string(),
-        );
+            mode: cfg.mode,
+            command: clean_cmd,
+            success: false,
+            duration_ms: start.elapsed().as_millis(),
+            should_kill: true,
+            detail: &err.to_string(),
+            context: &invocation::ToolContext {
+                pid: Some(pid),
+                session_id: None,
+                caller: invocation::ToolCaller::AgentText,
+                transport: invocation::ToolInvocationTransport::Text,
+            },
+            tool_name: None,
+        });
         return SysCallOutcome {
             output: err.to_string(),
             success: false,
@@ -86,25 +94,22 @@ pub fn handle_syscall(
         pid: Some(pid),
         session_id: None,
         caller: invocation::ToolCaller::AgentText,
+        transport: invocation::ToolInvocationTransport::Text,
     };
 
-    let exec_result = parser::parse_text_invocation(clean_cmd).and_then(|inv| {
-        let dispatcher = dispatcher::ToolDispatcher::new();
-        dispatcher.dispatch(&inv, &context, registry)
-    });
+    let exec_result = executor::execute_text_invocation(clean_cmd, &context, registry);
 
-    let (success, output) = match exec_result {
-        Ok(res) => {
-            if let Some(text) = res.display_text {
-                (true, text)
+    let (success, output, tool_name) = match exec_result {
+        Ok(execution) => {
+            let rendered = if let Some(text) = execution.result.display_text {
+                text
             } else {
-                (
-                    true,
-                    serde_json::to_string_pretty(&res.output).unwrap_or_else(|_| "{}".into()),
-                )
-            }
+                serde_json::to_string_pretty(&execution.result.output)
+                    .unwrap_or_else(|_| "{}".into())
+            };
+            (true, rendered, Some(execution.invocation.name))
         }
-        Err(e) => (false, format!("SysCall Error: {}", e)),
+        Err(e) => (false, format!("SysCall Error: {}", e), None),
     };
 
     let kill_from_burst = rate_limit_postcheck(pid, success, cfg, rate_map);
@@ -113,15 +118,17 @@ pub fn handle_syscall(
         final_output.push_str("\nSysCall Guard: process killed due to repeated syscall failures.");
     }
 
-    append_audit_log(
+    append_audit_log(ToolAuditRecord {
         pid,
-        cfg.mode,
-        clean_cmd,
+        mode: cfg.mode,
+        command: clean_cmd,
         success,
-        start.elapsed().as_millis(),
-        kill_from_burst,
-        &final_output,
-    );
+        duration_ms: start.elapsed().as_millis(),
+        should_kill: kill_from_burst,
+        detail: &final_output,
+        context: &context,
+        tool_name: tool_name.as_deref(),
+    });
 
     SysCallOutcome {
         output: final_output,

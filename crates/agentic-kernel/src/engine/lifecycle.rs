@@ -9,8 +9,8 @@ use crate::process::{
     ResidentSlotPolicy,
 };
 use crate::prompting::{
-    format_interprocess_user_message_with_metadata, format_system_injection_with_metadata,
-    format_user_message_with_metadata, GenerationConfig,
+    format_initial_prompt_with_metadata, format_interprocess_user_message_with_metadata,
+    format_system_injection_with_metadata, format_user_message_with_metadata, GenerationConfig,
 };
 
 use super::tokenizer::{
@@ -110,6 +110,7 @@ impl LLMEngine {
     pub fn spawn_process(
         &mut self,
         prompt: &str,
+        system_prompt: Option<&str>,
         _max_tokens: usize,
         owner_id: usize,
         lifecycle_policy: ProcessLifecyclePolicy,
@@ -153,8 +154,12 @@ impl LLMEngine {
             }
         };
 
-        let formatted_prompt =
-            format_user_message_with_metadata(prompt, self.family, self.metadata.as_ref());
+        let formatted_prompt = format_initial_prompt_with_metadata(
+            system_prompt,
+            prompt,
+            self.family,
+            self.metadata.as_ref(),
+        );
 
         let tokens = self
             .tokenizer
