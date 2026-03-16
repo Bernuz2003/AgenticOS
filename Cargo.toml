@@ -2,6 +2,7 @@
 members = [
     "crates/agentic-control-models",
     "crates/agentic-kernel",
+    "crates/agentic-kernel-macros",
     "crates/agentic-kernel-bin",
     "crates/agentic-protocol",
     "apps/agent-workspace/src-tauri",

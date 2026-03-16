@@ -5,6 +5,7 @@ use crate::tool_registry::ToolRegistry;
 
 pub mod api;
 pub mod audit;
+pub(crate) mod builtins;
 pub mod dispatcher;
 pub mod error;
 pub mod executor;
@@ -15,6 +16,7 @@ pub mod path_guard;
 pub mod policy;
 pub mod runner;
 pub mod schema;
+pub(crate) mod workspace_tools;
 
 use path_guard::workspace_root;
 
@@ -91,3 +93,6 @@ pub fn handle_syscall(
 pub(crate) fn validates_tool_invocation(command_block: &str) -> bool {
     parser::parse_text_invocation(command_block).is_ok()
 }
+
+#[cfg(test)]
+mod macro_tests;

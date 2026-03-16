@@ -28,6 +28,31 @@ impl ToolResult {
     }
 }
 
+pub(crate) fn typed_output_to_tool_result<T: Serialize>(
+    tool_name: &str,
+    output: T,
+) -> Result<ToolResult, ToolError> {
+    let output = serde_json::to_value(output).map_err(|err| {
+        ToolError::Internal(format!(
+            "Failed to serialize output for tool '{}': {}",
+            tool_name, err
+        ))
+    })?;
+
+    let display_text = output
+        .as_object()
+        .and_then(|object| object.get("output"))
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
+        .or_else(|| serde_json::to_string_pretty(&output).ok());
+
+    Ok(ToolResult {
+        output,
+        display_text,
+        warnings: Vec::new(),
+    })
+}
+
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn execute(

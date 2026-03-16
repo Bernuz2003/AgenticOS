@@ -3,13 +3,19 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use agentic_kernel_macros::agentic_tool;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::backend::http::{HttpEndpoint, HttpRequestOptions};
 use crate::config::kernel_config;
-use crate::tool_registry::ToolBackendConfig;
+use crate::tool_registry::{
+    HostExecutor, ToolBackendConfig, ToolBackendKind, ToolDescriptor, ToolRegistryEntry, ToolSource,
+};
 
 use super::api::{Tool, ToolResult};
+use super::builtins::HostBuiltinRegistration;
 use super::error::ToolError;
 use super::invocation::{ToolContext, ToolInvocation};
 use super::path_guard::{resolve_safe_path, workspace_root};
@@ -273,6 +279,51 @@ impl Tool for BuiltinPythonTool {
     }
 }
 
+fn builtin_python_tool_factory() -> Box<dyn Tool> {
+    Box::new(BuiltinPythonTool)
+}
+
+pub(crate) fn python_host_builtin_registration() -> HostBuiltinRegistration {
+    HostBuiltinRegistration::new(
+        ToolRegistryEntry {
+            descriptor: ToolDescriptor {
+                name: "python".to_string(),
+                aliases: vec![],
+                description: "Execute Python code under the syscall sandbox policy.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "required": ["code"],
+                    "properties": {
+                        "code": {"type": "string"}
+                    },
+                    "additionalProperties": false
+                }),
+                output_schema: json!({
+                    "type": "object",
+                    "required": ["output"],
+                    "properties": {
+                        "output": {"type": "string"}
+                    },
+                    "additionalProperties": false
+                }),
+                allowed_callers: vec![
+                    super::invocation::ToolCaller::AgentText,
+                    super::invocation::ToolCaller::Programmatic,
+                ],
+                backend_kind: ToolBackendKind::Host,
+                capabilities: vec!["python".to_string(), "sandboxed".to_string()],
+                dangerous: true,
+                enabled: true,
+                source: ToolSource::BuiltIn,
+            },
+            backend: ToolBackendConfig::Host {
+                executor: HostExecutor::Python,
+            },
+        },
+        builtin_python_tool_factory,
+    )
+}
+
 pub struct BuiltinWriteFileTool;
 
 impl Tool for BuiltinWriteFileTool {
@@ -334,140 +385,187 @@ impl Tool for BuiltinWriteFileTool {
     }
 }
 
-pub struct BuiltinReadFileTool;
-
-impl Tool for BuiltinReadFileTool {
-    fn name(&self) -> &str {
-        "read_file"
-    }
-
-    fn execute(
-        &self,
-        invocation: &ToolInvocation,
-        _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        let filename = invocation
-            .input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if filename.trim().is_empty() {
-            return Err(ToolError::InvalidInput(
-                self.name().into(),
-                "field 'path' cannot be empty".into(),
-            ));
-        }
-        let path = resolve_safe_path(filename)
-            .map_err(|e| ToolError::ExecutionFailed(self.name().into(), e.to_string()))?;
-
-        let meta = fs::metadata(&path).map_err(|e| {
-            ToolError::ExecutionFailed(self.name().into(), format!("Read failed: {}", e))
-        })?;
-
-        if meta.len() > 1024 * 1024 {
-            return Err(ToolError::ExecutionFailed(
-                self.name().into(),
-                "Refusing to read files larger than 1MB.".into(),
-            ));
-        }
-
-        let content = fs::read_to_string(&path).map_err(|e| {
-            ToolError::ExecutionFailed(self.name().into(), format!("Read failed: {}", e))
-        })?;
-
-        Ok(ToolResult::json_with_text(
-            json!({
-                "output": content.clone(),
-                "path": filename
-            }),
-            content,
-        ))
-    }
+fn builtin_write_file_tool_factory() -> Box<dyn Tool> {
+    Box::new(BuiltinWriteFileTool)
 }
 
-pub struct BuiltinListFilesTool;
-
-impl Tool for BuiltinListFilesTool {
-    fn name(&self) -> &str {
-        "list_files"
-    }
-
-    fn execute(
-        &self,
-        _invocation: &ToolInvocation,
-        _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        let root = workspace_root().map_err(|e| ToolError::Internal(e.to_string()))?;
-        match fs::read_dir(root) {
-            Ok(entries) => {
-                let files: Vec<String> = entries
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .collect();
-                if files.is_empty() {
-                    Ok(ToolResult::json_with_text(
-                        json!({
-                            "output": "Workspace is empty.",
-                            "entries": []
-                        }),
-                        "Workspace is empty.",
-                    ))
-                } else {
-                    let message = format!("Files:\n- {}", files.join("\n- "));
-                    Ok(ToolResult::json_with_text(
-                        json!({
-                            "output": message.clone(),
-                            "entries": files
-                        }),
-                        message,
-                    ))
-                }
-            }
-            Err(e) => Err(ToolError::ExecutionFailed(
-                self.name().into(),
-                format!("LS failed: {}", e),
-            )),
-        }
-    }
+pub(crate) fn write_file_host_builtin_registration() -> HostBuiltinRegistration {
+    HostBuiltinRegistration::new(
+        ToolRegistryEntry {
+            descriptor: ToolDescriptor {
+                name: "write_file".to_string(),
+                aliases: vec![],
+                description: "Write a file inside the workspace root.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "required": ["path", "content"],
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"}
+                    },
+                    "additionalProperties": false
+                }),
+                output_schema: json!({
+                    "type": "object",
+                    "required": ["output", "path", "bytes_written"],
+                    "properties": {
+                        "output": {"type": "string"},
+                        "path": {"type": "string"},
+                        "bytes_written": {"type": "integer", "minimum": 0}
+                    },
+                    "additionalProperties": false
+                }),
+                allowed_callers: vec![
+                    super::invocation::ToolCaller::AgentText,
+                    super::invocation::ToolCaller::Programmatic,
+                ],
+                backend_kind: ToolBackendKind::Host,
+                capabilities: vec!["fs".to_string(), "write".to_string()],
+                dangerous: true,
+                enabled: true,
+                source: ToolSource::BuiltIn,
+            },
+            backend: ToolBackendConfig::Host {
+                executor: HostExecutor::WriteFile,
+            },
+        },
+        builtin_write_file_tool_factory,
+    )
 }
 
-pub struct BuiltinCalcTool;
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReadFileInput {
+    path: String,
+}
 
-impl Tool for BuiltinCalcTool {
-    fn name(&self) -> &str {
-        "calc"
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+struct ReadFileOutput {
+    output: String,
+    path: String,
+}
+
+#[agentic_tool(
+    name = "read_file",
+    description = "Read a UTF-8 text file inside the workspace root.",
+    capabilities = ["fs", "read"],
+    allowed_callers = [AgentText, Programmatic]
+)]
+fn read_file(input: ReadFileInput, _ctx: &ToolContext) -> Result<ReadFileOutput, ToolError> {
+    if input.path.trim().is_empty() {
+        return Err(ToolError::InvalidInput(
+            "read_file".into(),
+            "field 'path' cannot be empty".into(),
+        ));
     }
 
-    fn execute(
-        &self,
-        invocation: &ToolInvocation,
-        context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        let expression = invocation
-            .input
-            .get("expression")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if expression.trim().is_empty() {
-            return Err(ToolError::InvalidInput(
-                self.name().into(),
-                "field 'expression' cannot be empty".into(),
-            ));
-        }
-        let python_code = format!("print({})", expression);
+    let path = resolve_safe_path(&input.path)
+        .map_err(|err| ToolError::ExecutionFailed("read_file".into(), err.to_string()))?;
 
-        // Risolviamo delegando al python tool built-in per il calcolo sicuro in sandbox
-        let pt = BuiltinPythonTool;
-        let mut py_inv = invocation.clone();
-        py_inv.input = serde_json::json!({ "code": python_code });
+    let meta = fs::metadata(&path).map_err(|err| {
+        ToolError::ExecutionFailed("read_file".into(), format!("Read failed: {err}"))
+    })?;
+    if meta.len() > 1024 * 1024 {
+        return Err(ToolError::ExecutionFailed(
+            "read_file".into(),
+            "Refusing to read files larger than 1MB.".into(),
+        ));
+    }
 
-        pt.execute(&py_inv, context).map_err(|e| {
-            ToolError::ExecutionFailed(
-                self.name().into(),
-                format!("Calc evaluation failed: {:?}", e),
+    let content = fs::read_to_string(&path).map_err(|err| {
+        ToolError::ExecutionFailed("read_file".into(), format!("Read failed: {err}"))
+    })?;
+
+    Ok(ReadFileOutput {
+        output: content,
+        path: input.path,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+struct ListFilesInput {}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+struct ListFilesOutput {
+    output: String,
+    entries: Vec<String>,
+}
+
+#[agentic_tool(
+    name = "list_files",
+    description = "List files in the workspace root.",
+    capabilities = ["fs", "list"],
+    allowed_callers = [AgentText, Programmatic]
+)]
+fn list_files(_input: ListFilesInput, _ctx: &ToolContext) -> Result<ListFilesOutput, ToolError> {
+    let root = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
+    let entries = fs::read_dir(root).map_err(|err| {
+        ToolError::ExecutionFailed("list_files".into(), format!("LS failed: {err}"))
+    })?;
+
+    let files: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+
+    let output = if files.is_empty() {
+        "Workspace is empty.".to_string()
+    } else {
+        format!("Files:\n- {}", files.join("\n- "))
+    };
+
+    Ok(ListFilesOutput {
+        output,
+        entries: files,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CalcInput {
+    expression: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+struct CalcOutput {
+    output: String,
+}
+
+#[agentic_tool(
+    name = "calc",
+    description = "Evaluate a numeric expression through the Python sandbox.",
+    capabilities = ["math", "python"],
+    allowed_callers = [AgentText, Programmatic]
+)]
+fn calc(input: CalcInput, ctx: &ToolContext) -> Result<CalcOutput, ToolError> {
+    if input.expression.trim().is_empty() {
+        return Err(ToolError::InvalidInput(
+            "calc".into(),
+            "field 'expression' cannot be empty".into(),
+        ));
+    }
+
+    let python_code = format!("print({})", input.expression);
+    let python_tool = BuiltinPythonTool;
+    let invocation = ToolInvocation::new("python", json!({ "code": python_code }), None)
+        .map_err(|err| ToolError::Internal(err.to_string()))?;
+    let result = python_tool.execute(&invocation, ctx).map_err(|err| {
+        ToolError::ExecutionFailed("calc".into(), format!("Calc evaluation failed: {err:?}"))
+    })?;
+
+    let output = result
+        .output
+        .get("output")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            ToolError::Internal(
+                "calc expected the python tool to return a string output field".into(),
             )
-        })
-    }
+        })?
+        .to_string();
+
+    Ok(CalcOutput { output })
 }
 
 pub struct RemoteHttpTool {

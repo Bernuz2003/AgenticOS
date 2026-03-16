@@ -166,7 +166,7 @@ mod tests {
                     source: ToolSource::BuiltIn,
                 },
                 backend: ToolBackendConfig::Host {
-                    executor: HostExecutor::ReadFile,
+                    executor: HostExecutor::Dynamic("read_file".to_string()),
                 },
             })
             .expect("register visible tool");
@@ -186,7 +186,7 @@ mod tests {
                     source: ToolSource::BuiltIn,
                 },
                 backend: ToolBackendConfig::Host {
-                    executor: HostExecutor::ListFiles,
+                    executor: HostExecutor::Dynamic("list_files".to_string()),
                 },
             })
             .expect("register hidden tool");
@@ -206,7 +206,7 @@ mod tests {
                     source: ToolSource::BuiltIn,
                 },
                 backend: ToolBackendConfig::Host {
-                    executor: HostExecutor::ListFiles,
+                    executor: HostExecutor::Dynamic("list_files".to_string()),
                 },
             })
             .expect("register disabled tool");

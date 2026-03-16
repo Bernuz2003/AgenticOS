@@ -135,7 +135,7 @@ mod tests {
                     source: ToolSource::BuiltIn,
                 },
                 backend: ToolBackendConfig::Host {
-                    executor: HostExecutor::ListFiles,
+                    executor: HostExecutor::Dynamic("list_files".to_string()),
                 },
             })
             .expect("register restricted tool");

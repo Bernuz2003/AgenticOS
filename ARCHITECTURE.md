@@ -492,6 +492,8 @@ Quando un processo genera una linea canonica `TOOL:<name> <json-object>` oppure 
 
 `TOOL:` e' riservato ai tool registrati nel `ToolRegistry`. Il parser testuale e' solo un adapter verso una `ToolInvocation` strutturata, cosi' lo stesso contratto puo' essere riusato in futuro da Programmatic Tool Calling.
 
+Per i built-in Rust semplici il kernel supporta ora anche un layer dichiarativo `#[agentic_tool]`: la macro genera schema, descriptor e adapter verso `Tool`, ma non ingloba parser, governance o transport. La registrazione resta esplicita in un catalogo host built-in centralizzato, cosi' il design rimane local-first, reviewable e compatibile con futuri ingressi PTC.
+
 All'avvio di ogni nuovo processo agentico, il kernel costruisce un manifest dinamico dei tool visibili per il caller (`ToolCaller`) partendo dal registry reale e lo trasforma in un system prompt operativo. Questo evita drift tra prompt statici e stato del registry: l'agente vede solo i tool abilitati e autorizzati per il proprio caller.
 
 | Tool | Pattern | Descrizione |
@@ -501,6 +503,11 @@ All'avvio di ogni nuovo processo agentico, il kernel costruisce un manifest dina
 | Read file | `TOOL:read_file {"path":"notes.txt"}` | Legge file da workspace (max 1MB) |
 | List dir | `TOOL:list_files {}` | Lista contenuto workspace |
 | Calculator | `TOOL:calc {"expression":"(12+3)*7"}` | Valuta espressione matematica via Python |
+| Path info | `TOOL:path_info {"path":"src/main.rs"}` | Legge metadata base di file o directory |
+| Find files | `TOOL:find_files {"path":"crates","pattern":"tool","extension":"rs"}` | Cerca file per nome o estensione |
+| Search text | `TOOL:search_text {"query":"ToolRegistry","path":"crates/agentic-kernel/src"}` | Cerca testo nei file UTF-8 del workspace |
+| Read file range | `TOOL:read_file_range {"path":"src/main.rs","start_line":1,"end_line":80}` | Legge un intervallo di righe senza caricare l'intero file |
+| Mkdir | `TOOL:mkdir {"path":"workspace/tmp/reports","create_parents":true}` | Crea directory nel workspace |
 
 ### Action plane
 

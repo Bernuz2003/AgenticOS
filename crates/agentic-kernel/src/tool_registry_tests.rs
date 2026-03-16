@@ -18,7 +18,18 @@ fn builtins_are_registered_and_sorted() {
         .collect();
     assert_eq!(
         names,
-        vec!["calc", "list_files", "python", "read_file", "write_file"]
+        vec![
+            "calc",
+            "find_files",
+            "list_files",
+            "mkdir",
+            "path_info",
+            "python",
+            "read_file",
+            "read_file_range",
+            "search_text",
+            "write_file"
+        ]
     );
 }
 

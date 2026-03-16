@@ -43,7 +43,16 @@ pub fn govern_tool_execution(
     // — Rate-limit precheck —
     if let Err(e) = rate_limit_precheck(pid, cfg, rate_map) {
         let err = ToolError::RateLimited(e);
-        append_governed_audit(pid, cfg, &err.to_string(), false, true, start, context, None);
+        append_governed_audit(
+            pid,
+            cfg,
+            &err.to_string(),
+            false,
+            true,
+            start,
+            context,
+            None,
+        );
         return GovernedToolResult {
             output: err.to_string(),
             success: false,

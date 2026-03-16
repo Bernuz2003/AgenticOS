@@ -11,28 +11,9 @@ pub struct ToolDispatcher {
 
 impl ToolDispatcher {
     pub fn new() -> Self {
-        let mut builtins: HashMap<HostExecutor, Box<dyn Tool>> = HashMap::new();
-        builtins.insert(
-            HostExecutor::Python,
-            Box::new(crate::tools::runner::BuiltinPythonTool),
-        );
-        builtins.insert(
-            HostExecutor::WriteFile,
-            Box::new(crate::tools::runner::BuiltinWriteFileTool),
-        );
-        builtins.insert(
-            HostExecutor::ReadFile,
-            Box::new(crate::tools::runner::BuiltinReadFileTool),
-        );
-        builtins.insert(
-            HostExecutor::ListFiles,
-            Box::new(crate::tools::runner::BuiltinListFilesTool),
-        );
-        builtins.insert(
-            HostExecutor::Calc,
-            Box::new(crate::tools::runner::BuiltinCalcTool),
-        );
-        Self { builtins }
+        Self {
+            builtins: crate::tools::builtins::host_builtin_dispatch_table(),
+        }
     }
 
     pub fn dispatch(
@@ -149,7 +130,7 @@ mod tests {
                     source: ToolSource::BuiltIn,
                 },
                 backend: ToolBackendConfig::Host {
-                    executor: HostExecutor::ListFiles,
+                    executor: HostExecutor::Dynamic("list_files".to_string()),
                 },
             })
             .expect("register test tool");

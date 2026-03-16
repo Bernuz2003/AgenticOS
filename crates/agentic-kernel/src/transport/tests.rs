@@ -43,9 +43,34 @@ fn setup_client_and_peer() -> (Client, TcpStream) {
 }
 
 fn read_frame(peer: &mut TcpStream) -> String {
-    let mut out = [0u8; 4096];
-    let n = peer.read(&mut out).expect("read frame");
-    String::from_utf8_lossy(&out[..n]).to_string()
+    let mut frame = Vec::new();
+    let mut expected_total_len = None;
+
+    loop {
+        let mut chunk = [0u8; 4096];
+        let n = peer.read(&mut chunk).expect("read frame");
+        frame.extend_from_slice(&chunk[..n]);
+
+        if expected_total_len.is_none() {
+            if let Some(header_end) = frame.windows(2).position(|window| window == b"\r\n") {
+                let header = String::from_utf8_lossy(&frame[..header_end]);
+                let payload_len = header
+                    .split_whitespace()
+                    .last()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .expect("frame payload length");
+                expected_total_len = Some(header_end + 2 + payload_len);
+            }
+        }
+
+        if let Some(expected_total_len) = expected_total_len {
+            if frame.len() >= expected_total_len {
+                break;
+            }
+        }
+    }
+
+    String::from_utf8_lossy(&frame).to_string()
 }
 
 #[allow(clippy::too_many_arguments)]
