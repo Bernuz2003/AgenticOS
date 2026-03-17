@@ -12,6 +12,7 @@ use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
+use crate::tools::invocation::ToolCaller;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -71,6 +72,7 @@ fn parallel_sessions_can_bind_to_different_runtime_backends() {
                 prompt: "ping remote backend".to_string(),
                 system_prompt: None,
                 owner_id: 10,
+                tool_caller: ToolCaller::AgentText,
                 workload: WorkloadClass::Fast,
                 required_backend_class: Some(BackendClass::RemoteStateless),
                 priority: ProcessPriority::Normal,
@@ -101,6 +103,7 @@ fn parallel_sessions_can_bind_to_different_runtime_backends() {
                 prompt: "ping local backend".to_string(),
                 system_prompt: None,
                 owner_id: 11,
+                tool_caller: ToolCaller::AgentText,
                 workload: WorkloadClass::General,
                 required_backend_class: Some(BackendClass::ResidentLocal),
                 priority: ProcessPriority::Normal,
@@ -185,6 +188,7 @@ fn session_title_uses_user_prompt_not_system_prompt() {
                 prompt: "Solve the task".to_string(),
                 system_prompt: Some("Tool syntax: TOOL:<name> <json-object>.".to_string()),
                 owner_id: 10,
+                tool_caller: ToolCaller::AgentText,
                 workload: WorkloadClass::Fast,
                 required_backend_class: Some(BackendClass::RemoteStateless),
                 priority: ProcessPriority::Normal,

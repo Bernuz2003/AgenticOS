@@ -1,6 +1,7 @@
 /// Unit tests for core storage service and repositories.
 use super::StorageService;
 use crate::storage::migrations::LATEST_SCHEMA_VERSION;
+use rusqlite::params;
 use rusqlite::Connection;
 use std::fs;
 use std::path::PathBuf;
@@ -118,6 +119,54 @@ fn session_records_survive_reopen_and_active_pid_can_be_reset() {
         .expect("session exists");
     assert_eq!(session.active_pid, None);
     assert_eq!(session.status, "idle");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn release_session_pid_clears_active_pid_and_updates_run_state() {
+    let dir = make_temp_dir("agenticos_storage_release_pid");
+    let db_path = dir.join("agenticos.db");
+
+    let mut storage = StorageService::open(&db_path).expect("open storage");
+    let boot = storage
+        .record_kernel_boot("0.5.0-test")
+        .expect("record kernel boot");
+    storage
+        .insert_session(
+            "sess-release-1",
+            "release test",
+            "idle",
+            Some("rt-test"),
+            None,
+            1_000,
+            1_000,
+        )
+        .expect("insert session");
+    storage
+        .bind_session_to_pid("sess-release-1", "rt-test", boot.boot_id, 7, 2_000)
+        .expect("bind session");
+
+    storage
+        .release_session_pid("sess-release-1", boot.boot_id, 7, "completed", 3_000)
+        .expect("release session pid");
+
+    let session = storage
+        .session_by_id("sess-release-1")
+        .expect("load session")
+        .expect("session exists");
+    assert_eq!(session.active_pid, None);
+    assert_eq!(session.status, "idle");
+
+    let run_state: String = storage
+        .connection
+        .query_row(
+            "SELECT state FROM process_runs WHERE session_id = ?1 AND boot_id = ?2 AND pid = ?3",
+            params!["sess-release-1", boot.boot_id, 7u64],
+            |row| row.get(0),
+        )
+        .expect("load process run state");
+    assert_eq!(run_state, "completed");
 
     let _ = fs::remove_dir_all(dir);
 }

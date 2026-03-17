@@ -12,6 +12,7 @@ use crate::process::{
 };
 use crate::prompting::GenerationConfig;
 use crate::prompting::PromptFamily;
+use crate::tools::invocation::ToolCaller;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -113,6 +114,7 @@ fn test_engine() -> (
     let process = AgentProcess::new(
         1,
         7,
+            ToolCaller::AgentText,
         ProcessLifecyclePolicy::Interactive,
         process_model,
         tokenizer.clone(),

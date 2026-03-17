@@ -68,7 +68,16 @@ mod tests {
         assert!(prompt.contains("Tool syntax: TOOL:<name> <json-object>."));
         assert!(prompt.contains("Action syntax: ACTION:<name> <json-object>."));
         assert!(prompt.contains(r#"TOOL:calc {"expression":"string"}"#));
-        assert!(prompt.contains(r#"ACTION:spawn {"prompt":"string"}"#));
+        assert!(prompt.contains("Available actions:\n- none"));
         assert!(prompt.contains("never use legacy syntaxes"));
+    }
+
+    #[test]
+    fn supervisor_prompt_includes_runtime_actions() {
+        let registry = ToolRegistry::with_builtins();
+        let prompt = build_agent_system_prompt(&registry, ToolCaller::AgentSupervisor);
+
+        assert!(prompt.contains("ACTION:spawn"));
+        assert!(prompt.contains("ACTION:send"));
     }
 }

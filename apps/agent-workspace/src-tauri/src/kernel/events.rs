@@ -173,6 +173,9 @@ fn handle_kernel_event(
                 }
             }
             emit_timeline_snapshot(app, timeline_store, workspace_root, pid);
+            if let Ok(mut store) = timeline_store.lock() {
+                store.evict_session(pid);
+            }
             maybe_emit_workspace_snapshot(app, bridge, pid, last_workspace_refresh, true);
             maybe_emit_lobby_snapshot(app, bridge, last_lobby_refresh, true);
         }
@@ -181,6 +184,9 @@ fn handle_kernel_event(
                 store.set_error(pid, message);
             }
             emit_timeline_snapshot(app, timeline_store, workspace_root, pid);
+            if let Ok(mut store) = timeline_store.lock() {
+                store.evict_session(pid);
+            }
             maybe_emit_workspace_snapshot(app, bridge, pid, last_workspace_refresh, true);
             maybe_emit_lobby_snapshot(app, bridge, last_lobby_refresh, true);
         }

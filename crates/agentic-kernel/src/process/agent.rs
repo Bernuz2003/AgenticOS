@@ -8,9 +8,11 @@ use super::state::*;
 use crate::backend::RuntimeModel;
 use crate::memory::ContextSlotId;
 use crate::prompting::GenerationConfig;
+use crate::tools::invocation::ToolCaller;
 
 pub struct AgentProcess {
     pub owner_id: usize,
+    pub tool_caller: ToolCaller,
     pub context_slot_id: Option<ContextSlotId>,
     pub resident_slot_policy: ResidentSlotPolicy,
     pub resident_slot_state: ResidentSlotState,
@@ -35,6 +37,7 @@ impl AgentProcess {
     pub fn new(
         _id: u64,
         owner_id: usize,
+        tool_caller: ToolCaller,
         lifecycle_policy: ProcessLifecyclePolicy,
         model: RuntimeModel,
         tokenizer: Tokenizer,
@@ -46,6 +49,7 @@ impl AgentProcess {
         let initial_segment_text = context_seed.initial_segment_text;
         AgentProcess {
             owner_id,
+            tool_caller,
             context_slot_id: None,
             resident_slot_policy: ResidentSlotPolicy::Unmanaged,
             resident_slot_state: ResidentSlotState::Unbound,

@@ -25,6 +25,7 @@ pub(crate) enum SyscallCmd {
     Execute {
         pid: u64,
         content: String,
+        caller: ToolCaller,
         registry: ToolRegistry,
     },
     Shutdown,
@@ -34,6 +35,7 @@ pub(crate) enum SyscallCmd {
 pub(crate) struct SyscallCompletion {
     pub pid: u64,
     pub command: String,
+    pub caller: ToolCaller,
     pub outcome: SysCallOutcome,
 }
 
@@ -57,11 +59,14 @@ pub(crate) fn spawn_syscall_worker(
                     SyscallCmd::Execute {
                         pid,
                         content,
+                        caller,
                         registry,
                     } => {
                         let command = content.clone();
                         let outcome = match rate_map.lock() {
-                            Ok(mut guard) => handle_syscall(&content, pid, &mut guard, &registry),
+                            Ok(mut guard) => {
+                                handle_syscall(&content, pid, caller.clone(), &mut guard, &registry)
+                            }
                             Err(_) => SysCallOutcome {
                                 output: "SysCall Error: worker rate-limit state is unavailable."
                                     .to_string(),
@@ -74,6 +79,7 @@ pub(crate) fn spawn_syscall_worker(
                             .send(SyscallCompletion {
                                 pid,
                                 command,
+                                caller,
                                 outcome,
                             })
                             .is_err()
@@ -89,27 +95,38 @@ pub(crate) fn spawn_syscall_worker(
 }
 
 pub(super) fn scan_syscall_buffer(buffer: &mut String) -> Option<String> {
+    let mut absolute_offset = 0usize;
     for line in buffer.split_inclusive('\n') {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("ACTION:") {
-            let candidate = trimmed.trim_end_matches(['\n', '\r']);
-            if actions::is_streaming_action_invocation(candidate) {
-                return None;
+        let leading_ws = line.len() - trimmed.len();
+        let marker_offset = absolute_offset + leading_ws;
+
+        for prefix in ["ACTION:", "TOOL:"] {
+            if !trimmed.starts_with(prefix) {
+                continue;
             }
-            let command = candidate.to_string();
-            buffer.clear();
-            return Some(command);
+
+            let candidate = &buffer[marker_offset..];
+            match crate::text_invocation::extract_prefixed_json_invocation(candidate, prefix) {
+                crate::text_invocation::PrefixedInvocationExtract::Parsed(parsed) => {
+                    let consumed = marker_offset + parsed.consumed_bytes;
+                    let command = parsed.raw_invocation;
+                    buffer.drain(..consumed);
+                    return Some(command);
+                }
+                crate::text_invocation::PrefixedInvocationExtract::Incomplete => return None,
+                crate::text_invocation::PrefixedInvocationExtract::Invalid(_) => {
+                    let newline_rel = candidate.find('\n');
+                    let command_end = newline_rel.unwrap_or(candidate.len());
+                    let command = candidate[..command_end].trim_end_matches('\r').to_string();
+                    let consumed = marker_offset + newline_rel.map_or(command_end, |idx| idx + 1);
+                    buffer.drain(..consumed);
+                    return Some(command);
+                }
+            }
         }
 
-        if trimmed.starts_with("TOOL:") {
-            let candidate = trimmed.trim_end_matches(['\n', '\r']);
-            if crate::tools::parser::is_streaming_tool_invocation(candidate) {
-                return None;
-            }
-            let command = candidate.to_string();
-            buffer.clear();
-            return Some(command);
-        }
+        absolute_offset += line.len();
     }
 
     if buffer.len() > 8000 {
@@ -132,6 +149,12 @@ pub(super) fn dispatch_process_syscall(
     pending_events: &mut Vec<KernelEvent>,
     tool_registry: &ToolRegistry,
 ) -> SyscallDispatchOutcome {
+    let caller = engine
+        .processes
+        .get(&pid)
+        .map(|process| process.tool_caller.clone())
+        .unwrap_or(ToolCaller::AgentText);
+
     let quota_exceeded = scheduler.record_syscall(pid);
     if quota_exceeded {
         tracing::warn!(pid, "SCHEDULER: syscall quota exceeded — killing process");
@@ -148,6 +171,16 @@ pub(super) fn dispatch_process_syscall(
     }
 
     if content.starts_with("ACTION:") {
+        if !caller.can_orchestrate_actions() {
+            let _ = engine.inject_context(
+                pid,
+                &engine.format_system_message(
+                    "ACTION Error: this session is interactive and cannot orchestrate other agents.",
+                ),
+            );
+            return SyscallDispatchOutcome::None;
+        }
+
         match actions::parse_text_invocation(content) {
             Ok(invocation) => dispatch_action_invocation(
                 runtime_id,
@@ -174,7 +207,7 @@ pub(super) fn dispatch_process_syscall(
         audit::record(
             storage,
             audit::TOOL_DISPATCHED,
-            format!("command={content} caller=agent_text transport=text"),
+            format!("command={content} caller={} transport=text", caller.as_str()),
             AuditContext::for_process(
                 session_registry.session_id_for_pid(pid),
                 pid,
@@ -184,6 +217,7 @@ pub(super) fn dispatch_process_syscall(
         let queued = syscall_cmd_tx.send(SyscallCmd::Execute {
             pid,
             content: content.to_string(),
+            caller,
             registry: tool_registry.clone(),
         });
         match queued {
@@ -344,6 +378,7 @@ fn dispatch_spawn_action(
                 ToolCaller::AgentText,
             )),
             owner_id,
+            tool_caller: ToolCaller::AgentText,
             workload,
             required_backend_class: None,
             priority,
@@ -365,10 +400,7 @@ fn dispatch_spawn_action(
             pending_events.push(KernelEvent::LobbyChanged {
                 reason: "syscall_spawned".to_string(),
             });
-            let msg = format!(
-                    "SUCCESS: Worker Created (PID {}).\nSTOP SPAWNING NEW PROCESSES.\nNEXT ACTION: Use ACTION:send {{\"pid\":{},\"message\":\"<your_question>\"}} immediately.",
-                    new_pid.pid, new_pid.pid
-                );
+            let msg = format!("SUCCESS: Worker Created (PID {}).", new_pid.pid);
             let feedback = engine.format_system_message(&msg);
             let _ = engine.inject_context(pid, &feedback);
             SyscallDispatchOutcome::Spawned(new_pid.pid)
@@ -449,8 +481,9 @@ pub(super) fn drain_syscall_results(
                     storage,
                     audit::TOOL_KILLED,
                     format!(
-                        "command={} caller=agent_text transport=text duration_ms={} success={} detail={}",
+                        "command={} caller={} transport=text duration_ms={} success={} detail={}",
                         completion.command,
+                        completion.caller.as_str(),
                         completion.outcome.duration_ms,
                         completion.outcome.success,
                         completion.outcome.output
@@ -486,8 +519,9 @@ pub(super) fn drain_syscall_results(
                     storage,
                     spec,
                     format!(
-                        "command={} caller=agent_text transport=text duration_ms={} detail={}",
+                        "command={} caller={} transport=text duration_ms={} detail={}",
                         completion.command,
+                        completion.caller.as_str(),
                         completion.outcome.duration_ms,
                         completion.outcome.output
                     ),

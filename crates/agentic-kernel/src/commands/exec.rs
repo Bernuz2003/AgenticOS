@@ -170,6 +170,7 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                     prompt: prompt.clone(),
                     system_prompt: Some(system_prompt.clone()),
                     owner_id: client_id,
+                    tool_caller: ToolCaller::AgentText,
                     workload,
                     required_backend_class: None,
                     priority: ProcessPriority::Normal,

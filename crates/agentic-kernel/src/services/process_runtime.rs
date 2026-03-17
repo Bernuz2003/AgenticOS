@@ -7,6 +7,7 @@ use crate::process::{ContextPolicy, ProcessLifecyclePolicy};
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
+use crate::tools::invocation::ToolCaller;
 
 #[derive(Debug)]
 pub struct ManagedProcessSpawn {
@@ -19,6 +20,7 @@ pub struct ManagedProcessRequest {
     pub prompt: String,
     pub system_prompt: Option<String>,
     pub owner_id: usize,
+    pub tool_caller: ToolCaller,
     pub workload: WorkloadClass,
     pub required_backend_class: Option<BackendClass>,
     pub priority: ProcessPriority,
@@ -111,6 +113,7 @@ pub fn spawn_managed_process(
         prompt,
         system_prompt,
         owner_id,
+        tool_caller,
         workload,
         required_backend_class,
         priority,
@@ -127,6 +130,7 @@ pub fn spawn_managed_process(
             system_prompt.as_deref(),
             0,
             owner_id,
+            tool_caller,
             lifecycle_policy,
             context_policy,
         )

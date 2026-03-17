@@ -12,6 +12,7 @@ use crate::prompting::{
     format_initial_prompt_with_metadata, format_interprocess_user_message_with_metadata,
     format_system_injection_with_metadata, format_user_message_with_metadata, GenerationConfig,
 };
+use crate::tools::invocation::ToolCaller;
 
 use super::tokenizer::{
     build_remote_fallback_tokenizer, resolve_special_tokens, resolve_tokenizer_path,
@@ -113,6 +114,7 @@ impl LLMEngine {
         system_prompt: Option<&str>,
         _max_tokens: usize,
         owner_id: usize,
+        tool_caller: ToolCaller,
         lifecycle_policy: ProcessLifecyclePolicy,
         context_policy: ContextPolicy,
     ) -> Result<u64> {
@@ -171,6 +173,7 @@ impl LLMEngine {
         let process = AgentProcess::new(
             pid,
             owner_id,
+            tool_caller,
             lifecycle_policy,
             model_clone,
             self.tokenizer.clone(),

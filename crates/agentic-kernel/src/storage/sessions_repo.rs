@@ -152,7 +152,7 @@ impl StorageService {
             r#"
             UPDATE sessions
             SET active_pid = NULL, status = 'idle', updated_at_ms = ?2
-            WHERE session_id = ?1 AND active_pid = ?4
+            WHERE session_id = ?1 AND active_pid = ?3
             "#,
             params![session_id, ended_at_ms, pid],
         )?;

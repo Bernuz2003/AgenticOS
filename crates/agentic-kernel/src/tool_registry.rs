@@ -322,7 +322,7 @@ fn validate_entry(entry: &ToolRegistryEntry) -> Result<(), String> {
 }
 
 fn default_allowed_callers() -> Vec<ToolCaller> {
-    vec![ToolCaller::AgentText]
+    vec![ToolCaller::AgentText, ToolCaller::AgentSupervisor]
 }
 
 #[cfg(test)]

@@ -147,7 +147,7 @@ pub(super) fn advance_orchestrator(
 ) {
     let (spawn_requests, kill_pids) = orchestrator.advance();
     let system_prompt =
-        crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentText);
+        crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentSupervisor);
 
     for pid in kill_pids {
         tracing::warn!(pid, "ORCHESTRATOR: killing task (fail_fast policy)");
@@ -261,6 +261,7 @@ pub(super) fn advance_orchestrator(
                     prompt: req.prompt.clone(),
                     system_prompt: Some(system_prompt.clone()),
                     owner_id: req.owner_id,
+                    tool_caller: ToolCaller::AgentSupervisor,
                     workload: req.workload,
                     required_backend_class: req.required_backend_class,
                     priority: ProcessPriority::Normal,

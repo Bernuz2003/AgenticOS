@@ -52,7 +52,7 @@ pub fn start_orchestration(
     let total_tasks = graph.tasks.len();
     let (orch_id, spawn_requests) = orchestrator.register(graph, owner_id)?;
     let system_prompt =
-        crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentText);
+        crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentSupervisor);
 
     let mut spawned = 0usize;
     for req in spawn_requests {
@@ -81,6 +81,7 @@ pub fn start_orchestration(
                     prompt: req.prompt.clone(),
                     system_prompt: Some(system_prompt.clone()),
                     owner_id: req.owner_id,
+                    tool_caller: ToolCaller::AgentSupervisor,
                     workload: req.workload,
                     required_backend_class: req.required_backend_class,
                     priority: ProcessPriority::Normal,

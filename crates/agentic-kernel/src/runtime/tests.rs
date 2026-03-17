@@ -84,3 +84,35 @@ fn scan_waits_for_complete_action_json() {
     );
     assert!(buf.is_empty());
 }
+
+#[test]
+fn scan_keeps_suffix_after_complete_tool_json_same_line() {
+    let mut buf = "TOOL:python {\"code\":\"print(1)\"}La sequenza e' stata calcolata".to_string();
+    let result = scan_syscall_buffer(&mut buf);
+    assert_eq!(
+        result,
+        Some("TOOL:python {\"code\":\"print(1)\"}".to_string())
+    );
+    assert_eq!(buf, "La sequenza e' stata calcolata");
+}
+
+#[test]
+fn scan_keeps_next_action_after_first_action_on_same_line() {
+    let mut buf =
+        "ACTION:spawn {\"prompt\":\"worker\"}ACTION:send {\"pid\":7,\"message\":\"ok\"}"
+            .to_string();
+
+    let first = scan_syscall_buffer(&mut buf);
+    assert_eq!(
+        first,
+        Some("ACTION:spawn {\"prompt\":\"worker\"}".to_string())
+    );
+    assert_eq!(buf, "ACTION:send {\"pid\":7,\"message\":\"ok\"}");
+
+    let second = scan_syscall_buffer(&mut buf);
+    assert_eq!(
+        second,
+        Some("ACTION:send {\"pid\":7,\"message\":\"ok\"}".to_string())
+    );
+    assert!(buf.is_empty());
+}

@@ -8,6 +8,7 @@ use crate::tools::error::ToolError;
 #[serde(rename_all = "snake_case")]
 pub enum ToolCaller {
     AgentText,
+    AgentSupervisor,
     Programmatic,
     ControlPlane,
 }
@@ -16,9 +17,14 @@ impl ToolCaller {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::AgentText => "agent_text",
+            Self::AgentSupervisor => "agent_supervisor",
             Self::Programmatic => "programmatic",
             Self::ControlPlane => "control_plane",
         }
+    }
+
+    pub fn can_orchestrate_actions(&self) -> bool {
+        matches!(self, Self::AgentSupervisor | Self::ControlPlane)
     }
 }
 

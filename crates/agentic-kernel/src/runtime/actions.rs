@@ -55,6 +55,7 @@ pub(crate) fn parse_text_invocation(text: &str) -> Result<ActionInvocation, Acti
     Ok(ActionInvocation { action, input })
 }
 
+#[allow(dead_code)]
 pub(crate) fn is_streaming_action_invocation(text: &str) -> bool {
     crate::text_invocation::is_streaming_prefixed_json_invocation(text, "ACTION:")
 }

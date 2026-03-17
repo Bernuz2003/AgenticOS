@@ -53,19 +53,9 @@ impl TimelineStore {
         prompt: String,
         workload: String,
     ) {
-        if let Some(session) = self.sessions.get_mut(&pid) {
-            session.session_id = session_id;
-            session.workload = workload;
-            session.error = None;
-            if session.turns.is_empty() {
-                session.turns.push(TimelineTurn {
-                    prompt,
-                    assistant_stream: String::new(),
-                    running: true,
-                });
-            }
-            return;
-        }
+        // Keep at most one live entry per session_id to avoid accidental aliasing.
+        self.sessions
+            .retain(|existing_pid, session| *existing_pid == pid || session.session_id != session_id);
 
         let state = TimelineSessionState {
             session_id,
@@ -80,6 +70,10 @@ impl TimelineStore {
             system_events: Vec::new(),
         };
         self.sessions.insert(pid, state);
+    }
+
+    pub fn evict_session(&mut self, pid: u64) {
+        self.sessions.remove(&pid);
     }
 
     pub fn append_user_turn(&mut self, pid: u64, prompt: String) {
@@ -257,7 +251,6 @@ pub fn augment_timeline_with_tool_results(
 
     let mut augmented = Vec::new();
     let mut tool_results = audit_entries.iter().peekable();
-    let mut trailing = Vec::new();
     let mut tool_call_ordinal = 0usize;
 
     for mut item in timeline.items {
@@ -288,15 +281,9 @@ pub fn augment_timeline_with_tool_results(
         }
     }
 
-    for entry in tool_results {
-        trailing.push(tool_result_item(
-            &timeline.session_id,
-            augmented.len() + trailing.len() + 1,
-            entry,
-        ));
-    }
-
-    augmented.extend(trailing);
+    // Do not append unmatched audit entries.
+    // Audit is currently pid-scoped, so trailing entries may belong to a previous
+    // session that used the same PID. Only pair results with visible ToolCall items.
     timeline.items = augmented;
     timeline
 }
@@ -502,7 +489,56 @@ pub(super) fn parse_stream_segments(
 
                 let tool_start = cursor + offset;
                 let tool_rest = &stream[tool_start..];
-                if let Some(line_end_offset) = tool_rest.find('\n') {
+                if tool_rest.starts_with("TOOL:") || tool_rest.starts_with("ACTION:") {
+                    match extract_canonical_invocation_segment(tool_rest) {
+                        CanonicalInvocationSegment::Parsed { raw, consumed } => {
+                            push_timeline_text_item(
+                                &mut items,
+                                item_prefix,
+                                &mut item_index,
+                                timeline_item_kind_for_invocation(raw),
+                                raw,
+                                "complete",
+                            );
+                            cursor = tool_start + consumed;
+                        }
+                        CanonicalInvocationSegment::Incomplete => {
+                            push_timeline_text_item(
+                                &mut items,
+                                item_prefix,
+                                &mut item_index,
+                                timeline_item_kind_for_invocation(tool_rest),
+                                tool_rest,
+                                if running { "streaming" } else { "complete" },
+                            );
+                            break;
+                        }
+                        CanonicalInvocationSegment::Invalid => {
+                            if let Some(line_end_offset) = tool_rest.find('\n') {
+                                let invocation = &tool_rest[..line_end_offset];
+                                push_timeline_text_item(
+                                    &mut items,
+                                    item_prefix,
+                                    &mut item_index,
+                                    timeline_item_kind_for_invocation(invocation),
+                                    invocation,
+                                    "complete",
+                                );
+                                cursor = tool_start + line_end_offset + 1;
+                            } else {
+                                push_timeline_text_item(
+                                    &mut items,
+                                    item_prefix,
+                                    &mut item_index,
+                                    timeline_item_kind_for_invocation(tool_rest),
+                                    tool_rest,
+                                    if running { "streaming" } else { "complete" },
+                                );
+                                break;
+                            }
+                        }
+                    }
+                } else if let Some(line_end_offset) = tool_rest.find('\n') {
                     let invocation = &tool_rest[..line_end_offset];
                     push_timeline_text_item(
                         &mut items,
@@ -575,6 +611,107 @@ fn find_next_marker(stream: &str) -> Option<(usize, MarkerKind)> {
         }
 
         absolute_offset += line.len();
+    }
+
+    None
+}
+
+// Keep this brace-aware extractor aligned with the kernel logic used for syscall interception.
+enum CanonicalInvocationSegment<'a> {
+    Parsed { raw: &'a str, consumed: usize },
+    Incomplete,
+    Invalid,
+}
+
+fn extract_canonical_invocation_segment(text: &str) -> CanonicalInvocationSegment<'_> {
+    let prefix = if text.starts_with("TOOL:") {
+        "TOOL:"
+    } else if text.starts_with("ACTION:") {
+        "ACTION:"
+    } else {
+        return CanonicalInvocationSegment::Invalid;
+    };
+
+    let Some(rest_with_ws) = text.strip_prefix(prefix) else {
+        return CanonicalInvocationSegment::Invalid;
+    };
+    let rest = rest_with_ws.trim_start();
+    let Some(separator_idx) = rest.find(|c: char| c.is_whitespace() || c == '{') else {
+        return CanonicalInvocationSegment::Incomplete;
+    };
+
+    let name = &rest[..separator_idx];
+    if name.is_empty()
+        || !name.chars().all(|ch| {
+            ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-' | '.')
+        })
+    {
+        return CanonicalInvocationSegment::Invalid;
+    }
+
+    let payload_with_ws = &rest[separator_idx..];
+    let payload = payload_with_ws.trim_start();
+    if payload.is_empty() {
+        return CanonicalInvocationSegment::Incomplete;
+    }
+    if !payload.starts_with('{') {
+        return CanonicalInvocationSegment::Invalid;
+    }
+
+    let Some(json_end_rel) = first_balanced_json_object_end(payload) else {
+        return CanonicalInvocationSegment::Incomplete;
+    };
+
+    if serde_json::from_str::<serde_json::Value>(&payload[..json_end_rel]).is_err() {
+        return CanonicalInvocationSegment::Invalid;
+    }
+
+    let leading_ws_after_prefix = rest_with_ws.len() - rest.len();
+    let ws_before_payload = payload_with_ws.len() - payload.len();
+    let consumed =
+        prefix.len() + leading_ws_after_prefix + separator_idx + ws_before_payload + json_end_rel;
+
+    CanonicalInvocationSegment::Parsed {
+        raw: &text[..consumed],
+        consumed,
+    }
+}
+
+fn first_balanced_json_object_end(payload: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in payload.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
     }
 
     None
@@ -725,7 +862,9 @@ fn load_token(workspace_root: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{augment_timeline_with_tool_results, parse_stream_segments, TimelineItemKind};
+    use super::{
+        augment_timeline_with_tool_results, parse_stream_segments, TimelineItemKind, TimelineStore,
+    };
     use crate::kernel::audit::AuditLogEntry;
     use crate::models::kernel::TimelineSnapshot;
 
@@ -773,6 +912,32 @@ mod tests {
         assert_eq!(
             items[1].text,
             "ACTION:send {\"pid\":42,\"message\":\"hello\"}"
+        );
+    }
+
+    #[test]
+    fn parse_stream_segments_splits_canonical_tool_from_inline_suffix() {
+        let stream = "TOOL:python {\"code\":\"print(1)\"}La sequenza e' pronta";
+        let items = parse_stream_segments("pid-inline", stream, false);
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0].kind, TimelineItemKind::ToolCall));
+        assert_eq!(items[0].text, "TOOL:python {\"code\":\"print(1)\"}");
+        assert!(matches!(items[1].kind, TimelineItemKind::AssistantMessage));
+        assert_eq!(items[1].text, "La sequenza e' pronta");
+    }
+
+    #[test]
+    fn parse_stream_segments_splits_first_action_from_chained_action() {
+        let stream =
+            "ACTION:spawn {\"prompt\":\"worker\"}ACTION:send {\"pid\":1,\"message\":\"hi\"}";
+        let items = parse_stream_segments("pid-chain", stream, false);
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0].kind, TimelineItemKind::ActionCall));
+        assert_eq!(items[0].text, "ACTION:spawn {\"prompt\":\"worker\"}");
+        assert!(matches!(items[1].kind, TimelineItemKind::ActionCall));
+        assert_eq!(
+            items[1].text,
+            "ACTION:send {\"pid\":1,\"message\":\"hi\"}"
         );
     }
 
@@ -869,5 +1034,91 @@ mod tests {
             TimelineItemKind::ToolResult
         ));
         assert_eq!(augmented.items[1].status, "success");
+    }
+
+    #[test]
+    fn augment_timeline_ignores_unmatched_audit_entries() {
+        let timeline = TimelineSnapshot {
+            session_id: "pid-clean".to_string(),
+            pid: 77,
+            running: true,
+            workload: "general".to_string(),
+            source: "live_exec".to_string(),
+            fallback_notice: None,
+            error: None,
+            items: vec![crate::models::kernel::TimelineItem {
+                id: "pid-clean-turn-1-user".to_string(),
+                kind: TimelineItemKind::UserMessage,
+                text: "new prompt".to_string(),
+                status: "complete".to_string(),
+            }],
+        };
+        let audit_entries = vec![AuditLogEntry {
+            pid: 77,
+            success: true,
+            should_kill: false,
+            duration_ms: 3,
+            caller: Some("agent_text".to_string()),
+            transport: Some("text".to_string()),
+            tool_name: Some("python".to_string()),
+            command: "TOOL:python {\"code\":\"print(1)\"}".to_string(),
+            detail: "Output:\n1".to_string(),
+        }];
+
+        let augmented = augment_timeline_with_tool_results(timeline, &audit_entries);
+        assert_eq!(augmented.items.len(), 1);
+        assert!(matches!(
+            augmented.items[0].kind,
+            TimelineItemKind::UserMessage
+        ));
+    }
+
+    #[test]
+    fn insert_started_session_resets_live_state_when_pid_is_reused() {
+        let mut store = TimelineStore::default();
+        store.insert_started_session(
+            42,
+            "sess-old".to_string(),
+            "old prompt".to_string(),
+            "general".to_string(),
+        );
+        store.append_assistant_chunk(42, "old output");
+        store.finish_session_with_reason(42, None, Some("completed"));
+
+        store.insert_started_session(
+            42,
+            "sess-new".to_string(),
+            "new prompt".to_string(),
+            "general".to_string(),
+        );
+
+        let timeline = store
+            .snapshot_for_session_id("sess-new")
+            .expect("new session timeline should exist");
+        assert_eq!(timeline.items.len(), 2);
+        assert!(matches!(timeline.items[0].kind, TimelineItemKind::UserMessage));
+        assert_eq!(timeline.items[0].text, "new prompt");
+        assert!(matches!(
+            timeline.items[1].kind,
+            TimelineItemKind::AssistantMessage
+        ));
+        assert_eq!(timeline.items[1].status, "streaming");
+        assert!(timeline.running);
+    }
+
+    #[test]
+    fn evict_session_removes_pid_from_live_store() {
+        let mut store = TimelineStore::default();
+        store.insert_started_session(
+            7,
+            "sess-evict".to_string(),
+            "prompt".to_string(),
+            "general".to_string(),
+        );
+        assert!(store.snapshot(7).is_some());
+
+        store.evict_session(7);
+        assert!(store.snapshot(7).is_none());
+        assert!(store.snapshot_for_session_id("sess-evict").is_none());
     }
 }

@@ -12,6 +12,7 @@ pub fn parse_text_invocation(text: &str) -> Result<ToolInvocation, ToolError> {
 
 /// Controlla se il testo corrente che inizia per "TOOL:" sta ancora streammando.
 /// Ritorna `true` se siamo in presenza di JSON incompleto ma non corrotto (EOF parser error).
+#[allow(dead_code)]
 pub fn is_streaming_tool_invocation(text: &str) -> bool {
     crate::text_invocation::is_streaming_prefixed_json_invocation(text, "TOOL:")
 }
@@ -31,7 +32,7 @@ mod tests {
     #[test]
     fn rejects_non_object_payload() {
         let err = parse_text_invocation(r#"TOOL:calc ["1+1"]"#).expect_err("payload rejection");
-        assert!(err.to_string().contains("JSON object"));
+        assert!(err.to_string().contains("Missing JSON payload"));
     }
 
     #[test]

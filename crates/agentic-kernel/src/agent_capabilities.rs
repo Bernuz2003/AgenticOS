@@ -58,7 +58,7 @@ pub(crate) fn build_agent_capability_manifest(
         })
         .collect();
 
-    let actions = if caller == ToolCaller::AgentText {
+    let actions = if caller.can_orchestrate_actions() {
         builtin_action_descriptors()
             .into_iter()
             .map(|descriptor| AgentActionManifestEntry {
@@ -227,10 +227,13 @@ mod tests {
         let registry = ToolRegistry::with_builtins();
 
         let agent_text_manifest = build_agent_capability_manifest(&registry, ToolCaller::AgentText);
+        let supervisor_manifest =
+            build_agent_capability_manifest(&registry, ToolCaller::AgentSupervisor);
         let programmatic_manifest =
             build_agent_capability_manifest(&registry, ToolCaller::Programmatic);
 
-        assert_eq!(agent_text_manifest.actions.len(), 2);
+        assert!(agent_text_manifest.actions.is_empty());
+        assert_eq!(supervisor_manifest.actions.len(), 2);
         assert!(programmatic_manifest.actions.is_empty());
     }
 }

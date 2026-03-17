@@ -9,6 +9,7 @@ use crate::backend::{
 };
 use crate::memory::ContextSlotId;
 use crate::prompting::GenerationConfig;
+use crate::tools::invocation::ToolCaller;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -91,6 +92,7 @@ fn test_process(policy: ContextPolicy) -> (AgentProcess, Arc<Mutex<Vec<ContextSl
     let process = AgentProcess::new(
         1,
         7,
+        ToolCaller::AgentText,
         ProcessLifecyclePolicy::Interactive,
         model,
         tokenizer,

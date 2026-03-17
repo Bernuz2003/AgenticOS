@@ -57,6 +57,7 @@ pub struct SysCallOutcome {
 pub fn handle_syscall(
     command_block: &str,
     pid: u64,
+    caller: invocation::ToolCaller,
     rate_map: &mut SyscallRateMap,
     registry: &ToolRegistry,
 ) -> SysCallOutcome {
@@ -64,7 +65,7 @@ pub fn handle_syscall(
     let context = invocation::ToolContext {
         pid: Some(pid),
         session_id: None,
-        caller: invocation::ToolCaller::AgentText,
+        caller,
         transport: invocation::ToolInvocationTransport::Text,
     };
 

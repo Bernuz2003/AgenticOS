@@ -10,6 +10,7 @@ use crate::model_catalog::{RemoteModelEntry, ResolvedModelTarget, WorkloadClass}
 use crate::process::ProcessLifecyclePolicy;
 use crate::prompting::PromptFamily;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
+use crate::tools::invocation::ToolCaller;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokenizers::models::wordlevel::WordLevel;
@@ -97,6 +98,7 @@ fn remote_stateless_processes_skip_resident_slot_binding() {
             prompt: "ping cloud backend".to_string(),
             system_prompt: None,
             owner_id: 7,
+            tool_caller: ToolCaller::AgentText,
             workload: WorkloadClass::Fast,
             required_backend_class: Some(BackendClass::RemoteStateless),
             priority: ProcessPriority::Normal,
@@ -155,6 +157,7 @@ fn remote_stateless_engine_rejects_resident_local_task_policy() {
             prompt: "this task expects residency".to_string(),
             system_prompt: None,
             owner_id: 7,
+            tool_caller: ToolCaller::AgentText,
             workload: WorkloadClass::Code,
             required_backend_class: Some(BackendClass::ResidentLocal),
             priority: ProcessPriority::Normal,
@@ -196,6 +199,7 @@ fn resident_local_engine_rejects_remote_stateless_task_policy() {
             prompt: "this task expects cloud execution".to_string(),
             system_prompt: None,
             owner_id: 7,
+            tool_caller: ToolCaller::AgentText,
             workload: WorkloadClass::Fast,
             required_backend_class: Some(BackendClass::RemoteStateless),
             priority: ProcessPriority::Normal,
@@ -248,6 +252,7 @@ fn spawn_managed_process_injects_system_prompt_without_losing_user_prompt() {
             prompt: "user task".to_string(),
             system_prompt: Some("kernel policy".to_string()),
             owner_id: 7,
+            tool_caller: ToolCaller::AgentText,
             workload: WorkloadClass::Fast,
             required_backend_class: Some(BackendClass::RemoteStateless),
             priority: ProcessPriority::Normal,
