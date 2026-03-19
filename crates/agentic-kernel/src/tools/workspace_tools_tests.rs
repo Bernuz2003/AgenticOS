@@ -45,6 +45,7 @@ fn text_context() -> ToolContext {
         session_id: Some("workspace-tools".to_string()),
         caller: ToolCaller::AgentText,
         transport: ToolInvocationTransport::Text,
+        call_id: None,
     }
 }
 

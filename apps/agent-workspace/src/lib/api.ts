@@ -8,6 +8,7 @@ export interface LobbySnapshotSession {
   title: string;
   promptPreview: string;
   status: string;
+  runtimeState: string | null;
   uptimeLabel: string;
   tokensLabel: string;
   contextStrategy: string;
@@ -75,6 +76,11 @@ export interface WorkspaceSnapshot {
   runtimeLabel: string | null;
   state: string;
   workload: string;
+  ownerId: number | null;
+  indexPos: number | null;
+  priority: string | null;
+  quotaTokens: number | null;
+  quotaSyscalls: number | null;
   contextSlotId: number | null;
   residentSlotPolicy: string | null;
   residentSlotState: string | null;
@@ -185,6 +191,17 @@ export interface AuditEvent {
   sessionId: string | null;
   pid: number | null;
   runtimeId: string | null;
+}
+
+export interface AuditEventDto {
+  category: string;
+  kind: string;
+  title: string;
+  detail: string;
+  recorded_at_ms: number;
+  session_id: string | null;
+  pid: number | null;
+  runtime_id: string | null;
 }
 
 export interface StartSessionResult {
@@ -485,16 +502,7 @@ export interface LobbySnapshotDto {
     requested_at_ms: number;
     updated_at_ms: number;
   }>;
-  global_audit_events: Array<{
-    category: string;
-    kind: string;
-    title: string;
-    detail: string;
-    recorded_at_ms: number;
-    session_id: string | null;
-    pid: number | null;
-    runtime_id: string | null;
-  }>;
+  global_audit_events: AuditEventDto[];
   orchestrations: Array<{
     orchestration_id: number;
     total: number;
@@ -515,6 +523,7 @@ export interface LobbySnapshotDto {
     title: string;
     prompt_preview: string;
     status: string;
+    runtime_state: string | null;
     uptime_label: string;
     tokens_label: string;
     context_strategy?: string | null;
@@ -537,6 +546,11 @@ export interface WorkspaceSnapshotDto {
   runtime_label: string | null;
   state: string;
   workload: string;
+  owner_id: number | null;
+  index_pos: number | null;
+  priority: string | null;
+  quota_tokens: number | null;
+  quota_syscalls: number | null;
   context_slot_id: number | null;
   resident_slot_policy: string | null;
   resident_slot_state: string | null;
@@ -601,16 +615,7 @@ export interface WorkspaceSnapshotDto {
     last_summary_ts: string | null;
     context_segments: number;
   };
-  audit_events: Array<{
-    category: string;
-    kind: string;
-    title: string;
-    detail: string;
-    recorded_at_ms: number;
-    session_id: string | null;
-    pid: number | null;
-    runtime_id: string | null;
-  }>;
+  audit_events: AuditEventDto[];
 }
 
 export interface TimelineSnapshotDto {
@@ -651,7 +656,7 @@ export function normalizeLobbySnapshot(snapshot: LobbySnapshotDto): LobbySnapsho
     runtimeInstances: snapshot.runtime_instances.map(mapRuntimeInstance),
     resourceGovernor: mapResourceGovernor(snapshot.resource_governor),
     runtimeLoadQueue: snapshot.runtime_load_queue.map(mapRuntimeLoadQueueEntry),
-    globalAuditEvents: snapshot.global_audit_events.map(mapAuditEvent),
+    globalAuditEvents: snapshot.global_audit_events.map(normalizeAuditEvent),
     orchestrations: snapshot.orchestrations.map((orchestration) => ({
       orchestrationId: orchestration.orchestration_id,
       total: orchestration.total,
@@ -673,6 +678,7 @@ export function normalizeLobbySnapshot(snapshot: LobbySnapshotDto): LobbySnapsho
       title: session.title,
       promptPreview: session.prompt_preview,
       status: session.status,
+      runtimeState: session.runtime_state,
       uptimeLabel: session.uptime_label,
       tokensLabel: session.tokens_label,
       contextStrategy: session.context_strategy ?? "sliding_window",
@@ -685,18 +691,7 @@ export function normalizeLobbySnapshot(snapshot: LobbySnapshotDto): LobbySnapsho
   };
 }
 
-function mapAuditEvent(
-  event: {
-    category: string;
-    kind: string;
-    title: string;
-    detail: string;
-    recorded_at_ms: number;
-    session_id: string | null;
-    pid: number | null;
-    runtime_id: string | null;
-  },
-): AuditEvent {
+export function normalizeAuditEvent(event: AuditEventDto): AuditEvent {
   return {
     category: event.category,
     kind: event.kind,
@@ -707,6 +702,18 @@ function mapAuditEvent(
     pid: event.pid,
     runtimeId: event.runtime_id,
   };
+}
+
+export function auditEventKey(event: AuditEvent): string {
+  return [
+    event.recordedAtMs,
+    event.category,
+    event.kind,
+    event.sessionId ?? "",
+    event.pid ?? "",
+    event.runtimeId ?? "",
+    event.detail,
+  ].join("|");
 }
 
 function mapRemoteRuntimeModel(
@@ -763,6 +770,11 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
     runtimeLabel: snapshot.runtime_label,
     state: snapshot.state,
     workload: snapshot.workload,
+    ownerId: snapshot.owner_id,
+    indexPos: snapshot.index_pos,
+    priority: snapshot.priority,
+    quotaTokens: snapshot.quota_tokens,
+    quotaSyscalls: snapshot.quota_syscalls,
     contextSlotId: snapshot.context_slot_id,
     residentSlotPolicy: snapshot.resident_slot_policy,
     residentSlotState: snapshot.resident_slot_state,
@@ -808,7 +820,7 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
           contextSegments: snapshot.context.context_segments,
         }
       : null,
-    auditEvents: snapshot.audit_events.map(mapAuditEvent),
+    auditEvents: snapshot.audit_events.map(normalizeAuditEvent),
   };
 }
 
@@ -971,6 +983,20 @@ export async function startSession(
     session_id: string;
     pid: number;
   }>("start_session", { prompt, workload });
+
+  return {
+    sessionId: session.session_id,
+    pid: session.pid,
+  };
+}
+
+export async function resumeSession(
+  sessionId: string,
+): Promise<StartSessionResult> {
+  const session = await invoke<{
+    session_id: string;
+    pid: number;
+  }>("resume_session", { sessionId });
 
   return {
     sessionId: session.session_id,

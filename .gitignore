@@ -15,6 +15,9 @@ venv/
 # ── Kernel runtime workspace (swap files, audit logs, test artifacts) ──
 /workspace/
 
+/reports/
+/docs/
+
 # ── IDE / Editor ──
 .vscode/
 .idea/

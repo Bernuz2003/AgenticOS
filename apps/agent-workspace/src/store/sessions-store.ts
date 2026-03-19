@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import {
+  auditEventKey,
   fetchLobbySnapshot,
   type AuditEvent,
   type BackendCapabilities,
@@ -22,6 +23,7 @@ export interface AgentSessionSummary {
   title: string;
   promptPreview: string;
   status: SessionStatus;
+  runtimeState: string | null;
   uptimeLabel: string;
   tokensLabel: string;
   contextStrategy: string;
@@ -69,6 +71,7 @@ interface SessionsState {
   error: string | null;
   refresh: () => Promise<void>;
   applySnapshot: (snapshot: Awaited<ReturnType<typeof fetchLobbySnapshot>>) => void;
+  appendGlobalAuditEvent: (event: AuditEvent) => void;
   setBridgeStatus: (connected: boolean, error: string | null) => void;
 }
 
@@ -135,6 +138,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
         title: session.title,
         promptPreview: session.promptPreview,
         status: normalizeStatus(session.status),
+        runtimeState: session.runtimeState,
         uptimeLabel: session.uptimeLabel,
         tokensLabel: session.tokensLabel,
         contextStrategy: session.contextStrategy || "sliding_window",
@@ -144,6 +148,24 @@ export const useSessionsStore = create<SessionsState>((set) => ({
         orchestrationId: session.orchestrationId,
         orchestrationTaskId: session.orchestrationTaskId,
       })),
+    });
+  },
+  appendGlobalAuditEvent: (event) => {
+    set((state) => {
+      const eventKey = auditEventKey(event);
+      if (
+        state.globalAuditEvents.some(
+          (candidate) => auditEventKey(candidate) === eventKey,
+        )
+      ) {
+        return state;
+      }
+
+      return {
+        globalAuditEvents: [event, ...state.globalAuditEvents]
+          .sort((left, right) => right.recordedAtMs - left.recordedAtMs)
+          .slice(0, 128),
+      };
     });
   },
   setBridgeStatus: (connected, error) => {

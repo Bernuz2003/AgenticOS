@@ -11,7 +11,13 @@ function formatBytes(bytes: number, decimals = 2) {
 }
 
 export function ResourcesPage() {
-  const { resourceGovernor, memory, runtimeInstances, globalAccounting } = useSessionsStore();
+  const {
+    resourceGovernor,
+    memory,
+    runtimeInstances,
+    globalAccounting,
+    globalAuditEvents,
+  } = useSessionsStore();
 
   return (
     <div className="mx-auto max-w-6xl p-8 space-y-8 animate-in fade-in duration-500">
@@ -246,6 +252,63 @@ export function ResourcesPage() {
                        <p className="font-mono font-bold text-slate-800">{formatBytes(instance.reservationRamBytes)}</p>
                      </div>
                    </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm md:col-span-2">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl">
+              <ShieldAlert className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">Live Diagnostics Feed</h2>
+              <p className="text-sm text-slate-500">
+                Runtime, admission, tool and remote transitions emitted live by the kernel.
+              </p>
+            </div>
+          </div>
+
+          {globalAuditEvents.length === 0 ? (
+            <div className="text-slate-400 text-sm py-4">Waiting for diagnostics...</div>
+          ) : (
+            <div className="space-y-3">
+              {globalAuditEvents.slice(0, 12).map((event, index) => (
+                <div
+                  key={`${event.recordedAtMs}-${event.category}-${index}`}
+                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-900">{event.title}</div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        {new Date(event.recordedAtMs).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wider font-bold">
+                      <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-slate-600">
+                        {event.category}
+                      </span>
+                      <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-slate-500">
+                        {event.kind}
+                      </span>
+                      {event.runtimeId && (
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-slate-500">
+                          {event.runtimeId}
+                        </span>
+                      )}
+                      {event.sessionId && (
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-slate-500">
+                          {event.sessionId}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-3 font-mono text-xs text-slate-600 whitespace-pre-wrap break-words">
+                    {event.detail}
+                  </div>
                 </div>
               ))}
             </div>

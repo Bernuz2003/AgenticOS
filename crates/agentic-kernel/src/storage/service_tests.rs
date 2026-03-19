@@ -29,13 +29,10 @@ fn open_initializes_schema_and_persists_boot_metadata() {
             .expect("kernel version"),
         Some("0.5.0-test".to_string())
     );
-    assert_eq!(
-        storage
-            .meta_value("last_boot_started_at_ms")
-            .expect("last boot timestamp")
-            .is_some(),
-        true
-    );
+    assert!(storage
+        .meta_value("last_boot_started_at_ms")
+        .expect("last boot timestamp")
+        .is_some());
     assert!(db_path.exists());
 
     let _ = fs::remove_dir_all(dir);
@@ -394,6 +391,7 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> bool 
         .query_map([], |row| row.get::<_, String>(1))
         .expect("query table info");
     let present = rows.filter_map(Result::ok).any(|name| name == column);
+    drop(statement);
     present
 }
 

@@ -30,6 +30,7 @@ pub(crate) struct BackendAccountingEvent {
     pub(crate) input_tokens: u64,
     pub(crate) output_tokens: u64,
     pub(crate) estimated_cost_usd: f64,
+    pub(crate) duration_ms: u128,
     pub(crate) status: AccountingEventStatus,
     pub(crate) error_code: Option<String>,
     pub(crate) error_message: Option<String>,

@@ -17,6 +17,13 @@ pub(crate) struct LegacyTimelineImportReport {
     pub(crate) imported_messages: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredReplayMessage {
+    pub(crate) role: String,
+    pub(crate) kind: String,
+    pub(crate) content: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct LegacyTimelineTurn {
     prompt: String,
@@ -511,6 +518,55 @@ impl StorageService {
         transaction.commit()?;
 
         Ok(report)
+    }
+
+    pub(crate) fn load_replay_messages_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<StoredReplayMessage>, StorageError> {
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT role, kind, content
+            FROM session_messages
+            WHERE session_id = ?1
+            ORDER BY message_id ASC
+            "#,
+        )?;
+        let rows = statement.query_map(params![session_id], |row| {
+            Ok(StoredReplayMessage {
+                role: row.get(0)?,
+                kind: row.get(1)?,
+                content: row.get(2)?,
+            })
+        })?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+        Ok(messages)
+    }
+
+    pub(crate) fn latest_workload_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>, StorageError> {
+        use rusqlite::OptionalExtension;
+
+        self.connection
+            .query_row(
+                r#"
+                SELECT workload
+                FROM session_turns
+                WHERE session_id = ?1
+                ORDER BY turn_index DESC, turn_id DESC
+                LIMIT 1
+                "#,
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StorageError::from)
     }
 }
 

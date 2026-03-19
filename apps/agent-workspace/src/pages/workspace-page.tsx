@@ -6,11 +6,41 @@ import { AuditDrawer } from "../components/workspace/audit-drawer";
 import { ArrowLeft } from "lucide-react";
 import {
   continueSessionOutput,
+  resumeSession,
   sendSessionInput,
   stopSessionOutput,
 } from "../lib/api";
 import { useSessionsStore } from "../store/sessions-store";
 import { useWorkspaceStore } from "../store/workspace-store";
+import { deriveSessionStatus, runtimeStateLabel } from "../lib/format";
+import type { AgentSessionSummary } from "../store/sessions-store";
+
+function buildSyntheticSession(
+  sessionId: string,
+  pid: number,
+  promptPreview: string,
+  uptimeLabel: string,
+  status: AgentSessionSummary["status"],
+  snapshot: ReturnType<typeof useWorkspaceStore.getState>["snapshot"],
+  timeline: ReturnType<typeof useWorkspaceStore.getState>["timeline"],
+): AgentSessionSummary {
+  return {
+    sessionId,
+    pid,
+    activePid: snapshot?.activePid ?? null,
+    lastPid: snapshot?.lastPid ?? (timeline?.pid ?? null),
+    title: snapshot?.title ?? `Session ${sessionId}`,
+    promptPreview,
+    status,
+    runtimeState: snapshot?.state ?? null,
+    uptimeLabel,
+    tokensLabel: snapshot ? String(snapshot.tokensGenerated) : "0",
+    contextStrategy: snapshot?.context?.contextStrategy ?? "sliding_window",
+    runtimeId: snapshot?.runtimeId ?? null,
+    runtimeLabel: snapshot?.runtimeLabel ?? null,
+    backendClass: snapshot?.backendClass ?? null,
+  };
+}
 
 export function WorkspacePage() {
   const { sessionId } = useParams();
@@ -44,52 +74,44 @@ export function WorkspacePage() {
       return listedSession;
     }
 
-    const derivedStatus: "idle" | "running" | "swapped" =
-      snapshot?.state === "Parked"
-        ? "swapped"
-        : timeline?.running ||
-            snapshot?.state === "Running" ||
-            snapshot?.state === "WaitingForSyscall" ||
-            snapshot?.state === "InFlight"
-          ? "running"
-          : "idle";
+    const derivedStatus = deriveSessionStatus(
+      snapshot?.state,
+      Boolean(timeline?.running),
+    );
 
     if (!Number.isNaN(routePid)) {
+      const liveSessionId = sessionId ?? `pid-${routePid}`;
+      const synthetic = buildSyntheticSession(
+        liveSessionId,
+        routePid,
+        "Sessione avviata dal bridge Tauri",
+        snapshot ? `${Math.round(snapshot.elapsedSecs)}s` : "live",
+        derivedStatus,
+        snapshot,
+        timeline,
+      );
       return {
-        sessionId: sessionId ?? `pid-${routePid}`,
-        pid: routePid,
+        ...synthetic,
         activePid: snapshot?.activePid ?? routePid,
         lastPid: snapshot?.lastPid ?? routePid,
         title: snapshot?.title ?? `Runtime session / PID ${routePid}`,
-        promptPreview: "Sessione avviata dal bridge Tauri",
-        status: derivedStatus,
-        uptimeLabel: snapshot ? `${Math.round(snapshot.elapsedSecs)}s` : "live",
-        tokensLabel: snapshot ? String(snapshot.tokensGenerated) : "0",
-        contextStrategy: snapshot?.context?.contextStrategy ?? "sliding_window",
-        runtimeId: snapshot?.runtimeId ?? null,
-        runtimeLabel: snapshot?.runtimeLabel ?? null,
-        backendClass: snapshot?.backendClass ?? null,
       };
     }
 
-    return {
+    return buildSyntheticSession(
       sessionId,
-      pid: snapshot?.activePid ?? snapshot?.lastPid ?? timeline?.pid ?? 0,
-      activePid: snapshot?.activePid ?? null,
-      lastPid: snapshot?.lastPid ?? (timeline?.pid ?? null),
-      title: snapshot?.title ?? `Session ${sessionId}`,
-      promptPreview: "Sessione persistita dal control plane SQLite",
-      status: derivedStatus,
-      uptimeLabel: snapshot ? `${Math.round(snapshot.elapsedSecs)}s` : "persisted",
-      tokensLabel: snapshot ? String(snapshot.tokensGenerated) : "0",
-      contextStrategy: snapshot?.context?.contextStrategy ?? "sliding_window",
-      runtimeId: snapshot?.runtimeId ?? null,
-      runtimeLabel: snapshot?.runtimeLabel ?? null,
-      backendClass: snapshot?.backendClass ?? null,
-    };
+      snapshot?.activePid ?? snapshot?.lastPid ?? timeline?.pid ?? 0,
+      "Sessione persistita dal control plane SQLite",
+      snapshot ? `${Math.round(snapshot.elapsedSecs)}s` : "persisted",
+      derivedStatus,
+      snapshot,
+      timeline,
+    );
   }, [listedSession, routePid, sessionId, snapshot, timeline?.pid, timeline?.running]);
 
   const activePid = snapshot?.activePid ?? session?.activePid ?? null;
+  const displayedTitle = snapshot?.title ?? session?.title ?? "";
+  const displayedRuntimeState = snapshot?.state ?? session?.runtimeState ?? null;
 
   useEffect(() => {
     if (!sessionId) {
@@ -110,7 +132,16 @@ export function WorkspacePage() {
   }, [session?.pid]);
 
   const awaitingContinuation = snapshot?.state === "AwaitingTurnDecision";
+  const canResumeFromHistory =
+    !activePid &&
+    !awaitingContinuation &&
+    !loading &&
+    !timelineLoading &&
+    !composerLoading &&
+    !turnActionLoading &&
+    Boolean(session && !session.sessionId.startsWith("pid-"));
   const canSendInput =
+    canResumeFromHistory ||
     !!activePid &&
     snapshot?.state === "WaitingForInput" &&
     !timeline?.running &&
@@ -118,7 +149,7 @@ export function WorkspacePage() {
     !turnActionLoading;
 
   async function handleComposerSubmit() {
-    if (!session || !activePid) {
+    if (!session) {
       return;
     }
 
@@ -131,15 +162,25 @@ export function WorkspacePage() {
     setComposerError(null);
     setTurnActionError(null);
     try {
-      await sendSessionInput(activePid, prompt);
+      let targetPid = activePid;
+      if (!targetPid) {
+        const resumed = await resumeSession(session.sessionId);
+        targetPid = resumed.pid;
+      }
+
+      if (!targetPid) {
+        throw new Error("No live PID available for session input");
+      }
+
+      await sendSessionInput(targetPid, prompt);
       setComposerValue("");
       await Promise.all([
-        refreshTimeline(session.sessionId, activePid),
-        refresh(session.sessionId, activePid),
+        refreshTimeline(session.sessionId, targetPid),
+        refresh(session.sessionId, targetPid),
       ]);
     } catch (error) {
       setComposerError(
-        error instanceof Error ? error.message : "Failed to send input to resident PID",
+        error instanceof Error ? error.message : "Failed to resume or send input to session",
       );
     } finally {
       setComposerLoading(false);
@@ -226,9 +267,9 @@ export function WorkspacePage() {
               <ArrowLeft className="w-5 h-5" />
             </Link>
             <div className="text-center">
-               <h1 className="font-bold text-slate-900">{session.title}</h1>
+               <h1 className="font-bold text-slate-900">{displayedTitle}</h1>
                <div className="text-xs text-slate-500 uppercase font-semibold tracking-wider">
-                 {session.status} · PID {session.pid}
+                 session:{session.status} · runtime:{runtimeStateLabel(displayedRuntimeState)} · PID {activePid ?? session.pid}
                </div>
             </div>
             <div className="w-9" /> {/* spacer for alignment */}

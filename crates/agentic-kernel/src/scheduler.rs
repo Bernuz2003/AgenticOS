@@ -135,6 +135,7 @@ pub struct RestoredProcessMetadata {
 pub struct CheckedOutProcessMetadata {
     pub owner_id: usize,
     pub state: String,
+    pub checked_out_at: Instant,
     pub tokens: usize,
     pub index_pos: usize,
     pub max_tokens: usize,
@@ -220,6 +221,13 @@ impl ProcessScheduler {
 
     pub fn checked_out_process(&self, pid: u64) -> Option<&CheckedOutProcessMetadata> {
         self.checked_out_processes.get(&pid)
+    }
+
+    pub fn checked_out_snapshots(&self) -> Vec<(u64, CheckedOutProcessMetadata)> {
+        self.checked_out_processes
+            .iter()
+            .map(|(pid, metadata)| (*pid, metadata.clone()))
+            .collect()
     }
 
     // ── Priority ────────────────────────────────────────────────────────

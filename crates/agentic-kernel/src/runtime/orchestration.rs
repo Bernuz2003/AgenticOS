@@ -4,7 +4,6 @@ use std::sync::mpsc;
 
 use agentic_control_models::KernelEvent;
 
-use crate::audit;
 use crate::inference_worker::InferenceCmd;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
@@ -22,8 +21,10 @@ use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
 use crate::tools::invocation::ToolCaller;
 use crate::transport::Client;
+use crate::{audit, audit::AuditContext};
 use crate::{protocol, scheduler::CheckedOutProcessMetadata};
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_finished_processes(
     runtime_registry: &mut RuntimeRegistry,
     memory: &mut NeuralMemory,
@@ -34,9 +35,11 @@ pub(super) fn handle_finished_processes(
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
     pending_events: &mut Vec<KernelEvent>,
-) {
+) -> usize {
     let finished_pids = runtime_registry.finishable_pids();
+    let mut finished_count = 0usize;
     for pid in finished_pids {
+        finished_count = finished_count.saturating_add(1);
         if orchestrator.is_orchestrated(pid) {
             orchestrator.mark_completed(pid);
         }
@@ -125,6 +128,8 @@ pub(super) fn handle_finished_processes(
             tracing::warn!(pid, %err, "ORCHESTRATOR: failed to release runtime binding on finish");
         }
     }
+
+    finished_count
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -319,9 +324,12 @@ pub(super) fn checkout_active_processes(
     scheduler: &mut ProcessScheduler,
     cmd_tx: &mpsc::Sender<InferenceCmd>,
     in_flight: &mut HashSet<u64>,
-) {
+    session_registry: &SessionRegistry,
+    storage: &mut StorageService,
+) -> usize {
     let active_pids = runtime_registry.all_active_pids();
     let ordered_pids = scheduler.scheduling_order(&active_pids);
+    let mut checked_out_count = 0usize;
 
     for pid in ordered_pids {
         if in_flight.contains(&pid) {
@@ -358,7 +366,12 @@ pub(super) fn checkout_active_processes(
                 pid,
                 CheckedOutProcessMetadata {
                     owner_id: process.owner_id,
-                    state: "InFlight".to_string(),
+                    state: if process.model.backend_class().as_str() == "remote_stateless" {
+                        "AwaitingRemoteResponse".to_string()
+                    } else {
+                        "InFlight".to_string()
+                    },
+                    checked_out_at: std::time::Instant::now(),
                     tokens: process.tokens.len(),
                     index_pos: process.index_pos,
                     max_tokens: process.max_tokens,
@@ -374,7 +387,24 @@ pub(super) fn checkout_active_processes(
                     context: process.context_status_snapshot(),
                 },
             );
+            if process.model.backend_class().as_str() == "remote_stateless" {
+                audit::record(
+                    storage,
+                    audit::REMOTE_REQUEST_STARTED,
+                    format!(
+                        "pid={} backend={} awaiting=provider_response",
+                        pid,
+                        process.model.backend_id()
+                    ),
+                    AuditContext::for_process(
+                        session_registry.session_id_for_pid(pid),
+                        pid,
+                        runtime_registry.runtime_id_for_pid(pid),
+                    ),
+                );
+            }
             in_flight.insert(pid);
+            checked_out_count = checked_out_count.saturating_add(1);
             let _ = cmd_tx.send(InferenceCmd::Step {
                 pid,
                 process: Box::new(process),
@@ -383,4 +413,6 @@ pub(super) fn checkout_active_processes(
             });
         }
     }
+
+    checked_out_count
 }

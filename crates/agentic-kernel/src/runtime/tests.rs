@@ -98,9 +98,8 @@ fn scan_keeps_suffix_after_complete_tool_json_same_line() {
 
 #[test]
 fn scan_keeps_next_action_after_first_action_on_same_line() {
-    let mut buf =
-        "ACTION:spawn {\"prompt\":\"worker\"}ACTION:send {\"pid\":7,\"message\":\"ok\"}"
-            .to_string();
+    let mut buf = "ACTION:spawn {\"prompt\":\"worker\"}ACTION:send {\"pid\":7,\"message\":\"ok\"}"
+        .to_string();
 
     let first = scan_syscall_buffer(&mut buf);
     assert_eq!(

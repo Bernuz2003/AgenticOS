@@ -62,6 +62,7 @@ pub struct ToolContext {
     pub session_id: Option<String>,
     pub caller: ToolCaller,
     pub transport: ToolInvocationTransport,
+    pub call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

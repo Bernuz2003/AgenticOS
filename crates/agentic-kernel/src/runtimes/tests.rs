@@ -14,7 +14,7 @@ use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::tools::invocation::ToolCaller;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokenizers::models::wordlevel::WordLevel;
 use tokenizers::Tokenizer;
@@ -232,7 +232,7 @@ fn remote_target() -> ResolvedModelTarget {
     )
 }
 
-fn local_target(tokenizer_path: &PathBuf) -> ResolvedModelTarget {
+fn local_target(tokenizer_path: &Path) -> ResolvedModelTarget {
     let driver_resolution =
         resolve_driver_for_model(PromptFamily::Mistral, None, Some("external-llamacpp"))
             .expect("resolve local backend");
@@ -240,7 +240,7 @@ fn local_target(tokenizer_path: &PathBuf) -> ResolvedModelTarget {
         None,
         PathBuf::from("ignored.gguf"),
         PromptFamily::Mistral,
-        Some(tokenizer_path.clone()),
+        Some(tokenizer_path.to_path_buf()),
         None,
         driver_resolution,
     )

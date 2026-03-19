@@ -27,3 +27,4 @@ pub(crate) use recovery::BootRecoveryReport;
 pub(crate) use runtime::StoredRuntimeRecord;
 pub(crate) use runtime_queue::StoredRuntimeLoadQueueEntry;
 pub(crate) use service::{StorageError, StorageService, StoredSessionRecord};
+pub(crate) use timeline::StoredReplayMessage;

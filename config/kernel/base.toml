@@ -1,7 +1,7 @@
 [network]
 host = "127.0.0.1"
 port = 6380
-poll_timeout_ms = 5
+poll_timeout_ms = 500
 log_connections = false
 
 [paths]

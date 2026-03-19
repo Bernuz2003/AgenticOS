@@ -199,9 +199,13 @@ impl SessionRegistry {
             .unwrap_or_else(|| format!("pid-{pid}"))
     }
 
-    #[cfg(test)]
     pub(crate) fn session(&self, session_id: &str) -> Option<&SessionRecord> {
         self.sessions.get(session_id)
+    }
+
+    pub(crate) fn active_pid_for_session(&self, session_id: &str) -> Option<u64> {
+        self.session(session_id)
+            .and_then(|record| record.active_pid)
     }
 
     pub(crate) fn session_count(&self) -> usize {

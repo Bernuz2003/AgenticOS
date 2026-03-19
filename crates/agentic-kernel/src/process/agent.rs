@@ -34,6 +34,7 @@ pub struct AgentProcess {
 }
 
 impl AgentProcess {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         _id: u64,
         owner_id: usize,

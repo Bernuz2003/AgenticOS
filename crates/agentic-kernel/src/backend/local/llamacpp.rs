@@ -170,6 +170,7 @@ impl InferenceBackend for ExternalLlamaCppBackend {
             remaining_generation_budget,
             tokenizer,
             generation,
+            stream_observer: _,
             eos_token_id: _,
             eot_token_id: _,
         } = request;

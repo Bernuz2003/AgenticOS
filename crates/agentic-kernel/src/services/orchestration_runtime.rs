@@ -35,6 +35,7 @@ pub enum OrchestrationStartError {
     RoutingFailed(String),
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn start_orchestration(
     runtime_registry: &mut RuntimeRegistry,
     resource_governor: &mut ResourceGovernor,

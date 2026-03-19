@@ -397,6 +397,7 @@ fn openai_responses_backend_roundtrips_generation() {
             remaining_generation_budget: generation.max_tokens,
             tokenizer: &tokenizer,
             generation,
+            stream_observer: None,
             eos_token_id: 2,
             eot_token_id: 3,
         })
@@ -465,6 +466,7 @@ fn groq_responses_backend_roundtrips_generation() {
             remaining_generation_budget: generation.max_tokens,
             tokenizer: &tokenizer,
             generation,
+            stream_observer: None,
             eos_token_id: 2,
             eot_token_id: 3,
         })
@@ -542,6 +544,7 @@ fn typed_remote_target_applies_model_specific_limits_pricing_and_capabilities() 
             remaining_generation_budget: generation.max_tokens,
             tokenizer: &tokenizer,
             generation,
+            stream_observer: None,
             eos_token_id: 2,
             eot_token_id: 3,
         })
@@ -613,6 +616,7 @@ fn openrouter_backend_uses_chat_completions_transport() {
             remaining_generation_budget: generation.max_tokens,
             tokenizer: &tokenizer,
             generation,
+            stream_observer: None,
             eos_token_id: 2,
             eot_token_id: 3,
         })
@@ -765,6 +769,7 @@ fn external_backend_roundtrips_generation_and_slot_rpc() {
             remaining_generation_budget: generation.max_tokens,
             tokenizer: &tokenizer,
             generation,
+            stream_observer: None,
             eos_token_id: 2,
             eot_token_id: 3,
         })
@@ -833,6 +838,7 @@ fn external_backend_streaming_stops_on_tool_marker() {
             remaining_generation_budget: generation.max_tokens,
             tokenizer: &tokenizer,
             generation,
+            stream_observer: None,
             eos_token_id: 2,
             eot_token_id: 3,
         })
@@ -936,6 +942,7 @@ fn external_backend_preserves_special_tokens_in_prompt_decode() {
             remaining_generation_budget: generation.max_tokens,
             tokenizer: &tokenizer,
             generation,
+            stream_observer: None,
             eos_token_id: 6,
             eot_token_id: 7,
         })
@@ -987,6 +994,7 @@ fn external_backend_uses_chunked_completion_requests() {
             remaining_generation_budget: generation.max_tokens,
             tokenizer: &tokenizer,
             generation,
+            stream_observer: None,
             eos_token_id: 6,
             eot_token_id: 7,
         })
@@ -1031,6 +1039,7 @@ fn external_backend_uses_rendered_prompt_cache_instead_of_redecoding_tokens() {
             remaining_generation_budget: generation.max_tokens,
             tokenizer: &tokenizer,
             generation,
+            stream_observer: None,
             eos_token_id: 6,
             eot_token_id: 7,
         })
@@ -1082,6 +1091,7 @@ fn external_backend_uses_remaining_turn_budget_not_total_context_len() {
             remaining_generation_budget: 1,
             tokenizer: &tokenizer,
             generation,
+            stream_observer: None,
             eos_token_id: 6,
             eot_token_id: 7,
         })

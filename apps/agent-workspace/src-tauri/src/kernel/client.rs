@@ -6,15 +6,14 @@ use std::time::Duration;
 
 use agentic_control_models::{
     ControlMessage, LoadModelResult, ModelCatalogSnapshot, OrchStatusResponse, OrchSummaryResponse,
-    OrchestrateResult, PidStatusResponse, SelectModelResult, SendInputResult, StatusResponse,
-    TurnControlResult,
+    OrchestrateResult, PidStatusResponse, ResumeSessionResult, SelectModelResult, SendInputResult,
+    StatusResponse, TurnControlResult,
 };
 use agentic_protocol::OpCode;
 
 use super::auth::kernel_token_path;
 use super::error::{KernelBridgeError, KernelBridgeResult};
-use super::history_db;
-use super::mapping::{humanize_kernel_event, make_audit_event};
+use super::persisted_truth;
 use super::protocol;
 use crate::models::kernel::{
     AgentSessionSummary, LobbyOrchestrationSummary, LobbySnapshot, WorkspaceContextSnapshot,
@@ -39,13 +38,13 @@ impl KernelBridge {
 
     pub fn fetch_lobby_snapshot(&mut self) -> LobbySnapshot {
         let archived_sessions =
-            history_db::load_lobby_sessions(&self.workspace_root).unwrap_or_default();
+            persisted_truth::load_lobby_sessions(&self.workspace_root).unwrap_or_default();
         let persisted_runtime_instances =
-            history_db::load_runtime_instances(&self.workspace_root).unwrap_or_default();
+            persisted_truth::load_runtime_instances(&self.workspace_root).unwrap_or_default();
         let persisted_runtime_load_queue =
-            history_db::load_runtime_load_queue(&self.workspace_root).unwrap_or_default();
+            persisted_truth::load_runtime_load_queue(&self.workspace_root).unwrap_or_default();
         let global_audit_events =
-            history_db::load_global_audit_events(&self.workspace_root, 16).unwrap_or_default();
+            persisted_truth::load_global_audit_events(&self.workspace_root, 16).unwrap_or_default();
         match self.fetch_status() {
             Ok(status) => {
                 let mut persisted_sessions = archived_sessions
@@ -106,8 +105,10 @@ impl KernelBridge {
                 loaded_backend_id: None,
                 loaded_backend_class: None,
                 loaded_backend_capabilities: None,
-                global_accounting: history_db::load_global_accounting_summary(&self.workspace_root)
-                    .unwrap_or_default(),
+                global_accounting: persisted_truth::load_global_accounting_summary(
+                    &self.workspace_root,
+                )
+                .unwrap_or_default(),
                 loaded_backend_telemetry: None,
                 loaded_remote_model: None,
                 memory: None,
@@ -120,6 +121,30 @@ impl KernelBridge {
                 error: Some(err.to_string()),
             },
         }
+    }
+
+    pub fn find_live_pid_for_session(
+        &mut self,
+        session_id: &str,
+    ) -> KernelBridgeResult<Option<u64>> {
+        let status = self.fetch_status()?;
+        Ok(status
+            .processes
+            .active_processes
+            .into_iter()
+            .find(|process| process.session_id == session_id)
+            .map(|process| process.pid))
+    }
+
+    pub fn find_live_pids_for_session(&mut self, session_id: &str) -> KernelBridgeResult<Vec<u64>> {
+        let status = self.fetch_status()?;
+        Ok(status
+            .processes
+            .active_processes
+            .into_iter()
+            .filter(|process| process.session_id == session_id)
+            .map(|process| process.pid)
+            .collect())
     }
 
     pub fn fetch_workspace_snapshot(&mut self, pid: u64) -> KernelBridgeResult<WorkspaceSnapshot> {
@@ -154,16 +179,10 @@ impl KernelBridge {
             orchestration,
             orchestration_fetch_error.map(|err| err.to_string()),
         );
-        let persisted_snapshot =
-            history_db::load_workspace_snapshot(&self.workspace_root, &session_id, Some(pid))
-                .unwrap_or_default();
-        snapshot = merge_workspace_snapshot(snapshot, persisted_snapshot);
         if let Ok(audit_events) =
-            history_db::load_session_audit_events(&self.workspace_root, &session_id, 64)
+            persisted_truth::load_session_audit_events(&self.workspace_root, &session_id, 64)
         {
-            if !audit_events.is_empty() {
-                snapshot.audit_events = audit_events;
-            }
+            snapshot.audit_events = audit_events;
         }
         Ok(snapshot)
     }
@@ -311,6 +330,23 @@ impl KernelBridge {
         self.decode_response(&response.payload, &[agentic_protocol::schema::SEND_INPUT])
     }
 
+    pub fn resume_session(&mut self, session_id: &str) -> KernelBridgeResult<ResumeSessionResult> {
+        let payload = serde_json::to_vec(&serde_json::json!({ "session_id": session_id }))?;
+        let response = self.send_control_command(OpCode::ResumeSession, &payload)?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(
+            &response.payload,
+            &[agentic_protocol::schema::RESUME_SESSION],
+        )
+    }
+
     pub fn continue_output(&mut self, pid: u64) -> KernelBridgeResult<TurnControlResult> {
         let payload = serde_json::to_vec(&serde_json::json!({ "pid": pid }))?;
         let response = self.send_control_command(OpCode::ContinueOutput, &payload)?;
@@ -340,6 +376,27 @@ impl KernelBridge {
         }
 
         self.decode_response(&response.payload, &[agentic_protocol::schema::STOP_OUTPUT])
+    }
+
+    pub fn terminate_pid(&mut self, pid: u64) -> KernelBridgeResult<()> {
+        let payload = pid.to_string();
+        let response = self.send_control_command(OpCode::Term, payload.as_bytes())?;
+        if response.kind == "+OK" {
+            return Ok(());
+        }
+
+        let term_err = protocol::decode_protocol_error(&response.code, &response.payload);
+        let kill_response = self.send_control_command(OpCode::Kill, payload.as_bytes())?;
+        if kill_response.kind == "+OK" {
+            return Ok(());
+        }
+
+        self.drop_connection();
+        let kill_err = protocol::decode_protocol_error(&kill_response.code, &kill_response.payload);
+        Err(KernelBridgeError::KernelRejected {
+            code: "TERM_KILL_FAILED".to_string(),
+            message: format!("TERM failed: {}; KILL failed: {}", term_err, kill_err),
+        })
     }
 
     pub fn shutdown(&mut self) -> KernelBridgeResult<String> {
@@ -451,7 +508,7 @@ fn load_token(workspace_root: &Path) -> KernelBridgeResult<String> {
 
 fn map_process_to_session(process: PidStatusResponse) -> AgentSessionSummary {
     let status = match process.state.as_str() {
-        "Running" | "WaitingForSyscall" | "InFlight" => "running",
+        "Running" | "WaitingForSyscall" | "InFlight" | "AwaitingRemoteResponse" => "running",
         "Parked" => "swapped",
         _ => "idle",
     }
@@ -506,6 +563,7 @@ fn map_process_to_session(process: PidStatusResponse) -> AgentSessionSummary {
         title: format!("{} / PID {}", process.workload, process.pid),
         prompt_preview,
         status,
+        runtime_state: Some(process.state.clone()),
         uptime_label: format_duration(process.elapsed_secs),
         tokens_label: format_tokens(process.tokens_generated),
         context_strategy,
@@ -538,7 +596,7 @@ fn map_orchestration_to_summary(orchestration: OrchSummaryResponse) -> LobbyOrch
 fn map_pid_status_to_workspace_snapshot(
     process: PidStatusResponse,
     orchestration: Option<WorkspaceOrchestrationSnapshot>,
-    orchestration_fetch_error: Option<String>,
+    _orchestration_fetch_error: Option<String>,
 ) -> WorkspaceSnapshot {
     let context = process
         .context
@@ -554,133 +612,6 @@ fn map_pid_status_to_workspace_snapshot(
             context_segments: context.context_segments,
         });
 
-    let mut audit_events = Vec::new();
-    if let Some(context) = process.context.as_ref() {
-        audit_events.push(make_audit_event(
-            "status",
-            "Context snapshot",
-            humanize_kernel_event(&format!(
-                "strategy={} tokens={}/{} segments={}",
-                context.context_strategy,
-                context.context_tokens_used,
-                context.context_window_size,
-                context.context_segments
-            )),
-        ));
-        if let Some(reason) = context.last_compaction_reason.as_ref() {
-            audit_events.push(make_audit_event(
-                "compaction",
-                "Compaction event",
-                humanize_kernel_event(reason),
-            ));
-        }
-        if let Some(summary_ts) = context.last_summary_ts.as_ref() {
-            audit_events.push(make_audit_event(
-                "summary",
-                "Summary checkpoint",
-                humanize_kernel_event(&format!("last_summary_ts={summary_ts}")),
-            ));
-        }
-    }
-    if let Some(accounting) = process.session_accounting.as_ref() {
-        audit_events.push(make_audit_event(
-            "accounting",
-            "Session accounting",
-            format!(
-                "requests={} tokens={}/{} cost=${:.6} errors={}/{}/{}",
-                accounting.requests_total,
-                accounting.input_tokens_total,
-                accounting.output_tokens_total,
-                accounting.estimated_cost_usd,
-                accounting.rate_limit_errors,
-                accounting.auth_errors,
-                accounting.transport_errors,
-            ),
-        ));
-    }
-    audit_events.push(make_audit_event(
-        "runtime",
-        "Runtime state",
-        humanize_kernel_event(&format!(
-            "workload={} state={} elapsed={}s slot={} backend={} class={}",
-            process.workload,
-            process.state,
-            process.elapsed_secs.max(0.0).round() as u64,
-            process
-                .context_slot_id
-                .map(|slot_id| slot_id.to_string())
-                .unwrap_or_else(|| "none".to_string()),
-            process.backend_id.as_deref().unwrap_or("unknown"),
-            process.backend_class.as_deref().unwrap_or("unknown"),
-        )),
-    ));
-    if let Some(slot_state) = process.resident_slot_state.as_ref() {
-        let snapshot_path = process
-            .resident_slot_snapshot_path
-            .as_deref()
-            .unwrap_or("none");
-        let slot_policy = process
-            .resident_slot_policy
-            .as_deref()
-            .unwrap_or("unmanaged");
-        audit_events.push(make_audit_event(
-            "runtime",
-            "Resident slot lifecycle",
-            format!(
-                "slot_policy={} slot_state={} slot_snapshot_path={}",
-                slot_policy, slot_state, snapshot_path
-            ),
-        ));
-    }
-    if let Some(capabilities) = process.backend_capabilities.as_ref() {
-        audit_events.push(make_audit_event(
-            "runtime",
-            "Backend capabilities",
-            format!(
-                "resident_kv={} persistent_slots={} save_restore_slots={} prompt_cache_reuse={} tool_pause_resume={}",
-                capabilities.resident_kv,
-                capabilities.persistent_slots,
-                capabilities.save_restore_slots,
-                capabilities.prompt_cache_reuse,
-                capabilities.tool_pause_resume,
-            ),
-        ));
-        if capabilities.tool_pause_resume && process.state == "WaitingForSyscall" {
-            audit_events.push(make_audit_event(
-                "tool",
-                "Streaming tool turn",
-                format!(
-                    "kernel_paused_generation=true awaiting_syscall_result=true slot={} slot_policy={}",
-                    process
-                        .context_slot_id
-                        .map(|slot_id| slot_id.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
-                    process
-                        .resident_slot_policy
-                        .as_deref()
-                        .unwrap_or("unmanaged"),
-                ),
-            ));
-        }
-    }
-    if let (Some(orch_id), Some(task_id)) = (
-        process.orchestration_id,
-        process.orchestration_task_id.as_ref(),
-    ) {
-        audit_events.push(make_audit_event(
-            "orchestration",
-            "Orchestrated task",
-            format!("orch_id={} task={}", orch_id, task_id),
-        ));
-    }
-    if let Some(err) = orchestration_fetch_error {
-        audit_events.push(make_audit_event(
-            "orchestration",
-            "Orchestration snapshot degraded",
-            err,
-        ));
-    }
-
     WorkspaceSnapshot {
         session_id: process.session_id,
         pid: process.pid,
@@ -694,6 +625,11 @@ fn map_pid_status_to_workspace_snapshot(
             .map(|backend_id| format!("{backend_id} · {}", process.workload)),
         state: process.state,
         workload: process.workload,
+        owner_id: (process.owner_id != 0).then_some(process.owner_id),
+        index_pos: Some(process.index_pos),
+        priority: (!process.priority.trim().is_empty()).then_some(process.priority),
+        quota_tokens: Some(process.quota_tokens),
+        quota_syscalls: Some(process.quota_syscalls),
         context_slot_id: process.context_slot_id,
         resident_slot_policy: process.resident_slot_policy,
         resident_slot_state: process.resident_slot_state,
@@ -709,7 +645,7 @@ fn map_pid_status_to_workspace_snapshot(
         max_tokens: process.max_tokens,
         orchestration,
         context,
-        audit_events,
+        audit_events: Vec::new(),
     }
 }
 
@@ -737,6 +673,7 @@ fn merge_live_session_summary(
             persisted.prompt_preview
         },
         status: live.status,
+        runtime_state: live.runtime_state.or(persisted.runtime_state),
         uptime_label: live.uptime_label,
         tokens_label: live.tokens_label,
         context_strategy: if persisted.context_strategy.trim().is_empty() {
@@ -750,34 +687,6 @@ fn merge_live_session_summary(
         orchestration_id: live.orchestration_id,
         orchestration_task_id: live.orchestration_task_id,
     }
-}
-
-fn merge_workspace_snapshot(
-    mut live: WorkspaceSnapshot,
-    persisted: Option<WorkspaceSnapshot>,
-) -> WorkspaceSnapshot {
-    let Some(persisted) = persisted else {
-        return live;
-    };
-
-    live.active_pid = live.active_pid.or(persisted.active_pid);
-    live.last_pid = live.last_pid.or(persisted.last_pid);
-    if live.title.trim().is_empty() {
-        live.title = persisted.title;
-    }
-    if live.runtime_id.is_none() {
-        live.runtime_id = persisted.runtime_id;
-    }
-    if live.runtime_label.is_none() {
-        live.runtime_label = persisted.runtime_label;
-    }
-    if live.accounting.is_none() {
-        live.accounting = persisted.accounting;
-    }
-    if live.backend_class.is_none() {
-        live.backend_class = persisted.backend_class;
-    }
-    live
 }
 
 fn format_duration(elapsed_secs: f64) -> String {

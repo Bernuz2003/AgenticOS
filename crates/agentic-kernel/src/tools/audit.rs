@@ -16,6 +16,7 @@ struct AuditLogLine<'a> {
     mode: &'a str,
     caller: &'a str,
     transport: &'a str,
+    tool_call_id: Option<&'a str>,
     tool_name: Option<&'a str>,
     success: bool,
     kill: bool,
@@ -33,6 +34,7 @@ pub(crate) struct ToolAuditRecord<'a> {
     pub(crate) should_kill: bool,
     pub(crate) detail: &'a str,
     pub(crate) context: &'a ToolContext,
+    pub(crate) tool_call_id: Option<&'a str>,
     pub(crate) tool_name: Option<&'a str>,
 }
 
@@ -55,6 +57,7 @@ pub(crate) fn append_audit_log(record: ToolAuditRecord<'_>) {
         mode: &mode_label,
         caller: record.context.caller.as_str(),
         transport: record.context.transport.as_str(),
+        tool_call_id: record.tool_call_id,
         tool_name: record.tool_name,
         success: record.success,
         kill: record.should_kill,
@@ -64,12 +67,13 @@ pub(crate) fn append_audit_log(record: ToolAuditRecord<'_>) {
     })
     .unwrap_or_else(|_| {
         format!(
-            "{{\"format\":\"jsonl-v1\",\"ts_ms\":{},\"pid\":{},\"mode\":\"{:?}\",\"caller\":{:?},\"transport\":{:?},\"tool_name\":{:?},\"success\":{},\"kill\":{},\"duration_ms\":{},\"cmd\":{:?},\"detail\":{:?}}}",
+            "{{\"format\":\"jsonl-v1\",\"ts_ms\":{},\"pid\":{},\"mode\":\"{:?}\",\"caller\":{:?},\"transport\":{:?},\"tool_call_id\":{:?},\"tool_name\":{:?},\"success\":{},\"kill\":{},\"duration_ms\":{},\"cmd\":{:?},\"detail\":{:?}}}",
             ts,
             record.pid,
             record.mode,
             record.context.caller.as_str(),
             record.context.transport.as_str(),
+            record.tool_call_id,
             record.tool_name,
             record.success,
             record.should_kill,

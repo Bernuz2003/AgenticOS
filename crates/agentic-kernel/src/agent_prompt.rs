@@ -20,6 +20,10 @@ pub(crate) fn compose_agent_system_prompt(manifest: &AgentCapabilityManifest) ->
         "- never use legacy syntaxes like [[...]], PYTHON:, READ_FILE:, SPAWN or SEND".to_string(),
         "- if a tool or action is not listed below, do not invoke it".to_string(),
         "- TOOL calls use registered executors or resources; ACTION calls mutate the runtime/process graph".to_string(),
+        "- natural language responses are the default; invoke a tool only when it is strictly necessary to obtain or change real data".to_string(),
+        "- do not use TOOL:python to format text or print decorative output".to_string(),
+        "- do not use TOOL:calc for trivial arithmetic that can be answered directly".to_string(),
+        "- avoid retry loops of the same failing tool call without changing inputs or strategy".to_string(),
     ];
 
     lines.push("Available tools:".to_string());

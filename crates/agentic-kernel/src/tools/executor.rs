@@ -63,6 +63,7 @@ mod tests {
             session_id: Some("session-1".to_string()),
             caller: ToolCaller::AgentText,
             transport: ToolInvocationTransport::Text,
+            call_id: None,
         }
     }
 

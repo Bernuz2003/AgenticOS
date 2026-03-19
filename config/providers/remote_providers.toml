@@ -54,6 +54,15 @@ supports_structured_output = true
 input_price_usd_per_mtok = 0.05
 output_price_usd_per_mtok = 0.08
 
+[[providers.models]]
+id = "groq/compound"
+label = "compound"
+context_window_tokens = 131072
+max_output_tokens = 8192
+supports_structured_output = true
+input_price_usd_per_mtok = 0.59
+output_price_usd_per_mtok = 0.79
+
 [[providers]]
 id = "openrouter"
 backend_id = "openrouter"

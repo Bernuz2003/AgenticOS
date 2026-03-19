@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, DatabaseZap, Sparkles, Waypoints, FileText, BarChart3 } from "lucide-react";
-import { strategyLabel } from "../../lib/format";
+import {
+  Activity,
+  BarChart3,
+  Cloud,
+  Cpu,
+  DatabaseZap,
+  FileText,
+  Sparkles,
+  Waypoints,
+  Wrench,
+} from "lucide-react";
+import { runtimeStateLabel, runtimeStateTone, strategyLabel } from "../../lib/format";
 import type { AgentSessionSummary } from "../../store/sessions-store";
 import type { WorkspaceSnapshot } from "../../lib/api";
 
@@ -24,12 +34,61 @@ export function MindPanel({
   const compressions = snapshot?.context?.contextCompressions ?? 0;
   const retrievalHits = snapshot?.context?.contextRetrievalHits ?? 0;
   const backendClass = snapshot?.backendClass ?? "unknown";
+  const runtimeState = snapshot?.state ?? session.runtimeState ?? null;
+  const runtimeLabel = snapshot?.runtimeLabel ?? session.runtimeLabel ?? "unbound";
+  const ownerId = snapshot?.ownerId ?? null;
+  const indexPos = snapshot?.indexPos ?? null;
+  const priority = snapshot?.priority ?? null;
+  const quotaTokens = snapshot?.quotaTokens ?? null;
+  const quotaSyscalls = snapshot?.quotaSyscalls ?? null;
   const contextSlotId = snapshot?.contextSlotId ?? null;
   const residentSlotState = snapshot?.residentSlotState ?? "unbound";
   const residentKv = snapshot?.backendCapabilities?.residentKv ?? false;
   const accounting = snapshot?.accounting ?? null;
+  const auditEvents = [...(snapshot?.auditEvents ?? [])].sort(
+    (left, right) => right.recordedAtMs - left.recordedAtMs,
+  );
   const [compactionToast, setCompactionToast] = useState<string | null>(null);
   const lastCompactionRef = useRef<string | null>(null);
+  const diagnosticGroups = [
+    {
+      key: "tool",
+      label: "Tools",
+      icon: Wrench,
+      events: auditEvents.filter((event) => event.category === "tool"),
+    },
+    {
+      key: "remote",
+      label: "Remote",
+      icon: Cloud,
+      events: auditEvents.filter((event) => event.category === "remote"),
+    },
+    {
+      key: "process",
+      label: "Process",
+      icon: Activity,
+      events: auditEvents.filter((event) => event.category === "process"),
+    },
+    {
+      key: "runtime",
+      label: "Runtime",
+      icon: Cpu,
+      events: auditEvents.filter(
+        (event) => event.category === "runtime" || event.category === "admission",
+      ),
+    },
+  ];
+  const recentDiagnosticEvents = auditEvents.slice(0, 3);
+
+  function formatValue(value: number | string | null | undefined): string {
+    if (value === null || value === undefined || value === "") {
+      return "n/a";
+    }
+    if (typeof value === "number") {
+      return value.toLocaleString();
+    }
+    return value;
+  }
 
   useEffect(() => {
     const currentReason = snapshot?.context?.lastCompactionReason ?? null;
@@ -92,6 +151,123 @@ export function MindPanel({
               <span className="font-semibold">{snapshot?.syscallsUsed ?? 0}</span>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section className="rounded-2xl bg-white border border-slate-200 p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              Runtime Control
+            </div>
+            <div className="text-sm font-semibold text-slate-900 mt-1">
+              {formatValue(runtimeLabel)}
+            </div>
+          </div>
+          <span
+            className={`rounded-full border px-3 py-1 text-[11px] font-bold ${runtimeStateTone(runtimeState)}`}
+          >
+            {runtimeStateLabel(runtimeState)}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 text-xs">
+          <div>
+            <span className="block text-slate-500 mb-0.5">Priority</span>
+            <span className="font-medium text-slate-900 capitalize">
+              {formatValue(priority)}
+            </span>
+          </div>
+          <div>
+            <span className="block text-slate-500 mb-0.5">Owner</span>
+            <span className="font-medium text-slate-900">{formatValue(ownerId)}</span>
+          </div>
+          <div>
+            <span className="block text-slate-500 mb-0.5">Token Cursor</span>
+            <span className="font-medium text-slate-900">{formatValue(indexPos)}</span>
+          </div>
+          <div>
+            <span className="block text-slate-500 mb-0.5">Quota Tokens</span>
+            <span className="font-medium text-slate-900">{formatValue(quotaTokens)}</span>
+          </div>
+          <div>
+            <span className="block text-slate-500 mb-0.5">Quota Syscalls</span>
+            <span className="font-medium text-slate-900">{formatValue(quotaSyscalls)}</span>
+          </div>
+          <div>
+            <span className="block text-slate-500 mb-0.5">Backend</span>
+            <span className="font-medium text-slate-900">{backendClass}</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-2xl bg-white border border-slate-200 p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              Diagnostics Overview
+            </div>
+            <div className="text-sm font-semibold text-slate-900 mt-1">
+              {auditEvents.length} live audit events visible
+            </div>
+          </div>
+          <button
+            onClick={onOpenAudit}
+            className="text-xs font-semibold text-indigo-600 hover:text-indigo-700"
+          >
+            Open full panel
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {diagnosticGroups.map((group) => {
+            const Icon = group.icon;
+            const latest = group.events[0] ?? null;
+            return (
+              <div
+                key={group.key}
+                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                    <Icon className="h-3.5 w-3.5 text-indigo-500" />
+                    {group.label}
+                  </div>
+                  <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-slate-600 border border-slate-200">
+                    {group.events.length}
+                  </span>
+                </div>
+                <div className="mt-2 text-sm font-semibold text-slate-900">
+                  {latest ? latest.title : "No events yet"}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {latest
+                    ? `${latest.kind} at ${new Date(latest.recordedAtMs).toLocaleTimeString()}`
+                    : "Awaiting diagnostics"}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-4 space-y-2">
+          {recentDiagnosticEvents.length === 0 ? (
+            <div className="text-xs text-slate-500">Nessun evento tecnico recente.</div>
+          ) : (
+            recentDiagnosticEvents.map((event, index) => (
+              <div
+                key={`${event.recordedAtMs}-${event.category}-${index}`}
+                className="rounded-xl border border-slate-100 bg-white px-3 py-3"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-semibold text-slate-900">{event.title}</div>
+                  <div className="text-[10px] uppercase tracking-wider font-bold text-slate-500">
+                    {event.category}
+                  </div>
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {event.kind} at {new Date(event.recordedAtMs).toLocaleTimeString()}
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </section>
 

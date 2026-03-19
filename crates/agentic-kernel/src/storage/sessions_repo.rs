@@ -59,6 +59,7 @@ impl StorageService {
         Ok(sessions)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn insert_session(
         &mut self,
         session_id: &str,

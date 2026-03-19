@@ -591,9 +591,8 @@ fn to_workspace_relative_string(tool_name: &str, path: &Path) -> Result<String, 
 
 fn filename_matches(file_name: &str, pattern: Option<&str>, extension: Option<&str>) -> bool {
     let normalized_name = file_name.to_ascii_lowercase();
-    let pattern_matches = pattern.is_none_or(|pattern| {
-        normalized_name.contains(&pattern.to_ascii_lowercase())
-    });
+    let pattern_matches =
+        pattern.is_none_or(|pattern| normalized_name.contains(&pattern.to_ascii_lowercase()));
     let extension_matches = extension.is_none_or(|extension| {
         Path::new(file_name)
             .extension()

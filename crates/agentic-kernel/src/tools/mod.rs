@@ -58,6 +58,7 @@ pub fn handle_syscall(
     command_block: &str,
     pid: u64,
     caller: invocation::ToolCaller,
+    call_id: Option<String>,
     rate_map: &mut SyscallRateMap,
     registry: &ToolRegistry,
 ) -> SysCallOutcome {
@@ -67,6 +68,7 @@ pub fn handle_syscall(
         session_id: None,
         caller,
         transport: invocation::ToolInvocationTransport::Text,
+        call_id,
     };
 
     let invocation = match parser::parse_text_invocation(clean_cmd) {

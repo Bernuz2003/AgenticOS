@@ -109,6 +109,7 @@ impl StorageService {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn insert_runtime_load_queue_entry(
         &mut self,
         runtime_key: &str,

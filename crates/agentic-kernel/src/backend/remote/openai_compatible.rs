@@ -4,7 +4,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokenizers::Tokenizer;
 
 use crate::accounting::{AccountingEventStatus, BackendAccountingEvent};
@@ -15,7 +15,7 @@ use crate::prompting::PromptFamily;
 use crate::backend::remote_adapter::{agent_invocation_end, drain_json_objects};
 use crate::backend::{
     BackendCapabilities, InferenceBackend, InferenceFinishReason, InferenceStepRequest,
-    InferenceStepResult,
+    InferenceStepResult, StreamChunkObserver,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +279,7 @@ impl RemoteOpenAICompatibleBackend {
         payload: &serde_json::Value,
         tokenizer: &Tokenizer,
         estimated_input_tokens: u64,
+        stream_observer: Option<&mut dyn StreamChunkObserver>,
     ) -> Result<DecodedResponse> {
         self.last_accounting_event = None;
         let request_body = payload.to_string();
@@ -318,9 +319,14 @@ impl RemoteOpenAICompatibleBackend {
             request = request.set("X-OpenRouter-Title", app_title);
         }
 
+        let request_started_at = Instant::now();
         let response = request.send_string(&request_body).map_err(|err| {
             let failure = map_ureq_error(self.profile, err, &self.model);
-            self.record_failure_event(&failure, estimated_input_tokens);
+            self.record_failure_event(
+                &failure,
+                estimated_input_tokens,
+                request_started_at.elapsed().as_millis(),
+            );
             E::msg(format_failure_message(self.profile, &failure))
         })?;
 
@@ -330,6 +336,7 @@ impl RemoteOpenAICompatibleBackend {
                 response.into_reader(),
                 self.max_response_bytes,
                 tokenizer,
+                stream_observer,
             )
             .map_err(|err| {
                 let failure = RequestFailure {
@@ -342,7 +349,11 @@ impl RemoteOpenAICompatibleBackend {
                     &self.model,
                     &failure.error_message,
                 );
-                self.record_failure_event(&failure, estimated_input_tokens);
+                self.record_failure_event(
+                    &failure,
+                    estimated_input_tokens,
+                    request_started_at.elapsed().as_millis(),
+                );
                 E::msg(failure.error_message)
             })
         } else {
@@ -360,7 +371,11 @@ impl RemoteOpenAICompatibleBackend {
                     &self.model,
                     &failure.error_message,
                 );
-                self.record_failure_event(&failure, estimated_input_tokens);
+                self.record_failure_event(
+                    &failure,
+                    estimated_input_tokens,
+                    request_started_at.elapsed().as_millis(),
+                );
                 E::msg(failure.error_message)
             })?;
             if body.len() > self.max_response_bytes {
@@ -379,7 +394,11 @@ impl RemoteOpenAICompatibleBackend {
                     &self.model,
                     &failure.error_message,
                 );
-                self.record_failure_event(&failure, estimated_input_tokens);
+                self.record_failure_event(
+                    &failure,
+                    estimated_input_tokens,
+                    request_started_at.elapsed().as_millis(),
+                );
                 return Err(E::msg(failure.error_message));
             }
             decode_non_streaming_response(self.profile, &body, tokenizer).map_err(|err| {
@@ -393,7 +412,11 @@ impl RemoteOpenAICompatibleBackend {
                     &self.model,
                     &failure.error_message,
                 );
-                self.record_failure_event(&failure, estimated_input_tokens);
+                self.record_failure_event(
+                    &failure,
+                    estimated_input_tokens,
+                    request_started_at.elapsed().as_millis(),
+                );
                 E::msg(failure.error_message)
             })
         }
@@ -404,6 +427,7 @@ impl RemoteOpenAICompatibleBackend {
         input_tokens: u64,
         output_tokens: u64,
         provider_reported_cost_usd: Option<f64>,
+        duration_ms: u128,
     ) {
         self.last_accounting_event = Some(BackendAccountingEvent {
             backend_id: self.profile.backend_id.to_string(),
@@ -419,13 +443,19 @@ impl RemoteOpenAICompatibleBackend {
                 self.output_price_usd_per_mtok,
                 provider_reported_cost_usd,
             ),
+            duration_ms,
             status: AccountingEventStatus::Success,
             error_code: None,
             error_message: None,
         });
     }
 
-    fn record_failure_event(&mut self, failure: &RequestFailure, estimated_input_tokens: u64) {
+    fn record_failure_event(
+        &mut self,
+        failure: &RequestFailure,
+        estimated_input_tokens: u64,
+        duration_ms: u128,
+    ) {
         self.last_accounting_event = Some(BackendAccountingEvent {
             backend_id: self.profile.backend_id.to_string(),
             model_id: Some(self.model.clone()),
@@ -434,6 +464,7 @@ impl RemoteOpenAICompatibleBackend {
             input_tokens: estimated_input_tokens,
             output_tokens: 0,
             estimated_cost_usd: 0.0,
+            duration_ms,
             status: failure.status,
             error_code: failure.error_code.clone(),
             error_message: Some(failure.error_message.clone()),
@@ -502,6 +533,7 @@ impl InferenceBackend for RemoteOpenAICompatibleBackend {
             remaining_generation_budget,
             tokenizer,
             generation,
+            stream_observer,
             ..
         } = request;
 
@@ -518,7 +550,10 @@ impl InferenceBackend for RemoteOpenAICompatibleBackend {
         let payload =
             self.request_payload(rendered_prompt, remaining_generation_budget, generation);
         let estimated_input_tokens = estimate_token_count(tokenizer, rendered_prompt) as u64;
-        let decoded = self.send_request(&payload, tokenizer, estimated_input_tokens)?;
+        let request_started_at = Instant::now();
+        let decoded =
+            self.send_request(&payload, tokenizer, estimated_input_tokens, stream_observer)?;
+        let request_duration_ms = request_started_at.elapsed().as_millis();
         let appended_tokens = if decoded.emitted_text.is_empty() {
             Vec::new()
         } else {
@@ -551,6 +586,7 @@ impl InferenceBackend for RemoteOpenAICompatibleBackend {
             input_tokens,
             output_tokens,
             decoded.usage.estimated_cost_usd,
+            request_duration_ms,
         );
         let finished_due_to_budget =
             !decoded.finished && appended_tokens.len() >= remaining_generation_budget;
@@ -750,10 +786,14 @@ fn decode_streaming_response<R: Read>(
     mut reader: R,
     max_response_bytes: usize,
     tokenizer: &Tokenizer,
+    mut stream_observer: Option<&mut dyn StreamChunkObserver>,
 ) -> Result<DecodedResponse> {
     let mut raw_bytes = 0usize;
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
+    let mut responses_state = ResponsesStreamState::default();
+    let mut chat_state = ChatCompletionsStreamState::default();
+    let mut stop_early = false;
 
     loop {
         let read = reader.read(&mut chunk).map_err(|err| {
@@ -773,26 +813,51 @@ fn decode_streaming_response<R: Read>(
             )));
         }
         buffer.extend_from_slice(&chunk[..read]);
+
+        stop_early = match profile.transport {
+            RemoteOpenAITransport::ResponsesApi => consume_responses_stream_events(
+                profile,
+                &mut buffer,
+                &mut responses_state,
+                &mut stream_observer,
+            )?,
+            RemoteOpenAITransport::ChatCompletions => consume_chat_stream_events(
+                profile,
+                &mut buffer,
+                &mut chat_state,
+                &mut stream_observer,
+            )?,
+        };
+
+        if stop_early {
+            break;
+        }
     }
 
     match profile.transport {
         RemoteOpenAITransport::ResponsesApi => {
-            decode_responses_stream(profile, &mut buffer, tokenizer)
+            finalize_responses_stream(profile, tokenizer, responses_state, stop_early)
         }
         RemoteOpenAITransport::ChatCompletions => {
-            decode_chat_completions_stream(profile, &mut buffer, tokenizer)
+            finalize_chat_stream(profile, tokenizer, chat_state, stop_early)
         }
     }
 }
 
-fn decode_responses_stream(
+#[derive(Debug, Default)]
+struct ResponsesStreamState {
+    emitted_text: String,
+    finished: bool,
+    incomplete: bool,
+}
+
+fn consume_responses_stream_events(
     profile: &RemoteOpenAIProviderProfile,
     buffer: &mut Vec<u8>,
-    _tokenizer: &Tokenizer,
-) -> Result<DecodedResponse> {
-    let mut emitted_text = String::new();
-    let mut finished = false;
-    let mut incomplete = false;
+    state: &mut ResponsesStreamState,
+    stream_observer: &mut Option<&mut dyn StreamChunkObserver>,
+) -> Result<bool> {
+    let mut should_stop = false;
 
     for event in drain_json_objects(buffer)? {
         let event_type = event
@@ -802,18 +867,26 @@ fn decode_responses_stream(
         match event_type {
             "response.output_text.delta" => {
                 if let Some(delta) = event.get("delta").and_then(|value| value.as_str()) {
-                    emitted_text.push_str(delta);
+                    if !delta.is_empty() {
+                        if let Some(observer) = stream_observer.as_deref_mut() {
+                            observer.on_chunk(delta);
+                        }
+                        state.emitted_text.push_str(delta);
+                    }
                 }
             }
             "response.output_text.done" => {
                 if let Some(text) = event.get("text").and_then(|value| value.as_str()) {
-                    if emitted_text.is_empty() {
-                        emitted_text.push_str(text);
+                    if state.emitted_text.is_empty() && !text.is_empty() {
+                        if let Some(observer) = stream_observer.as_deref_mut() {
+                            observer.on_chunk(text);
+                        }
+                        state.emitted_text.push_str(text);
                     }
                 }
             }
-            "response.completed" => finished = true,
-            "response.incomplete" => incomplete = true,
+            "response.completed" => state.finished = true,
+            "response.incomplete" => state.incomplete = true,
             "error" | "response.failed" => {
                 return Err(E::msg(format!(
                     "{} stream failed: {}",
@@ -824,36 +897,57 @@ fn decode_responses_stream(
             _ => {}
         }
 
-        if let Some(end) = agent_invocation_end(&emitted_text) {
-            emitted_text.truncate(end);
-            return Ok(DecodedResponse {
-                emitted_text,
-                finished: false,
-                usage: UsageSnapshot::default(),
-            });
+        if let Some(end) = agent_invocation_end(&state.emitted_text) {
+            state.emitted_text.truncate(end);
+            should_stop = true;
+            break;
         }
     }
 
-    if !finished && !incomplete && !emitted_text.is_empty() {
+    Ok(should_stop)
+}
+
+fn finalize_responses_stream(
+    _profile: &RemoteOpenAIProviderProfile,
+    _tokenizer: &Tokenizer,
+    state: ResponsesStreamState,
+    stop_early: bool,
+) -> Result<DecodedResponse> {
+    if stop_early {
+        return Ok(DecodedResponse {
+            emitted_text: state.emitted_text,
+            finished: false,
+            usage: UsageSnapshot::default(),
+        });
+    }
+
+    let mut finished = state.finished;
+    if !finished && !state.incomplete && !state.emitted_text.is_empty() {
         finished = true;
     }
 
     Ok(DecodedResponse {
-        emitted_text,
-        finished: finished && !incomplete,
+        emitted_text: state.emitted_text,
+        finished: finished && !state.incomplete,
         usage: UsageSnapshot::default(),
     })
 }
 
-fn decode_chat_completions_stream(
+#[derive(Debug, Default)]
+struct ChatCompletionsStreamState {
+    emitted_text: String,
+    usage: UsageSnapshot,
+    finished: bool,
+    hit_length_limit: bool,
+}
+
+fn consume_chat_stream_events(
     profile: &RemoteOpenAIProviderProfile,
     buffer: &mut Vec<u8>,
-    _tokenizer: &Tokenizer,
-) -> Result<DecodedResponse> {
-    let mut emitted_text = String::new();
-    let mut usage = UsageSnapshot::default();
-    let mut finished = false;
-    let mut hit_length_limit = false;
+    state: &mut ChatCompletionsStreamState,
+    stream_observer: &mut Option<&mut dyn StreamChunkObserver>,
+) -> Result<bool> {
+    let mut should_stop = false;
 
     for event in drain_json_objects(buffer)? {
         if event.get("error").is_some() {
@@ -865,36 +959,56 @@ fn decode_chat_completions_stream(
         }
 
         if let Some(delta) = extract_chat_completions_text(&event) {
-            emitted_text.push_str(&delta);
+            if !delta.is_empty() {
+                if let Some(observer) = stream_observer.as_deref_mut() {
+                    observer.on_chunk(&delta);
+                }
+                state.emitted_text.push_str(&delta);
+            }
         }
-        usage = merge_usage(usage, extract_usage_snapshot(&event));
+        state.usage = merge_usage(state.usage.clone(), extract_usage_snapshot(&event));
 
         if let Some(finish_reason) = extract_chat_completions_finish_reason(&event) {
             match finish_reason.as_str() {
-                "length" => hit_length_limit = true,
-                "stop" | "tool_calls" => finished = true,
+                "length" => state.hit_length_limit = true,
+                "stop" | "tool_calls" => state.finished = true,
                 _ => {}
             }
         }
 
-        if let Some(end) = agent_invocation_end(&emitted_text) {
-            emitted_text.truncate(end);
-            return Ok(DecodedResponse {
-                emitted_text,
-                finished: false,
-                usage,
-            });
+        if let Some(end) = agent_invocation_end(&state.emitted_text) {
+            state.emitted_text.truncate(end);
+            should_stop = true;
+            break;
         }
     }
 
-    if !finished && !hit_length_limit && !emitted_text.is_empty() {
+    Ok(should_stop)
+}
+
+fn finalize_chat_stream(
+    _profile: &RemoteOpenAIProviderProfile,
+    _tokenizer: &Tokenizer,
+    state: ChatCompletionsStreamState,
+    stop_early: bool,
+) -> Result<DecodedResponse> {
+    if stop_early {
+        return Ok(DecodedResponse {
+            emitted_text: state.emitted_text,
+            finished: false,
+            usage: state.usage,
+        });
+    }
+
+    let mut finished = state.finished;
+    if !finished && !state.hit_length_limit && !state.emitted_text.is_empty() {
         finished = true;
     }
 
     Ok(DecodedResponse {
-        emitted_text,
-        finished: finished && !hit_length_limit,
-        usage,
+        emitted_text: state.emitted_text,
+        finished: finished && !state.hit_length_limit,
+        usage: state.usage,
     })
 }
 

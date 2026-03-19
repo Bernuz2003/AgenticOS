@@ -41,9 +41,73 @@ pub(super) fn drain_worker_results(
     pending_kills: &mut Vec<u64>,
     pending_events: &mut Vec<KernelEvent>,
     tool_registry: &ToolRegistry,
-) {
+) -> usize {
+    let mut processed_results = 0usize;
     while let Ok(result) = result_rx.try_recv() {
+        processed_results = processed_results.saturating_add(1);
         match result {
+            InferenceResult::StreamChunk {
+                pid,
+                text,
+                first_chunk,
+            } => {
+                let Some(runtime_id) = runtime_registry
+                    .runtime_id_for_pid(pid)
+                    .map(ToString::to_string)
+                else {
+                    tracing::warn!(
+                        pid,
+                        "RUNTIME: dropping worker stream chunk for unknown runtime pid"
+                    );
+                    continue;
+                };
+
+                let owner_id = runtime_registry
+                    .engine(&runtime_id)
+                    .and_then(|engine| engine.process_owner_id(pid))
+                    .unwrap_or(0);
+
+                if first_chunk {
+                    audit::record(
+                        storage,
+                        audit::REMOTE_FIRST_CHUNK_RECEIVED,
+                        format!("backend={} pid={}", runtime_id, pid),
+                        AuditContext::for_process(
+                            session_registry.session_id_for_pid(pid),
+                            pid,
+                            Some(&runtime_id),
+                        ),
+                    );
+                }
+
+                if !text.is_empty() && owner_id > 0 {
+                    let token = Token(owner_id);
+                    if let Some(client) = clients.get_mut(&token) {
+                        client
+                            .output_buffer
+                            .extend(protocol::response_data(text.as_bytes()));
+                        let _ = poll.registry().reregister(
+                            &mut client.stream,
+                            token,
+                            Interest::READABLE | Interest::WRITABLE,
+                        );
+                    }
+                }
+
+                if !text.is_empty() {
+                    if orchestrator.is_orchestrated(pid) {
+                        orchestrator.append_output(pid, &text);
+                    }
+                    pending_events.push(KernelEvent::TimelineChunk {
+                        pid,
+                        text: text.clone(),
+                    });
+                    pending_events.push(KernelEvent::WorkspaceChanged {
+                        pid,
+                        reason: "model_output_chunk".to_string(),
+                    });
+                }
+            }
             InferenceResult::Token {
                 pid,
                 process,
@@ -326,6 +390,8 @@ pub(super) fn drain_worker_results(
             }
         }
     }
+
+    processed_results
 }
 
 fn persist_accounting_event(
@@ -386,13 +452,14 @@ fn persist_accounting_event(
         storage,
         audit::ACCOUNTING_USAGE_RECORDED,
         format!(
-            "request_kind={} status={} model={} tokens={}/{} cost=${:.6}",
+            "request_kind={} status={} model={} tokens={}/{} cost=${:.6} duration_ms={}",
             record.request_kind,
             record.status.as_str(),
             record.model_id.as_deref().unwrap_or("unknown"),
             record.input_tokens,
             record.output_tokens,
-            record.estimated_cost_usd
+            record.estimated_cost_usd,
+            event.duration_ms
         ),
         audit_context.clone(),
     );
@@ -405,6 +472,32 @@ fn persist_accounting_event(
                 record.model_id.as_deref().unwrap_or("unknown"),
                 record.estimated_cost_usd,
                 record.backend_id
+            ),
+            audit_context.clone(),
+        );
+    }
+
+    if record.backend_class == "remote_stateless" {
+        let remote_spec = if matches!(
+            record.status,
+            crate::accounting::AccountingEventStatus::Success
+        ) {
+            audit::REMOTE_REQUEST_COMPLETED
+        } else {
+            audit::REMOTE_REQUEST_FAILED
+        };
+        audit::record(
+            storage,
+            remote_spec,
+            format!(
+                "backend={} model={} status={} duration_ms={} tokens={}/{} error={}",
+                record.backend_id,
+                record.model_id.as_deref().unwrap_or("unknown"),
+                record.status.as_str(),
+                event.duration_ms,
+                record.input_tokens,
+                record.output_tokens,
+                record.error_message.as_deref().unwrap_or("none")
             ),
             audit_context,
         );

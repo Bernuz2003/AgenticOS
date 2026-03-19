@@ -21,7 +21,7 @@ use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use anyhow::Result;
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[test]
 fn collect_unique_pids_preserves_first_seen_order() {
@@ -87,6 +87,7 @@ fn checked_out_status_preserves_backend_slot_metadata() {
         &CheckedOutProcessMetadata {
             owner_id: 7,
             state: "InFlight".to_string(),
+            checked_out_at: Instant::now(),
             tokens: 128,
             index_pos: 64,
             max_tokens: 512,

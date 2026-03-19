@@ -154,6 +154,7 @@ pub fn execute_command(
                 return;
             }
         }
+        OpCode::ResumeSession => process_cmd::handle_resume_session(ctx.process_view(), &payload),
         OpCode::SendInput => process_cmd::handle_send_input(ctx.process_view(), &payload),
         OpCode::ContinueOutput => process_cmd::handle_continue_output(ctx.process_view(), &payload),
         OpCode::StopOutput => process_cmd::handle_stop_output(ctx.process_view(), &payload),

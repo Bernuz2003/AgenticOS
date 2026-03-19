@@ -161,7 +161,10 @@ fn first_balanced_json_object_end(payload: &str) -> Option<usize> {
 mod tests {
     use serde_json::json;
 
-    use super::{extract_prefixed_json_invocation, is_streaming_prefixed_json_invocation, parse_prefixed_json_invocation, PrefixedInvocationExtract};
+    use super::{
+        extract_prefixed_json_invocation, is_streaming_prefixed_json_invocation,
+        parse_prefixed_json_invocation, PrefixedInvocationExtract,
+    };
 
     #[test]
     fn extract_stops_at_first_balanced_object() {
@@ -200,11 +203,9 @@ mod tests {
 
     #[test]
     fn strict_parse_rejects_trailing_text() {
-        let err = parse_prefixed_json_invocation(
-            r#"TOOL:python {"code":"print(1)"}extra"#,
-            "TOOL:",
-        )
-        .expect_err("expected trailing-text rejection");
+        let err =
+            parse_prefixed_json_invocation(r#"TOOL:python {"code":"print(1)"}extra"#, "TOOL:")
+                .expect_err("expected trailing-text rejection");
         assert!(err.contains("trailing characters"));
     }
 }

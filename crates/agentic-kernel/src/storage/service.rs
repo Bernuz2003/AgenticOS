@@ -1,4 +1,5 @@
 use super::migrations;
+use agentic_control_models::DiagnosticEvent;
 use rusqlite::Connection;
 /// Core SQLite connection orchestration and configuration.
 use std::fs;
@@ -45,6 +46,7 @@ pub(crate) enum StorageError {
 pub(crate) struct StorageService {
     path: PathBuf,
     pub(super) connection: Connection,
+    pending_diagnostics: Vec<DiagnosticEvent>,
 }
 
 impl StorageService {
@@ -59,12 +61,24 @@ impl StorageService {
         configure_connection(&path, &connection)?;
         migrations::apply_pending_migrations(&mut connection)?;
 
-        Ok(Self { path, connection })
+        Ok(Self {
+            path,
+            connection,
+            pending_diagnostics: Vec::new(),
+        })
     }
 
     #[allow(dead_code)]
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub(crate) fn push_live_diagnostic(&mut self, event: DiagnosticEvent) {
+        self.pending_diagnostics.push(event);
+    }
+
+    pub(crate) fn take_live_diagnostics(&mut self) -> Vec<DiagnosticEvent> {
+        std::mem::take(&mut self.pending_diagnostics)
     }
 }
 

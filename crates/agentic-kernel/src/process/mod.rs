@@ -8,7 +8,7 @@
 //! - **PID (Process ID)**: An ephemeral, runtime execution instance of a Session. When a
 //!   Session becomes active, it is assigned a PID and loaded into RAM/VRAM. If the system
 //!   crashes or the Session is parked, the PID is lost, but the Session endures.
-
+//!
 //! Agent process management and context logic.
 
 mod agent;

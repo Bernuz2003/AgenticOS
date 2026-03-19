@@ -79,6 +79,8 @@ pub(crate) struct ProcessCommandContext<'a> {
     pub client: &'a mut Client,
     pub request_id: &'a str,
     pub runtime_registry: &'a mut RuntimeRegistry,
+    pub resource_governor: &'a mut ResourceGovernor,
+    pub model_catalog: &'a mut ModelCatalog,
     pub memory: &'a mut NeuralMemory,
     pub scheduler: &'a mut ProcessScheduler,
     pub in_flight: &'a HashSet<u64>,
@@ -88,6 +90,7 @@ pub(crate) struct ProcessCommandContext<'a> {
     pub client_id: usize,
     pub session_registry: &'a mut SessionRegistry,
     pub storage: &'a mut StorageService,
+    pub tool_registry: &'a ToolRegistry,
 }
 
 pub(crate) struct SchedulerCommandContext<'a> {
@@ -210,6 +213,8 @@ impl<'a> CommandContext<'a> {
             client: &mut *self.client,
             request_id: self.request_id.as_str(),
             runtime_registry: &mut *self.runtime_registry,
+            resource_governor: &mut *self.resource_governor,
+            model_catalog: &mut *self.model_catalog,
             memory: &mut *self.memory,
             scheduler: &mut *self.scheduler,
             in_flight: self.in_flight,
@@ -219,6 +224,7 @@ impl<'a> CommandContext<'a> {
             client_id: self.client_id,
             session_registry: &mut *self.session_registry,
             storage: &mut *self.storage,
+            tool_registry: &*self.tool_registry,
         }
     }
 

@@ -18,6 +18,7 @@ pub enum ProcessSignalResult {
     NoModelLoaded,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn request_process_termination_with_session(
     runtime_registry: &mut RuntimeRegistry,
     memory: &mut NeuralMemory,
@@ -68,6 +69,7 @@ pub fn request_process_termination_with_session(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn request_process_kill_with_session(
     runtime_registry: &mut RuntimeRegistry,
     memory: &mut NeuralMemory,

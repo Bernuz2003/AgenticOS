@@ -46,6 +46,7 @@ pub fn govern_tool_execution(
         append_governed_audit(
             pid,
             cfg,
+            invocation,
             &err.to_string(),
             false,
             true,
@@ -88,6 +89,7 @@ pub fn govern_tool_execution(
     append_governed_audit(
         pid,
         cfg,
+        invocation,
         &final_output,
         success,
         kill_from_burst,
@@ -108,6 +110,7 @@ pub fn govern_tool_execution(
 fn append_governed_audit(
     pid: u64,
     cfg: SysCallConfig,
+    invocation: &ToolInvocation,
     detail: &str,
     success: bool,
     should_kill: bool,
@@ -115,15 +118,21 @@ fn append_governed_audit(
     context: &ToolContext,
     tool_name: Option<&str>,
 ) {
+    let command = format!(
+        "TOOL:{} {}",
+        invocation.name,
+        serde_json::to_string(&invocation.input).unwrap_or_else(|_| "{}".to_string())
+    );
     append_audit_log(ToolAuditRecord {
         pid,
         mode: cfg.mode,
-        command: detail,
+        command: &command,
         success,
         duration_ms: start.elapsed().as_millis(),
         should_kill,
         detail,
         context,
+        tool_call_id: invocation.call_id.as_deref(),
         tool_name,
     });
 }

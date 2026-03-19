@@ -87,12 +87,10 @@ fn test_tokenizer() -> Tokenizer {
     tokenizer
 }
 
-fn test_engine() -> (
-    LLMEngine,
-    Arc<Mutex<Vec<(ContextSlotId, String)>>>,
-    Arc<Mutex<Vec<(ContextSlotId, String)>>>,
-    Arc<Mutex<Vec<ContextSlotId>>>,
-) {
+type SavedSlots = Arc<Mutex<Vec<(ContextSlotId, String)>>>;
+type FreedSlots = Arc<Mutex<Vec<ContextSlotId>>>;
+
+fn test_engine() -> (LLMEngine, SavedSlots, SavedSlots, FreedSlots) {
     let saves = Arc::new(Mutex::new(Vec::new()));
     let loads = Arc::new(Mutex::new(Vec::new()));
     let frees = Arc::new(Mutex::new(Vec::new()));
@@ -114,7 +112,7 @@ fn test_engine() -> (
     let process = AgentProcess::new(
         1,
         7,
-            ToolCaller::AgentText,
+        ToolCaller::AgentText,
         ProcessLifecyclePolicy::Interactive,
         process_model,
         tokenizer.clone(),

@@ -208,7 +208,7 @@ fn admission_refuses_when_single_runtime_exceeds_budget() {
     }
 }
 
-fn local_target(model_path: &PathBuf, tokenizer_path: &PathBuf) -> ResolvedModelTarget {
+fn local_target(model_path: &Path, tokenizer_path: &Path) -> ResolvedModelTarget {
     let driver = resolve_driver_for_model(PromptFamily::Mistral, None, Some("external-llamacpp"))
         .expect("resolve driver");
     ResolvedModelTarget::local(
@@ -219,9 +219,9 @@ fn local_target(model_path: &PathBuf, tokenizer_path: &PathBuf) -> ResolvedModel
                 .to_string_lossy()
                 .to_string(),
         ),
-        model_path.clone(),
+        model_path.to_path_buf(),
         PromptFamily::Mistral,
-        Some(tokenizer_path.clone()),
+        Some(tokenizer_path.to_path_buf()),
         None,
         driver,
     )

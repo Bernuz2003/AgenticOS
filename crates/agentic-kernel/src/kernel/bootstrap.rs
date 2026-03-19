@@ -24,10 +24,15 @@ use crate::transport::Client;
 
 use super::{
     recovery,
-    server::{Kernel, SERVER},
+    server::{Kernel, SERVER, WORKER_WAKE_TOKEN},
 };
 
+/// Costruisce e inizializza l'istanza principale del Kernel di AgenticOS.
+///
+/// Questa funzione si occupa di allocare e collegare tutti i sottosistemi principali:
+/// rete (mio), memoria, database SQLite, worker thread asincroni e i vari registry.
 pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> {
+    // 1. Configurazione del loop di eventi di rete (mio)
     let poll = Poll::new()?;
     let events = Events::with_capacity(128);
     let addr: std::net::SocketAddr = format!("{}:{}", config.network.host, config.network.port)
@@ -36,16 +41,22 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
     let mut server = TcpListener::bind(addr)?;
     poll.registry()
         .register(&mut server, SERVER, Interest::READABLE)?;
+    let worker_waker = Arc::new(mio::Waker::new(poll.registry(), WORKER_WAKE_TOKEN)?);
 
+    // 2. Inizializzazione della memoria e del catalogo dei modelli
     let memory = build_memory(config)?;
     let shutdown_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let model_catalog =
         ModelCatalog::discover(config.paths.models_dir.clone()).map_err(io::Error::other)?;
     let checkpoint_interval_secs = config.checkpoint.interval_secs;
 
+    // 3. Avvio del thread dedicato all'inferenza LLM
     let (cmd_tx, cmd_rx) = mpsc::channel::<InferenceCmd>();
     let (result_tx, result_rx) = mpsc::channel::<InferenceResult>();
-    let worker_handle = inference_worker::spawn_worker(result_tx, cmd_rx);
+    let worker_handle =
+        inference_worker::spawn_worker(result_tx, cmd_rx, Some(worker_waker.clone()));
+
+    // 4. Avvio del thread dedicato all'esecuzione delle syscall (tool)
     let syscall_rates = Arc::new(std::sync::Mutex::new(SyscallRateMap::new()));
     let (syscall_cmd_tx, syscall_cmd_rx) = mpsc::channel::<SyscallCmd>();
     let (syscall_result_tx, syscall_result_rx) = mpsc::channel::<SyscallCompletion>();
@@ -53,7 +64,10 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         Arc::clone(&syscall_rates),
         syscall_result_tx,
         syscall_cmd_rx,
+        Some(worker_waker),
     );
+
+    // 5. Setup dello storage SQLite, record di boot e procedure di recovery
     let mut storage =
         StorageService::open(&config.paths.database_path).map_err(io::Error::other)?;
     let boot_record = storage
@@ -69,6 +83,7 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
     let session_registry =
         SessionRegistry::load(&mut storage, boot_record.boot_id).map_err(io::Error::other)?;
 
+    // 6. Generazione del token di autenticazione per la sessione corrente
     let auth_disabled = config.auth.disabled;
     let auth_token = write_auth_token(config)?;
 
@@ -97,12 +112,13 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         "AgenticOS Kernel ready"
     );
 
+    // 7. Assemblaggio finale della struct Kernel
     Ok(Kernel {
         poll,
         events,
         server,
         clients: HashMap::<Token, Client>::new(),
-        unique_token: Token(SERVER.0 + 1),
+        unique_token: Token(WORKER_WAKE_TOKEN.0 + 1),
         log_connections: config.network.log_connections,
         memory,
         runtime_registry,
@@ -111,7 +127,15 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         model_catalog,
         scheduler: ProcessScheduler::new(),
         orchestrator: Orchestrator::new(),
-        poll_timeout_ms: config.network.poll_timeout_ms,
+        remote_deadline_timeout: std::time::Duration::from_millis(
+            config
+                .openai_responses
+                .timeout_ms
+                .max(config.groq_responses.timeout_ms)
+                .max(config.openrouter.timeout_ms)
+                .max(1),
+        ),
+        syscall_deadline_timeout: std::time::Duration::from_secs(config.tools.timeout_s.max(1)),
         checkpoint_interval_secs,
         last_checkpoint: Instant::now(),
         cmd_tx,
@@ -121,6 +145,8 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         in_flight: HashSet::new(),
         pending_kills: Vec::new(),
         pending_events: Vec::new(),
+        syscall_wait_since: HashMap::new(),
+        remote_timeout_reported: HashSet::new(),
         next_event_sequence: 0,
         worker_handle: Some(worker_handle),
         syscall_worker_handle: Some(syscall_worker_handle),
@@ -133,6 +159,9 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
     })
 }
 
+/// Inizializza il sottosistema NeuralMemory.
+///
+/// Applica le quote slot e configura l'eventuale worker asincrono per lo swap su disco.
 fn build_memory(config: &config::KernelConfig) -> io::Result<NeuralMemory> {
     let mut memory = NeuralMemory::new().map_err(|e| io::Error::other(e.to_string()))?;
     memory.set_token_slot_quota_per_pid(config.memory.token_slot_quota_per_pid);
@@ -145,6 +174,9 @@ fn build_memory(config: &config::KernelConfig) -> io::Result<NeuralMemory> {
     Ok(memory)
 }
 
+/// Genera un token randomico (32 byte), lo formatta in esadecimale e lo salva su disco.
+///
+/// Questo token viene utilizzato dai client (come la GUI Tauri) per autenticarsi via TCP.
 fn write_auth_token(config: &config::KernelConfig) -> io::Result<String> {
     use std::io::Write as _;
 

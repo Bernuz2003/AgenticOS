@@ -136,10 +136,24 @@ pub struct InferenceStepRequest<'a> {
     pub remaining_generation_budget: usize,
     pub tokenizer: &'a Tokenizer,
     pub generation: GenerationConfig,
+    pub stream_observer: Option<&'a mut dyn StreamChunkObserver>,
     #[allow(dead_code)]
     pub eos_token_id: u32,
     #[allow(dead_code)]
     pub eot_token_id: u32,
+}
+
+pub trait StreamChunkObserver {
+    fn on_chunk(&mut self, chunk: &str);
+}
+
+impl<F> StreamChunkObserver for F
+where
+    F: FnMut(&str),
+{
+    fn on_chunk(&mut self, chunk: &str) {
+        self(chunk);
+    }
 }
 
 const DRIVER_REGISTRY: [DriverDescriptor; 4] = [

@@ -9,7 +9,6 @@ use std::time::Duration;
 use agentic_control_models::ExecStartPayload;
 use agentic_protocol::OpCode;
 
-use super::audit::AuditLogEntry;
 use super::auth::kernel_token_path;
 use super::protocol;
 use crate::models::kernel::{
@@ -26,6 +25,23 @@ struct TimelineTurn {
     prompt: String,
     assistant_stream: String,
     running: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct TimelineSeedTurn {
+    pub prompt: String,
+    pub assistant_stream: String,
+    pub running: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct TimelineSeedSession {
+    pub session_id: String,
+    pub pid: u64,
+    pub workload: String,
+    pub turns: Vec<TimelineSeedTurn>,
+    pub error: Option<String>,
+    pub system_events: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,8 +70,9 @@ impl TimelineStore {
         workload: String,
     ) {
         // Keep at most one live entry per session_id to avoid accidental aliasing.
-        self.sessions
-            .retain(|existing_pid, session| *existing_pid == pid || session.session_id != session_id);
+        self.sessions.retain(|existing_pid, session| {
+            *existing_pid == pid || session.session_id != session_id
+        });
 
         let state = TimelineSessionState {
             session_id,
@@ -74,6 +91,87 @@ impl TimelineStore {
 
     pub fn evict_session(&mut self, pid: u64) {
         self.sessions.remove(&pid);
+    }
+
+    pub fn evict_session_by_id(&mut self, session_id: &str) {
+        self.sessions
+            .retain(|_, session| session.session_id != session_id);
+    }
+
+    pub fn insert_seeded_session(&mut self, seed: TimelineSeedSession) {
+        self.sessions.retain(|existing_pid, session| {
+            *existing_pid == seed.pid || session.session_id != seed.session_id
+        });
+
+        let turns = if seed.turns.is_empty() {
+            Vec::new()
+        } else {
+            seed.turns
+                .into_iter()
+                .map(|turn| TimelineTurn {
+                    prompt: turn.prompt,
+                    assistant_stream: turn.assistant_stream,
+                    running: turn.running,
+                })
+                .collect()
+        };
+
+        self.sessions.insert(
+            seed.pid,
+            TimelineSessionState {
+                session_id: seed.session_id,
+                pid: seed.pid,
+                workload: seed.workload,
+                turns,
+                error: seed.error,
+                system_events: seed.system_events,
+            },
+        );
+    }
+
+    pub fn insert_empty_session(&mut self, pid: u64, session_id: String, workload: String) {
+        self.insert_seeded_session(TimelineSeedSession {
+            session_id,
+            pid,
+            workload,
+            turns: Vec::new(),
+            error: None,
+            system_events: Vec::new(),
+        });
+    }
+
+    pub fn rebind_session_pid(&mut self, session_id: &str, pid: u64, workload: String) {
+        let Some((existing_pid, existing_session)) = self
+            .sessions
+            .iter()
+            .find(|(_, session)| session.session_id == session_id)
+            .map(|(existing_pid, session)| (*existing_pid, session.clone()))
+        else {
+            return;
+        };
+
+        self.sessions.remove(&existing_pid);
+        self.sessions.insert(
+            pid,
+            TimelineSessionState {
+                session_id: existing_session.session_id,
+                pid,
+                workload,
+                turns: existing_session.turns,
+                error: existing_session.error,
+                system_events: existing_session.system_events,
+            },
+        );
+    }
+
+    pub fn has_pid(&self, pid: u64) -> bool {
+        self.sessions.contains_key(&pid)
+    }
+
+    pub fn has_session_id(&self, session_id: &str) -> bool {
+        self.sessions
+            .values()
+            .any(|session| session.session_id == session_id)
     }
 
     pub fn append_user_turn(&mut self, pid: u64, prompt: String) {
@@ -185,7 +283,7 @@ impl TimelineStore {
 pub fn synthesize_fallback_timeline(snapshot: WorkspaceSnapshot) -> TimelineSnapshot {
     let running = matches!(
         snapshot.state.as_str(),
-        "Running" | "WaitingForSyscall" | "InFlight"
+        "Running" | "WaitingForSyscall" | "InFlight" | "AwaitingRemoteResponse"
     );
     let mut items = Vec::new();
     items.push(TimelineItem {
@@ -212,15 +310,6 @@ pub fn synthesize_fallback_timeline(snapshot: WorkspaceSnapshot) -> TimelineSnap
         },
     });
 
-    for (index, event) in snapshot.audit_events.iter().enumerate() {
-        items.push(TimelineItem {
-            id: format!("{}-fallback-audit-{}", snapshot.session_id, index + 1),
-            kind: TimelineItemKind::SystemEvent,
-            text: format!("{}: {}", event.title, event.detail),
-            status: "degraded".to_string(),
-        });
-    }
-
     TimelineSnapshot {
         session_id: snapshot.session_id,
         pid: snapshot.pid,
@@ -233,59 +322,6 @@ pub fn synthesize_fallback_timeline(snapshot: WorkspaceSnapshot) -> TimelineSnap
         error: None,
         items,
     }
-}
-
-pub fn augment_timeline_with_tool_results(
-    mut timeline: TimelineSnapshot,
-    audit_entries: &[AuditLogEntry],
-) -> TimelineSnapshot {
-    let total_tool_calls = timeline
-        .items
-        .iter()
-        .filter(|item| matches!(item.kind, TimelineItemKind::ToolCall))
-        .count();
-
-    if audit_entries.is_empty() && total_tool_calls == 0 {
-        return timeline;
-    }
-
-    let mut augmented = Vec::new();
-    let mut tool_results = audit_entries.iter().peekable();
-    let mut tool_call_ordinal = 0usize;
-
-    for mut item in timeline.items {
-        if matches!(item.kind, TimelineItemKind::ToolCall) {
-            tool_call_ordinal += 1;
-            let is_last_tool_call = tool_call_ordinal == total_tool_calls;
-            let has_audit_result = tool_results.peek().is_some();
-
-            if timeline.running && is_last_tool_call && !has_audit_result {
-                item.status = "dispatching".to_string();
-            }
-
-            augmented.push(item);
-            if let Some(entry) = tool_results.next() {
-                augmented.push(tool_result_item(
-                    &timeline.session_id,
-                    augmented.len() + 1,
-                    entry,
-                ));
-            } else if timeline.running && is_last_tool_call {
-                augmented.push(tool_dispatch_item(
-                    &timeline.session_id,
-                    augmented.len() + 1,
-                ));
-            }
-        } else {
-            augmented.push(item);
-        }
-    }
-
-    // Do not append unmatched audit entries.
-    // Audit is currently pid-scoped, so trailing entries may belong to a previous
-    // session that used the same PID. Only pair results with visible ToolCall items.
-    timeline.items = augmented;
-    timeline
 }
 
 pub fn start_exec_session(
@@ -791,50 +827,6 @@ fn push_timeline_text_item(
     *item_index += 1;
 }
 
-fn tool_result_item(session_id: &str, item_index: usize, entry: &AuditLogEntry) -> TimelineItem {
-    let normalized_command = entry
-        .command
-        .trim()
-        .trim_start_matches("[[")
-        .trim_end_matches("]]")
-        .to_string();
-    let status = if entry.success { "success" } else { "error" };
-    let mut metadata = vec![format!(
-        "duration_ms={} kill={}",
-        entry.duration_ms, entry.should_kill
-    )];
-    if let Some(tool_name) = entry.tool_name.as_deref() {
-        metadata.push(format!("tool={tool_name}"));
-    }
-    if let Some(caller) = entry.caller.as_deref() {
-        metadata.push(format!("caller={caller}"));
-    }
-    if let Some(transport) = entry.transport.as_deref() {
-        metadata.push(format!("transport={transport}"));
-    }
-    let text = format!(
-        "Command: {}\n\n{}\n\n{}",
-        normalized_command,
-        entry.detail,
-        metadata.join(" ")
-    );
-    TimelineItem {
-        id: format!("{}-tool-result-{}", session_id, item_index),
-        kind: TimelineItemKind::ToolResult,
-        text,
-        status: status.to_string(),
-    }
-}
-
-fn tool_dispatch_item(session_id: &str, item_index: usize) -> TimelineItem {
-    TimelineItem {
-        id: format!("{}-tool-dispatch-{}", session_id, item_index),
-        kind: TimelineItemKind::SystemEvent,
-        text: "Tool dispatch in progress: il kernel ha intercettato la syscall e sta aspettando il risultato del worker.".to_string(),
-        status: "streaming".to_string(),
-    }
-}
-
 fn authenticate(stream: &mut TcpStream, workspace_root: &Path) -> Result<(), String> {
     let token = load_token(workspace_root)?;
     if token.is_empty() {
@@ -863,10 +855,9 @@ fn load_token(workspace_root: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        augment_timeline_with_tool_results, parse_stream_segments, TimelineItemKind, TimelineStore,
+        parse_stream_segments, TimelineItemKind, TimelineSeedSession, TimelineSeedTurn,
+        TimelineStore,
     };
-    use crate::kernel::audit::AuditLogEntry;
-    use crate::models::kernel::TimelineSnapshot;
 
     #[test]
     fn parse_stream_segments_splits_thinking_tool_and_answer() {
@@ -935,10 +926,7 @@ mod tests {
         assert!(matches!(items[0].kind, TimelineItemKind::ActionCall));
         assert_eq!(items[0].text, "ACTION:spawn {\"prompt\":\"worker\"}");
         assert!(matches!(items[1].kind, TimelineItemKind::ActionCall));
-        assert_eq!(
-            items[1].text,
-            "ACTION:send {\"pid\":1,\"message\":\"hi\"}"
-        );
+        assert_eq!(items[1].text, "ACTION:send {\"pid\":1,\"message\":\"hi\"}");
     }
 
     #[test]
@@ -969,111 +957,6 @@ mod tests {
     }
 
     #[test]
-    fn augment_timeline_marks_last_tool_call_as_dispatching_when_audit_is_pending() {
-        let timeline = TimelineSnapshot {
-            session_id: "pid-7".to_string(),
-            pid: 7,
-            running: true,
-            workload: "code".to_string(),
-            source: "live_exec".to_string(),
-            fallback_notice: None,
-            error: None,
-            items: parse_stream_segments(
-                "pid-7-turn-1",
-                "TOOL:calc {\"expression\":\"1+1\"}\n",
-                true,
-            ),
-        };
-
-        let augmented = augment_timeline_with_tool_results(timeline, &[]);
-        assert_eq!(augmented.items.len(), 2);
-        assert!(matches!(
-            augmented.items[0].kind,
-            TimelineItemKind::ToolCall
-        ));
-        assert_eq!(augmented.items[0].status, "dispatching");
-        assert!(matches!(
-            augmented.items[1].kind,
-            TimelineItemKind::SystemEvent
-        ));
-        assert_eq!(augmented.items[1].status, "streaming");
-    }
-
-    #[test]
-    fn augment_timeline_pairs_completed_tool_calls_with_audit_results() {
-        let timeline = TimelineSnapshot {
-            session_id: "pid-8".to_string(),
-            pid: 8,
-            running: false,
-            workload: "code".to_string(),
-            source: "live_exec".to_string(),
-            fallback_notice: None,
-            error: None,
-            items: parse_stream_segments("pid-8-turn-1", "[[CALC: 2 + 2]]\n", false),
-        };
-        let audit_entries = vec![AuditLogEntry {
-            pid: 8,
-            success: true,
-            should_kill: false,
-            duration_ms: 4,
-            caller: Some("agent_text".to_string()),
-            transport: Some("text".to_string()),
-            tool_name: Some("calc".to_string()),
-            command: "[[CALC: 2 + 2]]".to_string(),
-            detail: "Output:\n4".to_string(),
-        }];
-
-        let augmented = augment_timeline_with_tool_results(timeline, &audit_entries);
-        assert_eq!(augmented.items.len(), 2);
-        assert!(matches!(
-            augmented.items[0].kind,
-            TimelineItemKind::ToolCall
-        ));
-        assert!(matches!(
-            augmented.items[1].kind,
-            TimelineItemKind::ToolResult
-        ));
-        assert_eq!(augmented.items[1].status, "success");
-    }
-
-    #[test]
-    fn augment_timeline_ignores_unmatched_audit_entries() {
-        let timeline = TimelineSnapshot {
-            session_id: "pid-clean".to_string(),
-            pid: 77,
-            running: true,
-            workload: "general".to_string(),
-            source: "live_exec".to_string(),
-            fallback_notice: None,
-            error: None,
-            items: vec![crate::models::kernel::TimelineItem {
-                id: "pid-clean-turn-1-user".to_string(),
-                kind: TimelineItemKind::UserMessage,
-                text: "new prompt".to_string(),
-                status: "complete".to_string(),
-            }],
-        };
-        let audit_entries = vec![AuditLogEntry {
-            pid: 77,
-            success: true,
-            should_kill: false,
-            duration_ms: 3,
-            caller: Some("agent_text".to_string()),
-            transport: Some("text".to_string()),
-            tool_name: Some("python".to_string()),
-            command: "TOOL:python {\"code\":\"print(1)\"}".to_string(),
-            detail: "Output:\n1".to_string(),
-        }];
-
-        let augmented = augment_timeline_with_tool_results(timeline, &audit_entries);
-        assert_eq!(augmented.items.len(), 1);
-        assert!(matches!(
-            augmented.items[0].kind,
-            TimelineItemKind::UserMessage
-        ));
-    }
-
-    #[test]
     fn insert_started_session_resets_live_state_when_pid_is_reused() {
         let mut store = TimelineStore::default();
         store.insert_started_session(
@@ -1096,7 +979,10 @@ mod tests {
             .snapshot_for_session_id("sess-new")
             .expect("new session timeline should exist");
         assert_eq!(timeline.items.len(), 2);
-        assert!(matches!(timeline.items[0].kind, TimelineItemKind::UserMessage));
+        assert!(matches!(
+            timeline.items[0].kind,
+            TimelineItemKind::UserMessage
+        ));
         assert_eq!(timeline.items[0].text, "new prompt");
         assert!(matches!(
             timeline.items[1].kind,
@@ -1120,5 +1006,42 @@ mod tests {
         store.evict_session(7);
         assert!(store.snapshot(7).is_none());
         assert!(store.snapshot_for_session_id("sess-evict").is_none());
+    }
+
+    #[test]
+    fn seeded_session_can_rebind_to_new_pid_without_losing_history() {
+        let mut store = TimelineStore::default();
+        store.insert_seeded_session(TimelineSeedSession {
+            session_id: "sess-history".to_string(),
+            pid: 21,
+            workload: "general".to_string(),
+            turns: vec![TimelineSeedTurn {
+                prompt: "persisted prompt".to_string(),
+                assistant_stream: "persisted answer".to_string(),
+                running: false,
+            }],
+            error: None,
+            system_events: Vec::new(),
+        });
+
+        store.rebind_session_pid("sess-history", 84, "general".to_string());
+        store.append_user_turn(84, "new input".to_string());
+
+        assert!(store.snapshot(21).is_none());
+
+        let timeline = store
+            .snapshot(84)
+            .expect("rebound session should be addressable by the new pid");
+        assert_eq!(timeline.session_id, "sess-history");
+        assert_eq!(timeline.items.len(), 4);
+        assert_eq!(timeline.items[0].text, "persisted prompt");
+        assert_eq!(timeline.items[1].text, "persisted answer");
+        assert_eq!(timeline.items[2].text, "new input");
+        assert!(matches!(
+            timeline.items[3].kind,
+            TimelineItemKind::AssistantMessage
+        ));
+        assert_eq!(timeline.items[3].status, "streaming");
+        assert!(timeline.running);
     }
 }

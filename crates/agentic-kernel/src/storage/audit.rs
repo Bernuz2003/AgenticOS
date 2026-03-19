@@ -28,7 +28,11 @@ pub(crate) struct StoredAuditEvent {
 }
 
 impl StorageService {
-    pub(crate) fn record_audit_event(&mut self, event: &NewAuditEvent) -> Result<(), StorageError> {
+    pub(crate) fn record_audit_event(
+        &mut self,
+        event: &NewAuditEvent,
+    ) -> Result<i64, StorageError> {
+        let recorded_at_ms = current_timestamp_ms();
         self.connection.execute(
             r#"
             INSERT INTO audit_events (
@@ -43,7 +47,7 @@ impl StorageService {
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             "#,
             params![
-                current_timestamp_ms(),
+                recorded_at_ms,
                 event.category,
                 event.kind,
                 event.title,
@@ -54,7 +58,7 @@ impl StorageService {
             ],
         )?;
 
-        Ok(())
+        Ok(recorded_at_ms)
     }
 
     #[allow(dead_code)]

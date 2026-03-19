@@ -164,6 +164,7 @@ mod tests {
             session_id: None,
             caller: ToolCaller::AgentText,
             transport: ToolInvocationTransport::Text,
+            call_id: None,
         };
 
         let err = dispatcher
@@ -199,6 +200,7 @@ mod tests {
             session_id: None,
             caller: ToolCaller::AgentText,
             transport: ToolInvocationTransport::Text,
+            call_id: None,
         };
 
         let err = dispatcher

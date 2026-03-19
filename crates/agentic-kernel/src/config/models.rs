@@ -3,7 +3,7 @@ use super::parser::repository_path;
 use serde::Deserialize;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct KernelConfig {
     pub network: NetworkConfig,
@@ -23,30 +23,6 @@ pub struct KernelConfig {
     pub tools: ToolsRuntimeConfig,
     pub generation: GenerationProfilesConfig,
     pub scheduler: SchedulerConfig,
-}
-
-impl Default for KernelConfig {
-    fn default() -> Self {
-        Self {
-            network: NetworkConfig::default(),
-            protocol: ProtocolRuntimeConfig::default(),
-            paths: PathsConfig::default(),
-            memory: MemoryRuntimeConfig::default(),
-            resources: ResourceGovernorConfig::default(),
-            context: ContextConfig::default(),
-            checkpoint: CheckpointConfig::default(),
-            auth: AuthConfig::default(),
-            external_llamacpp: ExternalLlamaCppConfig::default(),
-            openai_responses: OpenAIResponsesConfig::default(),
-            groq_responses: GroqResponsesConfig::default(),
-            openrouter: OpenRouterConfig::default(),
-            exec: ExecConfig::default(),
-            orchestrator: OrchestratorConfig::default(),
-            tools: ToolsRuntimeConfig::default(),
-            generation: GenerationProfilesConfig::default(),
-            scheduler: SchedulerConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -97,7 +73,7 @@ impl Default for NetworkConfig {
         Self {
             host: "127.0.0.1".to_string(),
             port: 6380,
-            poll_timeout_ms: 5,
+            poll_timeout_ms: 500,
             log_connections: false,
         }
     }

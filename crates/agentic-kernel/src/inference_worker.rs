@@ -1,5 +1,8 @@
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
+
+use mio::Waker;
 
 use crate::accounting::BackendAccountingEvent;
 use crate::backend::{InferenceFinishReason, InferenceStepRequest};
@@ -20,6 +23,12 @@ pub enum InferenceCmd {
 
 /// Result returned from the inference worker to the main thread.
 pub enum InferenceResult {
+    /// Streaming chunk emitted while an inference step is still in-flight.
+    StreamChunk {
+        pid: u64,
+        text: String,
+        first_chunk: bool,
+    },
     /// Successful inference step.
     Token {
         pid: u64,
@@ -37,90 +46,6 @@ pub enum InferenceResult {
     },
 }
 
-/// Run one inference step on a checked-out process.
-///
-/// Replicates the forward+sample logic from `LLMEngine::step_process()`
-/// but operates on an owned `AgentProcess` without needing access to the engine.
-type StepResult = std::result::Result<
-    (
-        AgentProcess,
-        String,
-        usize,
-        bool,
-        Option<BackendAccountingEvent>,
-    ),
-    (String, Option<BackendAccountingEvent>),
->;
-
-fn run_step(mut process: AgentProcess, eos_token_id: u32, eot_token_id: u32) -> StepResult {
-    let remaining_generation_budget = process
-        .max_tokens
-        .saturating_sub(process.generated_tokens_in_current_turn());
-
-    if remaining_generation_budget == 0 {
-        process.state = if process.lifecycle_policy.is_interactive() {
-            ProcessState::WaitingForInput
-        } else {
-            ProcessState::Finished
-        };
-        return Ok((process, String::new(), 0, true, None));
-    }
-
-    process.state = ProcessState::Running;
-    let rendered_prompt = process.prompt_text().to_string();
-    let resident_prompt_suffix = process.pending_resident_prompt_suffix().to_string();
-
-    let step = match process.model.generate_step(InferenceStepRequest {
-        context_slot_id: process.context_slot_id,
-        tokens: &process.tokens,
-        rendered_prompt: &rendered_prompt,
-        resident_prompt_suffix: &resident_prompt_suffix,
-        index_pos: process.index_pos,
-        remaining_generation_budget,
-        tokenizer: &process.tokenizer,
-        generation: process.generation,
-        eos_token_id,
-        eot_token_id,
-    }) {
-        Ok(step) => step,
-        Err(err) => {
-            let accounting_event = process.model.take_last_accounting_event();
-            return Err((err.to_string(), accounting_event));
-        }
-    };
-
-    process.index_pos = step.next_index_pos;
-    let generated_tokens = step.appended_tokens.len();
-    process.tokens.extend(step.appended_tokens);
-    let accounting_event = process.model.take_last_accounting_event();
-
-    let mut finished = step.finished;
-    let mut finish_reason = step.finish_reason;
-    if process.generated_tokens_in_current_turn() >= process.max_tokens {
-        finished = true;
-        finish_reason.get_or_insert(InferenceFinishReason::TurnBudgetExhausted);
-    }
-    if finished {
-        process.state = if process.lifecycle_policy.is_interactive()
-            && finish_reason == Some(InferenceFinishReason::TurnBudgetExhausted)
-        {
-            ProcessState::AwaitingTurnDecision
-        } else if process.lifecycle_policy.is_interactive() {
-            ProcessState::WaitingForInput
-        } else {
-            ProcessState::Finished
-        };
-    }
-
-    Ok((
-        process,
-        step.emitted_text,
-        generated_tokens,
-        finished,
-        accounting_event,
-    ))
-}
-
 /// Spawn the inference worker thread.
 ///
 /// The worker receives `InferenceCmd`s from `cmd_rx`, runs the forward pass,
@@ -128,6 +53,7 @@ fn run_step(mut process: AgentProcess, eos_token_id: u32, eot_token_id: u32) -> 
 pub fn spawn_worker(
     result_tx: mpsc::Sender<InferenceResult>,
     cmd_rx: mpsc::Receiver<InferenceCmd>,
+    wake_loop: Option<Arc<Waker>>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("inference-worker".into())
@@ -147,42 +73,148 @@ pub fn spawn_worker(
                         process,
                         eos_token_id,
                         eot_token_id,
-                    } => match run_step(*process, eos_token_id, eot_token_id) {
-                        Ok((
-                            process,
-                            text_output,
-                            generated_tokens,
-                            finished,
-                            accounting_event,
-                        )) => {
+                    } => {
+                        let mut streamed_text = String::new();
+                        let mut sent_any_chunk = false;
+                        let mut on_chunk = |chunk: &str| {
+                            if chunk.is_empty() {
+                                return;
+                            }
+                            streamed_text.push_str(chunk);
+                            let first_chunk = !sent_any_chunk;
+                            sent_any_chunk = true;
+                            if result_tx
+                                .send(InferenceResult::StreamChunk {
+                                    pid,
+                                    text: chunk.to_string(),
+                                    first_chunk,
+                                })
+                                .is_ok()
+                            {
+                                if let Some(waker) = wake_loop.as_ref() {
+                                    let _ = waker.wake();
+                                }
+                            }
+                        };
+
+                        let mut process = *process;
+                        let remaining_generation_budget = process
+                            .max_tokens
+                            .saturating_sub(process.generated_tokens_in_current_turn());
+
+                        if remaining_generation_budget == 0 {
+                            process.state = if process.lifecycle_policy.is_interactive() {
+                                ProcessState::WaitingForInput
+                            } else {
+                                ProcessState::Finished
+                            };
                             if result_tx
                                 .send(InferenceResult::Token {
                                     pid,
                                     process: Box::new(process),
-                                    text_output,
-                                    generated_tokens,
-                                    finished,
-                                    accounting_event,
-                                })
-                                .is_err()
-                            {
-                                tracing::info!("INFERENCE_WORKER: result channel closed, exiting");
-                                break;
-                            }
-                        }
-                        Err((error, accounting_event)) => {
-                            if result_tx
-                                .send(InferenceResult::Error {
-                                    pid,
-                                    error,
-                                    accounting_event,
+                                    text_output: String::new(),
+                                    generated_tokens: 0,
+                                    finished: true,
+                                    accounting_event: None,
                                 })
                                 .is_err()
                             {
                                 break;
                             }
+                            if let Some(waker) = wake_loop.as_ref() {
+                                let _ = waker.wake();
+                            }
+                            continue;
                         }
-                    },
+
+                        process.state = ProcessState::Running;
+                        let rendered_prompt = process.prompt_text().to_string();
+                        let resident_prompt_suffix =
+                            process.pending_resident_prompt_suffix().to_string();
+
+                        let step = match process.model.generate_step(InferenceStepRequest {
+                            context_slot_id: process.context_slot_id,
+                            tokens: &process.tokens,
+                            rendered_prompt: &rendered_prompt,
+                            resident_prompt_suffix: &resident_prompt_suffix,
+                            index_pos: process.index_pos,
+                            remaining_generation_budget,
+                            tokenizer: &process.tokenizer,
+                            generation: process.generation,
+                            stream_observer: Some(&mut on_chunk),
+                            eos_token_id,
+                            eot_token_id,
+                        }) {
+                            Ok(step) => step,
+                            Err(err) => {
+                                let accounting_event = process.model.take_last_accounting_event();
+                                if result_tx
+                                    .send(InferenceResult::Error {
+                                        pid,
+                                        error: err.to_string(),
+                                        accounting_event,
+                                    })
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                if let Some(waker) = wake_loop.as_ref() {
+                                    let _ = waker.wake();
+                                }
+                                continue;
+                            }
+                        };
+
+                        process.index_pos = step.next_index_pos;
+                        let generated_tokens = step.appended_tokens.len();
+                        process.tokens.extend(step.appended_tokens);
+                        let accounting_event = process.model.take_last_accounting_event();
+
+                        let mut finished = step.finished;
+                        let mut finish_reason = step.finish_reason;
+                        if process.generated_tokens_in_current_turn() >= process.max_tokens {
+                            finished = true;
+                            finish_reason.get_or_insert(InferenceFinishReason::TurnBudgetExhausted);
+                        }
+                        if finished {
+                            process.state = if process.lifecycle_policy.is_interactive()
+                                && finish_reason == Some(InferenceFinishReason::TurnBudgetExhausted)
+                            {
+                                ProcessState::AwaitingTurnDecision
+                            } else if process.lifecycle_policy.is_interactive() {
+                                ProcessState::WaitingForInput
+                            } else {
+                                ProcessState::Finished
+                            };
+                        }
+
+                        let text_output = if streamed_text.is_empty() {
+                            step.emitted_text
+                        } else {
+                            step.emitted_text
+                                .strip_prefix(&streamed_text)
+                                .map(|suffix| suffix.to_string())
+                                .unwrap_or_default()
+                        };
+
+                        if result_tx
+                            .send(InferenceResult::Token {
+                                pid,
+                                process: Box::new(process),
+                                text_output,
+                                generated_tokens,
+                                finished,
+                                accounting_event,
+                            })
+                            .is_err()
+                        {
+                            tracing::info!("INFERENCE_WORKER: result channel closed, exiting");
+                            break;
+                        }
+                        if let Some(waker) = wake_loop.as_ref() {
+                            let _ = waker.wake();
+                        }
+                    }
                     InferenceCmd::Shutdown => {
                         tracing::info!("INFERENCE_WORKER: shutdown command received");
                         break;

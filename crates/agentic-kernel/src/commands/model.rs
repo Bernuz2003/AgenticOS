@@ -40,7 +40,7 @@ pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u
                 );
                 protocol::response_protocol_ok(
                     ctx.client,
-                    &ctx.request_id,
+                    ctx.request_id,
                     "LOAD",
                     protocol::schema::LOAD,
                     &LoadModelResult {
@@ -64,14 +64,14 @@ pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u
             }
             Err(ModelActivationError::Busy(e)) => protocol::response_protocol_err_typed(
                 ctx.client,
-                &ctx.request_id,
+                ctx.request_id,
                 ControlErrorCode::LoadBusy,
                 protocol::schema::ERROR,
                 &e,
             ),
             Err(ModelActivationError::Failed(e)) => protocol::response_protocol_err_typed(
                 ctx.client,
-                &ctx.request_id,
+                ctx.request_id,
                 ControlErrorCode::LoadFailed,
                 protocol::schema::ERROR,
                 &e,
@@ -79,14 +79,14 @@ pub(crate) fn handle_load(ctx: ModelCommandContext<'_>, payload: &[u8]) -> Vec<u
         },
         Err(CatalogError::DriverResolutionFailed(detail)) => protocol::response_protocol_err_typed(
             ctx.client,
-            &ctx.request_id,
+            ctx.request_id,
             ControlErrorCode::DriverUnresolved,
             protocol::schema::ERROR,
             &detail,
         ),
         Err(e) => protocol::response_protocol_err_typed(
             ctx.client,
-            &ctx.request_id,
+            ctx.request_id,
             ControlErrorCode::ModelSelector,
             protocol::schema::ERROR,
             &e.to_string(),
@@ -100,7 +100,7 @@ pub(crate) fn handle_list_models(ctx: ModelCommandContext<'_>) -> Vec<u8> {
     let data: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
     protocol::response_protocol_ok(
         ctx.client,
-        &ctx.request_id,
+        ctx.request_id,
         "LIST_MODELS",
         protocol::schema::LIST_MODELS,
         &data,
@@ -114,7 +114,7 @@ pub(crate) fn handle_select_model(ctx: ModelCommandContext<'_>, payload: &[u8]) 
     if model_id.is_empty() {
         protocol::response_protocol_err_typed(
             ctx.client,
-            &ctx.request_id,
+            ctx.request_id,
             ControlErrorCode::MissingModelId,
             protocol::schema::ERROR,
             "SELECT_MODEL requires a model id",
@@ -135,7 +135,7 @@ pub(crate) fn handle_select_model(ctx: ModelCommandContext<'_>, payload: &[u8]) 
                 let message = format!("Selected model '{}'.", model_id);
                 protocol::response_protocol_ok(
                     ctx.client,
-                    &ctx.request_id,
+                    ctx.request_id,
                     "SELECT_MODEL",
                     protocol::schema::SELECT_MODEL,
                     &SelectModelResult {
@@ -146,7 +146,7 @@ pub(crate) fn handle_select_model(ctx: ModelCommandContext<'_>, payload: &[u8]) 
             }
             Err(e) => protocol::response_protocol_err_typed(
                 ctx.client,
-                &ctx.request_id,
+                ctx.request_id,
                 ControlErrorCode::ModelNotFound,
                 protocol::schema::ERROR,
                 &e.to_string(),
@@ -203,7 +203,7 @@ pub(crate) fn handle_model_info(ctx: ModelCommandContext<'_>, payload: &[u8]) ->
     if model_id.is_empty() {
         protocol::response_protocol_err_typed(
             ctx.client,
-            &ctx.request_id,
+            ctx.request_id,
             ControlErrorCode::Generic,
             protocol::schema::ERROR,
             "MODEL_INFO requires a model id or an active selected model",
@@ -214,7 +214,7 @@ pub(crate) fn handle_model_info(ctx: ModelCommandContext<'_>, payload: &[u8]) ->
                 let data: Value = serde_json::from_str(&info).unwrap_or(Value::Null);
                 protocol::response_protocol_ok(
                     ctx.client,
-                    &ctx.request_id,
+                    ctx.request_id,
                     "MODEL_INFO",
                     protocol::schema::MODEL_INFO,
                     &data,
@@ -223,7 +223,7 @@ pub(crate) fn handle_model_info(ctx: ModelCommandContext<'_>, payload: &[u8]) ->
             }
             Err(e) => protocol::response_protocol_err_typed(
                 ctx.client,
-                &ctx.request_id,
+                ctx.request_id,
                 ControlErrorCode::Generic,
                 protocol::schema::ERROR,
                 &e.to_string(),
@@ -239,7 +239,7 @@ pub(crate) fn handle_backend_diag(ctx: ModelCommandContext<'_>) -> Vec<u8> {
             let data: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
             protocol::response_protocol_ok(
                 ctx.client,
-                &ctx.request_id,
+                ctx.request_id,
                 "BACKEND_DIAG",
                 protocol::schema::BACKEND_DIAG,
                 &data,
@@ -248,7 +248,7 @@ pub(crate) fn handle_backend_diag(ctx: ModelCommandContext<'_>) -> Vec<u8> {
         }
         Err(err) => protocol::response_protocol_err_typed(
             ctx.client,
-            &ctx.request_id,
+            ctx.request_id,
             ControlErrorCode::BackendDiag,
             protocol::schema::ERROR,
             &err.to_string(),

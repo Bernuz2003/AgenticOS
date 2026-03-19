@@ -9,7 +9,7 @@
 //!   at `max_tokens`, fixed framework allocations).
 //! - **Queueing**: If a requested activation exceeds available headroom, the request is
 //!   queued rather than rejected, allowing the system to backpressure gracefully.
-
+//!
 //! Global admission control and VRAM/RAM budgeting for runtimes.
 
 mod admission;

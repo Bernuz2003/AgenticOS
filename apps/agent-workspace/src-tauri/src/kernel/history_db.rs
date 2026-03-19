@@ -7,8 +7,7 @@ use agentic_control_models::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::stream::parse_stream_segments;
-use crate::kernel::mapping::make_audit_event;
+use super::stream::{parse_stream_segments, TimelineSeedSession, TimelineSeedTurn};
 use crate::models::kernel::{
     AgentSessionSummary, AuditEvent, TimelineItem, TimelineItemKind, TimelineSnapshot,
     WorkspaceSnapshot,
@@ -141,7 +140,6 @@ pub fn load_timeline_snapshot(
         .or(identity.last_pid)
         .or_else(|| turns.last().map(|turn| turn.pid))
         .or(pid_hint)
-        .or_else(|| parse_pid_from_session_id(&identity.session_id))
         .unwrap_or(0);
     let workload = turns
         .last()
@@ -166,6 +164,45 @@ pub fn load_timeline_snapshot(
     }))
 }
 
+pub fn load_timeline_seed(
+    workspace_root: &Path,
+    session_id: &str,
+    pid_hint: Option<u64>,
+) -> Result<Option<TimelineSeedSession>, String> {
+    let Some(connection) = open_connection(workspace_root)? else {
+        return Ok(None);
+    };
+    let Some(identity) = load_session_identity(&connection, session_id)? else {
+        return Ok(None);
+    };
+    let turns = load_turns(&connection, &identity.session_id)?;
+    let messages = load_messages(&connection, &identity.session_id)?;
+    let pid = identity
+        .active_pid
+        .or(identity.last_pid)
+        .or_else(|| turns.last().map(|turn| turn.pid))
+        .or(pid_hint)
+        .unwrap_or(0);
+    let workload = turns
+        .last()
+        .map(|turn| turn.workload.clone())
+        .unwrap_or(identity.workload);
+    let error = messages
+        .iter()
+        .rev()
+        .find(|message| message.kind == "error")
+        .map(|message| message.content.clone());
+
+    Ok(Some(build_timeline_seed(
+        identity.session_id,
+        pid,
+        workload,
+        turns,
+        messages,
+        error,
+    )))
+}
+
 pub fn load_workspace_snapshot(
     workspace_root: &Path,
     session_id: &str,
@@ -187,18 +224,10 @@ pub fn load_workspace_snapshot(
         .or(identity.last_pid)
         .or_else(|| turns.last().map(|turn| turn.pid))
         .or(pid_hint)
-        .or_else(|| parse_pid_from_session_id(&identity.session_id))
         .unwrap_or(0);
-    let state = if identity.active_pid.is_some() {
-        "Running".to_string()
-    } else {
-        "Idle".to_string()
-    };
+    let state = derive_persisted_workspace_state(identity.active_pid, turns.last());
     let accounting = load_accounting_summary(&connection, Some(&identity.session_id))?;
-    let mut audit_events = load_audit_events(&connection, Some(&identity.session_id), 64)?;
-    if audit_events.is_empty() {
-        audit_events = synthesize_workspace_audit_events(turns.last(), accounting.as_ref());
-    }
+    let audit_events = load_audit_events(&connection, Some(&identity.session_id), 64)?;
 
     Ok(Some(WorkspaceSnapshot {
         session_id: identity.session_id,
@@ -210,6 +239,11 @@ pub fn load_workspace_snapshot(
         runtime_label: identity.runtime_label,
         state,
         workload,
+        owner_id: None,
+        index_pos: None,
+        priority: None,
+        quota_tokens: None,
+        quota_syscalls: None,
         context_slot_id: None,
         resident_slot_policy: None,
         resident_slot_state: None,
@@ -510,6 +544,34 @@ fn load_messages(connection: &Connection, session_id: &str) -> Result<Vec<Stored
         messages.push(row.map_err(|err| err.to_string())?);
     }
     Ok(messages)
+}
+
+fn derive_persisted_workspace_state(
+    active_pid: Option<u64>,
+    last_turn: Option<&StoredTurn>,
+) -> String {
+    if active_pid.is_some() {
+        return "Running".to_string();
+    }
+
+    let Some(last_turn) = last_turn else {
+        return "Idle".to_string();
+    };
+
+    match last_turn.status.as_str() {
+        "running" => "Running",
+        "awaiting_turn_decision" => "AwaitingTurnDecision",
+        "errored" => "Errored",
+        "killed" => "Killed",
+        "terminated" => "Terminated",
+        "completed" if last_turn.finish_reason.is_none() => "WaitingForInput",
+        "completed" if last_turn.finish_reason.as_deref() == Some("kernel_restarted") => {
+            "Interrupted"
+        }
+        "completed" => "Finished",
+        _ => "Idle",
+    }
+    .to_string()
 }
 
 fn load_accounting_summary(
@@ -869,11 +931,7 @@ fn map_audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredAuditRow> {
 fn agent_session_summary_from_identity(
     identity: SessionIdentity,
 ) -> Result<AgentSessionSummary, String> {
-    let pid = identity
-        .active_pid
-        .or(identity.last_pid)
-        .or_else(|| parse_pid_from_session_id(&identity.session_id))
-        .unwrap_or(0);
+    let pid = identity.active_pid.or(identity.last_pid).unwrap_or(0);
     Ok(AgentSessionSummary {
         session_id: identity.session_id,
         pid,
@@ -886,6 +944,7 @@ fn agent_session_summary_from_identity(
         } else {
             "idle".to_string()
         },
+        runtime_state: None,
         uptime_label: format_age_label(identity.updated_at_ms),
         tokens_label: if identity.turn_count == 0 {
             "0".to_string()
@@ -935,39 +994,6 @@ fn column_exists(
 fn runtime_metadata_available(connection: &Connection) -> Result<bool, String> {
     Ok(table_exists(connection, "runtime_instances")?
         && column_exists(connection, "sessions", "runtime_id")?)
-}
-
-fn synthesize_workspace_audit_events(
-    last_turn: Option<&StoredTurn>,
-    accounting: Option<&BackendTelemetryView>,
-) -> Vec<AuditEvent> {
-    let mut audit_events = Vec::new();
-    if let Some(last_turn) = last_turn {
-        if let Some(reason) = last_turn.finish_reason.as_ref() {
-            audit_events.push(make_audit_event(
-                "history",
-                "Persisted turn state",
-                format!("status={} reason={}", last_turn.status, reason),
-            ));
-        }
-    }
-    if let Some(accounting) = accounting {
-        audit_events.push(make_audit_event(
-            "accounting",
-            "Persisted accounting",
-            format!(
-                "requests={} tokens={}/{} cost=${:.6} errors={}/{}/{}",
-                accounting.requests_total,
-                accounting.input_tokens_total,
-                accounting.output_tokens_total,
-                accounting.estimated_cost_usd,
-                accounting.rate_limit_errors,
-                accounting.auth_errors,
-                accounting.transport_errors,
-            ),
-        ));
-    }
-    audit_events
 }
 
 fn build_timeline_items(
@@ -1040,6 +1066,73 @@ fn build_timeline_items(
     items
 }
 
+fn build_timeline_seed(
+    session_id: String,
+    pid: u64,
+    workload: String,
+    turns: Vec<StoredTurn>,
+    messages: Vec<StoredMessage>,
+    error: Option<String>,
+) -> TimelineSeedSession {
+    let mut grouped = BTreeMap::<i64, Vec<StoredMessage>>::new();
+    for message in messages {
+        grouped.entry(message.turn_id).or_default().push(message);
+    }
+
+    let mut seeded_turns = Vec::new();
+    let mut system_events = Vec::new();
+
+    for turn in turns {
+        let mut prompt = String::new();
+        let mut assistant_stream = String::new();
+        let running = matches!(turn.status.as_str(), "running" | "awaiting_turn_decision");
+
+        if let Some(turn_messages) = grouped.remove(&turn.turn_id) {
+            let mut ordered = turn_messages;
+            ordered.sort_by_key(|message| message.ordinal);
+
+            for message in ordered {
+                match message.role.as_str() {
+                    "user" if prompt.is_empty() => {
+                        prompt = message.content;
+                    }
+                    "assistant" => {
+                        assistant_stream.push_str(&message.content);
+                    }
+                    "system" => {
+                        system_events.push((
+                            message.content,
+                            if message.kind == "error" {
+                                "error".to_string()
+                            } else {
+                                "complete".to_string()
+                            },
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if !prompt.is_empty() || !assistant_stream.is_empty() {
+            seeded_turns.push(TimelineSeedTurn {
+                prompt,
+                assistant_stream,
+                running,
+            });
+        }
+    }
+
+    TimelineSeedSession {
+        session_id,
+        pid,
+        workload,
+        turns: seeded_turns,
+        error,
+        system_events,
+    }
+}
+
 fn format_age_label(updated_at_ms: i64) -> String {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1057,15 +1150,12 @@ fn format_age_label(updated_at_ms: i64) -> String {
     }
 }
 
-fn parse_pid_from_session_id(session_id: &str) -> Option<u64> {
-    session_id.strip_prefix("pid-")?.parse::<u64>().ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         load_lobby_sessions, load_runtime_instances, load_runtime_load_queue,
-        load_session_audit_events, load_timeline_snapshot,
+        load_session_audit_events, load_timeline_seed, load_timeline_snapshot,
+        load_workspace_snapshot,
     };
     use rusqlite::{params, Connection};
     use std::fs;
@@ -1153,6 +1243,73 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "sess-1");
         assert_eq!(sessions[0].pid, 33);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lobby_sessions_do_not_infer_pid_from_session_id_text() {
+        let root = make_temp_root("agenticos-history-no-pid-inference");
+        let db_path = root.join("workspace").join("agenticos.db");
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create workspace dir");
+        let connection = Connection::open(&db_path).expect("open db");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    active_pid INTEGER NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE process_runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    boot_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    started_at_ms INTEGER NOT NULL,
+                    ended_at_ms INTEGER NULL
+                );
+                CREATE TABLE session_turns (
+                    turn_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    pid INTEGER NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    workload TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    completed_at_ms INTEGER NULL,
+                    finish_reason TEXT NULL
+                );
+                CREATE TABLE session_messages (
+                    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                );
+                "#,
+            )
+            .expect("create schema");
+        connection
+            .execute(
+                "INSERT INTO sessions VALUES (?1, ?2, 'idle', NULL, 1, 10)",
+                params!["pid-999", "Archived pid-like session"],
+            )
+            .expect("insert session");
+
+        let sessions = load_lobby_sessions(&root).expect("load lobby sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "pid-999");
+        assert_eq!(sessions[0].pid, 0);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1250,6 +1407,101 @@ mod tests {
     }
 
     #[test]
+    fn timeline_seed_rehydrates_raw_turns_for_live_cache() {
+        let root = make_temp_root("agenticos-history-seed");
+        let db_path = root.join("workspace").join("agenticos.db");
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create workspace dir");
+        let connection = Connection::open(&db_path).expect("open db");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    active_pid INTEGER NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE process_runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    boot_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    started_at_ms INTEGER NOT NULL,
+                    ended_at_ms INTEGER NULL
+                );
+                CREATE TABLE session_turns (
+                    turn_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    pid INTEGER NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    workload TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    completed_at_ms INTEGER NULL,
+                    finish_reason TEXT NULL
+                );
+                CREATE TABLE session_messages (
+                    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                );
+                "#,
+            )
+            .expect("create schema");
+        connection
+            .execute(
+                "INSERT INTO sessions VALUES (?1, ?2, 'idle', NULL, 1, 10)",
+                params!["sess-seed", "Archived session"],
+            )
+            .expect("insert session");
+        connection
+            .execute(
+                "INSERT INTO process_runs (session_id, boot_id, pid, state, started_at_ms, ended_at_ms) VALUES (?1, 1, 44, 'completed', 1, 2)",
+                params!["sess-seed"],
+            )
+            .expect("insert process run");
+        connection
+            .execute(
+                "INSERT INTO session_turns VALUES (1, ?1, 44, 1, 'general', 'legacy', 'completed', 1, 1, 2, 'completed')",
+                params!["sess-seed"],
+            )
+            .expect("insert turn");
+        connection
+            .execute(
+                "INSERT INTO session_messages VALUES (1, ?1, 1, 44, 1, 'user', 'prompt', 'hello archive', 1)",
+                params!["sess-seed"],
+            )
+            .expect("insert user message");
+        connection
+            .execute(
+                "INSERT INTO session_messages VALUES (2, ?1, 1, 44, 2, 'assistant', 'chunk', 'archived answer', 2)",
+                params!["sess-seed"],
+            )
+            .expect("insert assistant message");
+
+        let seed = load_timeline_seed(&root, "sess-seed", Some(77))
+            .expect("load timeline seed")
+            .expect("seed exists");
+        assert_eq!(seed.session_id, "sess-seed");
+        assert_eq!(seed.pid, 44);
+        assert_eq!(seed.turns.len(), 1);
+        assert_eq!(seed.turns[0].prompt, "hello archive");
+        assert_eq!(seed.turns[0].assistant_stream, "archived answer");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn session_audit_events_are_loaded_from_sqlite() {
         let root = make_temp_root("agenticos-history-audit");
         let db_path = root.join("workspace").join("agenticos.db");
@@ -1298,6 +1550,163 @@ mod tests {
         assert_eq!(events[0].kind, "spawned");
         assert_eq!(events[0].pid, Some(9));
         assert_eq!(events[0].runtime_id.as_deref(), Some("rt-a"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_snapshot_keeps_audit_empty_when_no_real_events_exist() {
+        let root = make_temp_root("agenticos-history-workspace-audit-empty");
+        let db_path = root.join("workspace").join("agenticos.db");
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create workspace dir");
+        let connection = Connection::open(&db_path).expect("open db");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    runtime_id TEXT NULL,
+                    active_pid INTEGER NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE session_turns (
+                    turn_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    pid INTEGER NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    workload TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    completed_at_ms INTEGER NULL,
+                    finish_reason TEXT NULL
+                );
+                CREATE TABLE process_runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    boot_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    started_at_ms INTEGER NOT NULL,
+                    ended_at_ms INTEGER NULL
+                );
+                CREATE TABLE session_messages (
+                    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                );
+                "#,
+            )
+            .expect("create schema");
+        connection
+            .execute(
+                "INSERT INTO sessions VALUES (?1, ?2, 'idle', NULL, NULL, 1, 10)",
+                params!["sess-no-audit", "Auditless session"],
+            )
+            .expect("insert session");
+        connection
+            .execute(
+                "INSERT INTO session_turns VALUES (1, ?1, 44, 1, 'general', 'legacy', 'completed', 1, 1, 2, 'completed')",
+                params!["sess-no-audit"],
+            )
+            .expect("insert turn");
+
+        let snapshot = load_workspace_snapshot(&root, "sess-no-audit", Some(44))
+            .expect("load snapshot")
+            .expect("snapshot exists");
+        assert_eq!(snapshot.state, "Finished");
+        assert!(snapshot.audit_events.is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_snapshot_derives_waiting_for_input_for_interactive_sessions() {
+        let root = make_temp_root("agenticos-history-workspace-waiting");
+        let db_path = root.join("workspace").join("agenticos.db");
+        fs::create_dir_all(db_path.parent().expect("db parent")).expect("create workspace dir");
+        let connection = Connection::open(&db_path).expect("open db");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    runtime_id TEXT NULL,
+                    active_pid INTEGER NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                CREATE TABLE session_turns (
+                    turn_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    pid INTEGER NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    workload TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    completed_at_ms INTEGER NULL,
+                    finish_reason TEXT NULL
+                );
+                CREATE TABLE process_runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    boot_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    started_at_ms INTEGER NOT NULL,
+                    ended_at_ms INTEGER NULL
+                );
+                CREATE TABLE session_messages (
+                    message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL,
+                    pid INTEGER NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                );
+                "#,
+            )
+            .expect("create schema");
+        connection
+            .execute(
+                "INSERT INTO sessions VALUES (?1, ?2, 'idle', NULL, NULL, 1, 10)",
+                params!["sess-waiting", "Waiting session"],
+            )
+            .expect("insert session");
+        connection
+            .execute(
+                "INSERT INTO process_runs (session_id, boot_id, pid, state, started_at_ms, ended_at_ms) VALUES (?1, 1, 77, 'completed', 1, 2)",
+                params!["sess-waiting"],
+            )
+            .expect("insert process run");
+        connection
+            .execute(
+                "INSERT INTO session_turns VALUES (1, ?1, 77, 1, 'general', 'legacy', 'completed', 1, 1, 2, NULL)",
+                params!["sess-waiting"],
+            )
+            .expect("insert turn");
+
+        let snapshot = load_workspace_snapshot(&root, "sess-waiting", Some(77))
+            .expect("load snapshot")
+            .expect("snapshot exists");
+        assert_eq!(snapshot.state, "WaitingForInput");
 
         let _ = fs::remove_dir_all(root);
     }

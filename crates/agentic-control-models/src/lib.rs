@@ -112,6 +112,13 @@ pub struct ExecStartPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeSessionResult {
+    pub session_id: String,
+    pub pid: u64,
+    pub resumed_from_history: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestrateResult {
     pub orchestration_id: u64,
     pub total_tasks: usize,
@@ -433,6 +440,18 @@ pub struct KernelEventEnvelope {
     pub event: KernelEvent,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiagnosticEvent {
+    pub category: String,
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub recorded_at_ms: i64,
+    pub session_id: Option<String>,
+    pub pid: Option<u64>,
+    pub runtime_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KernelEvent {
@@ -462,6 +481,9 @@ pub enum KernelEvent {
     SessionErrored {
         pid: u64,
         message: String,
+    },
+    DiagnosticRecorded {
+        event: DiagnosticEvent,
     },
     ModelChanged {
         selected_model_id: String,

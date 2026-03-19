@@ -26,6 +26,7 @@ pub mod schema {
     pub const PING: &str = "agenticos.control.ping.v1";
     pub const REGISTER_TOOL: &str = "agenticos.control.register_tool.v1";
     pub const RESTORE: &str = "agenticos.control.restore.v1";
+    pub const RESUME_SESSION: &str = "agenticos.control.resume_session.v1";
     pub const SEND_INPUT: &str = "agenticos.control.send_input.v1";
     pub const SELECT_MODEL: &str = "agenticos.control.select_model.v1";
     pub const SET_GEN: &str = "agenticos.control.set_gen.v1";
@@ -76,6 +77,7 @@ pub enum ControlErrorCode {
     RegisterToolFailed,
     RestoreBusy,
     RestoreFailed,
+    ResumeSessionInvalid,
     SchedulerLoadFailed,
     SchedulerTargetFailed,
     SendInputInvalid,
@@ -127,6 +129,7 @@ impl ControlErrorCode {
             Self::RegisterToolFailed => "REGISTER_TOOL_FAILED",
             Self::RestoreBusy => "RESTORE_BUSY",
             Self::RestoreFailed => "RESTORE_FAILED",
+            Self::ResumeSessionInvalid => "RESUME_SESSION_INVALID",
             Self::SchedulerLoadFailed => "SCHEDULER_LOAD_FAILED",
             Self::SchedulerTargetFailed => "SCHEDULER_TARGET_FAILED",
             Self::SendInputInvalid => "SEND_INPUT_INVALID",
@@ -225,6 +228,7 @@ pub enum OpCode {
     SetQuota,
     Checkpoint,
     Restore,
+    ResumeSession,
     Orchestrate,
     ListTools,
     RegisterTool,
@@ -260,6 +264,7 @@ impl OpCode {
             "SET_QUOTA" => Some(Self::SetQuota),
             "CHECKPOINT" => Some(Self::Checkpoint),
             "RESTORE" => Some(Self::Restore),
+            "RESUME_SESSION" => Some(Self::ResumeSession),
             "ORCHESTRATE" => Some(Self::Orchestrate),
             "LIST_TOOLS" => Some(Self::ListTools),
             "REGISTER_TOOL" => Some(Self::RegisterTool),
@@ -296,6 +301,7 @@ impl OpCode {
             Self::SetQuota => "SET_QUOTA",
             Self::Checkpoint => "CHECKPOINT",
             Self::Restore => "RESTORE",
+            Self::ResumeSession => "RESUME_SESSION",
             Self::Orchestrate => "ORCHESTRATE",
             Self::ListTools => "LIST_TOOLS",
             Self::RegisterTool => "REGISTER_TOOL",

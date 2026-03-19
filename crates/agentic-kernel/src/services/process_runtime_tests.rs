@@ -1,4 +1,7 @@
-use super::{spawn_managed_process, ManagedProcessRequest};
+use super::{
+    spawn_managed_process, spawn_restored_managed_process, ManagedProcessRequest,
+    RestoredManagedProcessRequest,
+};
 use crate::backend::{
     resolve_driver_for_model, BackendClass, TestExternalEndpointOverrideGuard,
     TestOpenAIConfigOverrideGuard,
@@ -269,4 +272,60 @@ fn spawn_managed_process_injects_system_prompt_without_losing_user_prompt() {
 
     assert!(process.prompt_text().contains("kernel policy"));
     assert!(process.prompt_text().contains("user task"));
+}
+
+#[test]
+fn restored_managed_process_starts_waiting_for_input_with_persisted_prompt_cache() {
+    let _openai = TestOpenAIConfigOverrideGuard::set(test_openai_config());
+    let driver_resolution =
+        resolve_driver_for_model(PromptFamily::Unknown, None, Some("openai-responses"))
+            .expect("resolve openai backend");
+    let target = ResolvedModelTarget::remote(
+        "openai-responses",
+        "OpenAI",
+        "openai-responses",
+        "gpt-4.1-mini",
+        RemoteModelEntry {
+            id: "gpt-4.1-mini".to_string(),
+            label: "GPT-4.1 mini".to_string(),
+            context_window_tokens: None,
+            max_output_tokens: None,
+            supports_structured_output: true,
+            input_price_usd_per_mtok: None,
+            output_price_usd_per_mtok: None,
+        },
+        test_openai_config().into(),
+        None,
+        driver_resolution,
+    );
+
+    let mut engine = LLMEngine::load_target(&target).expect("load remote stateless engine");
+    let mut memory = NeuralMemory::new().expect("memory init");
+    let mut scheduler = ProcessScheduler::new();
+
+    let spawned = spawn_restored_managed_process(
+        &mut engine,
+        &mut memory,
+        &mut scheduler,
+        RestoredManagedProcessRequest {
+            rendered_prompt: "system\nuser hello\nassistant world".to_string(),
+            owner_id: 7,
+            tool_caller: ToolCaller::AgentText,
+            workload: WorkloadClass::General,
+            required_backend_class: Some(BackendClass::RemoteStateless),
+            priority: ProcessPriority::Normal,
+            lifecycle_policy: ProcessLifecyclePolicy::Interactive,
+            context_policy: None,
+        },
+    )
+    .expect("spawn restored managed process");
+
+    let process = engine
+        .processes
+        .get(&spawned.pid)
+        .expect("restored process present");
+
+    assert_eq!(process.state, crate::process::ProcessState::WaitingForInput);
+    assert!(process.prompt_text().contains("user hello"));
+    assert!(process.prompt_text().contains("assistant world"));
 }

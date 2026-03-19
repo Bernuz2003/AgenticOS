@@ -1,7 +1,6 @@
 import { useSessionsStore } from "../store/sessions-store";
 import { TimerReset, Trash2, ArrowRight, Plus, X, LoaderCircle } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { statusTone } from "../lib/format";
 import { deleteSession, startSession } from "../lib/api";
 import { useState } from "react";
 
@@ -95,13 +94,11 @@ export function SessionsPage() {
                       {session.title}
                     </h2>
                   </div>
-                  <span className={`status-pill ${statusTone(session.status)}`}>
-                    {session.status}
-                  </span>
                 </div>
 
                 <div className="text-sm text-slate-600 line-clamp-3 mb-6 flex-1">
                   {session.promptPreview}
+                  {session.runtimeState ? ` | state=${session.runtimeState}` : ""}
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 mb-6">

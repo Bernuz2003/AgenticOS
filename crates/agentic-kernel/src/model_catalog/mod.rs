@@ -90,6 +90,7 @@ impl ResolvedModelTarget {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn remote(
         provider_id: impl Into<String>,
         provider_label: impl Into<String>,

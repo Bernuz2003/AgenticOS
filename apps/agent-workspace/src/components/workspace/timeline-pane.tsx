@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, type FormEvent } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Brain, CheckCircle2, LoaderCircle, Sparkles, TerminalSquare, Wrench, XCircle, Send, User } from "lucide-react";
+import { Brain, LoaderCircle, Sparkles, TerminalSquare, Wrench, Send, User } from "lucide-react";
 import type { TimelineSnapshot } from "../../lib/api";
 
 interface TimelinePaneProps {
@@ -38,12 +38,22 @@ export function TimelinePane({
   onStopOutput,
 }: TimelinePaneProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const renderedItems = useMemo(
+    () =>
+      timeline?.items.filter(
+        (item) => item.kind !== "tool_result" && item.kind !== "system_event",
+      ) ?? [],
+    [timeline],
+  );
+  const hiddenDiagnosticsCount = (timeline?.items.length ?? 0) - renderedItems.length;
   const timelineSignature = useMemo(() => {
     if (!timeline) {
       return "empty";
     }
-    return timeline.items.map((item) => `${item.id}:${item.text.length}:${item.status}`).join("|");
-  }, [timeline]);
+    return renderedItems
+      .map((item) => `${item.id}:${item.text.length}:${item.status}`)
+      .join("|");
+  }, [renderedItems, timeline]);
 
   useEffect(() => {
     if (!scrollRef.current) {
@@ -87,7 +97,13 @@ export function TimelinePane({
           </div>
         )}
 
-        {!timeline || timeline.items.length === 0 ? (
+        {hiddenDiagnosticsCount > 0 && (
+          <div className="mx-auto max-w-3xl rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-600 shadow-sm">
+            {hiddenDiagnosticsCount} eventi tecnici sono stati spostati nel pannello diagnostico per mantenere la chat pulita.
+          </div>
+        )}
+
+        {!timeline || renderedItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center opacity-60">
             <div className="w-16 h-16 bg-slate-200 rounded-full flex items-center justify-center mb-4">
               <TerminalSquare className="w-8 h-8 text-slate-400" />
@@ -98,7 +114,7 @@ export function TimelinePane({
           </div>
         ) : (
           <div className="space-y-6 max-w-4xl mx-auto w-full">
-            {timeline.items.map((item) => {
+            {renderedItems.map((item) => {
               if (item.kind === "user_message") {
                 return (
                   <div key={item.id} className="flex gap-4 justify-end">
@@ -213,37 +229,7 @@ export function TimelinePane({
                 );
               }
 
-              if (item.kind === "tool_result") {
-                const failed = item.status === "error";
-                return (
-                  <div key={item.id} className="flex gap-4 ml-12">
-                    <article
-                      className={`max-w-[80%] w-full rounded-2xl px-5 py-4 text-sm leading-relaxed shadow-sm border ${
-                        failed
-                          ? "border-rose-200 bg-rose-50 text-rose-900"
-                          : "border-emerald-100 bg-emerald-50/50 text-emerald-900"
-                      }`}
-                    >
-                      <div className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider mb-2 ${failed ? 'text-rose-600' : 'text-emerald-600'}`}>
-                        {failed ? <XCircle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
-                        Result
-                      </div>
-                      <div className="markdown-body font-mono text-[13px] bg-white/60 p-3 rounded-xl border border-white/50">
-                        <Markdown remarkPlugins={[remarkGfm]}>{item.text || "No output."}</Markdown>
-                      </div>
-                    </article>
-                  </div>
-                );
-              }
-
-              return (
-                <div key={item.id} className="flex justify-center">
-                  <div className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-500 flex items-center gap-2 shadow-sm">
-                    <TerminalSquare className="h-4 w-4" />
-                    {item.text}
-                  </div>
-                </div>
-              );
+              return null;
             })}
           </div>
         )}

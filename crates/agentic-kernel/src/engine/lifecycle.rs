@@ -108,6 +108,7 @@ impl LLMEngine {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_process(
         &mut self,
         prompt: &str,
@@ -184,6 +185,81 @@ impl LLMEngine {
                 initial_segment_text: formatted_prompt,
             },
         );
+        self.processes.insert(pid, process);
+
+        Ok(pid)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_process_from_rendered_prompt(
+        &mut self,
+        rendered_prompt: &str,
+        owner_id: usize,
+        tool_caller: ToolCaller,
+        lifecycle_policy: ProcessLifecyclePolicy,
+        context_policy: ContextPolicy,
+    ) -> Result<u64> {
+        let pid = self.next_pid;
+        self.next_pid += 1;
+
+        tracing::info!(
+            pid,
+            owner_id,
+            "OS: Restoring Agent Process from persisted session"
+        );
+
+        let model_clone = {
+            let master = self
+                .master_model
+                .as_ref()
+                .ok_or(E::msg("Master model not loaded"))?;
+
+            if let Some(dup) = master.duplicate_if_supported() {
+                dup
+            } else if self.processes.is_empty() {
+                tracing::info!(
+                    family = ?self.family,
+                    backend_id = self.backend_id,
+                    pid,
+                    "ENGINE: Runtime backend not cloneable; reloading model instance for session restore"
+                );
+                RuntimeModel::load_from_reference(
+                    &self.runtime_reference,
+                    self.family,
+                    &self.backend_id,
+                )?
+            } else {
+                return Err(E::msg(format!(
+                    "Cannot restore additional process: {:?} backend does not support model cloning. \
+                     Terminate existing processes first (active PIDs: {:?}).",
+                    self.family,
+                    self.processes.keys().collect::<Vec<_>>()
+                )));
+            }
+        };
+
+        let tokens = self
+            .tokenizer
+            .encode(rendered_prompt, true)
+            .map_err(E::msg)?
+            .get_ids()
+            .to_vec();
+
+        let mut process = AgentProcess::new(
+            pid,
+            owner_id,
+            tool_caller,
+            lifecycle_policy,
+            model_clone,
+            self.tokenizer.clone(),
+            tokens,
+            self.generation,
+            InitialContextSeed {
+                policy: context_policy,
+                initial_segment_text: rendered_prompt.to_string(),
+            },
+        );
+        process.state = ProcessState::WaitingForInput;
         self.processes.insert(pid, process);
 
         Ok(pid)

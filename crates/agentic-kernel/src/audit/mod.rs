@@ -1,6 +1,7 @@
 use crate::runtimes::RuntimeRegistry;
 use crate::session::SessionRegistry;
 use crate::storage::{NewAuditEvent, StorageService};
+use agentic_control_models::DiagnosticEvent;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AuditSpec {
@@ -122,6 +123,32 @@ pub(crate) const TOOL_KILLED: AuditSpec = AuditSpec {
     kind: "killed",
     title: "Tool killed",
 };
+pub(crate) const TOOL_USAGE_DIAGNOSTIC: AuditSpec = AuditSpec {
+    category: "tool",
+    kind: "usage_diagnostic",
+    title: "Tool usage diagnostic",
+};
+
+pub(crate) const REMOTE_REQUEST_STARTED: AuditSpec = AuditSpec {
+    category: "remote",
+    kind: "request_started",
+    title: "Remote request started",
+};
+pub(crate) const REMOTE_REQUEST_COMPLETED: AuditSpec = AuditSpec {
+    category: "remote",
+    kind: "request_completed",
+    title: "Remote request completed",
+};
+pub(crate) const REMOTE_FIRST_CHUNK_RECEIVED: AuditSpec = AuditSpec {
+    category: "remote",
+    kind: "first_chunk_received",
+    title: "Remote first chunk received",
+};
+pub(crate) const REMOTE_REQUEST_FAILED: AuditSpec = AuditSpec {
+    category: "remote",
+    kind: "request_failed",
+    title: "Remote request failed",
+};
 
 pub(crate) const ACCOUNTING_USAGE_RECORDED: AuditSpec = AuditSpec {
     category: "accounting",
@@ -195,23 +222,36 @@ pub(crate) fn record(
     detail: impl AsRef<str>,
     context: AuditContext,
 ) {
+    let detail = compact_detail(detail.as_ref());
     let record = NewAuditEvent {
         category: spec.category.to_string(),
         kind: spec.kind.to_string(),
         title: spec.title.to_string(),
-        detail: compact_detail(detail.as_ref()),
-        session_id: context.session_id,
+        detail: detail.clone(),
+        session_id: context.session_id.clone(),
         pid: context.pid,
-        runtime_id: context.runtime_id,
+        runtime_id: context.runtime_id.clone(),
     };
 
-    if let Err(err) = storage.record_audit_event(&record) {
-        tracing::warn!(
-            category = spec.category,
-            kind = spec.kind,
-            %err,
-            "AUDIT: failed to persist audit event"
-        );
+    match storage.record_audit_event(&record) {
+        Ok(recorded_at_ms) => storage.push_live_diagnostic(DiagnosticEvent {
+            category: record.category,
+            kind: record.kind,
+            title: record.title,
+            detail,
+            recorded_at_ms,
+            session_id: record.session_id,
+            pid: record.pid,
+            runtime_id: record.runtime_id,
+        }),
+        Err(err) => {
+            tracing::warn!(
+                category = spec.category,
+                kind = spec.kind,
+                %err,
+                "AUDIT: failed to persist audit event"
+            );
+        }
     }
 }
 

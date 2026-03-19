@@ -181,6 +181,118 @@ Note: il dettaglio completo delle sub-task concluse e' mantenuto nella cronologi
 
 ---
 
+## Aggiornamento operativo 2026-03-17
+
+- Refactor affidabilita'/osservabilita' runtime+GUI completato sul workspace Tauri e kernel control-plane:
+	- tracciamento tool reso deterministico con `tool_call_id` end-to-end (dispatch/completion/failure) e timeline Tauri agganciata ad audit persistito di sessione;
+	- stati runtime resi piu' espliciti in UI (`runtime_state` esposto in Lobby/Workspace, incluso `AwaitingRemoteResponse`);
+	- osservabilita' remote path ampliata con audit dedicato `remote.request_started|completed|failed` e `duration_ms` su accounting event;
+	- semantica `delete session` riallineata a `terminate + remove` (tentativo TERM/KILL live PID, purge live timeline, delete persistito);
+	- system prompt globale rafforzato contro tool-use superfluo (nessuna policy differenziata per backend/modello).
+
+- Validazione eseguita:
+	- `cargo test` verde.
+	- `cd apps/agent-workspace && npm run build` verde.
+	- `cd apps/agent-workspace && npm exec tauri build -- --debug` verde.
+	- `cargo clippy --all-targets --all-features -- -D warnings` non verde per issue preesistenti fuori scope slice + warning dead-code nel modulo legacy `apps/agent-workspace/src-tauri/src/kernel/audit.rs`.
+
+- Hotfix regressione `delete_session` (single-source-of-truth alignment):
+	- root cause: il path Tauri `delete_session` deduceva il PID da `fetch_lobby_snapshot()` (view ibrida live+persisted) usando anche `last_pid` storico;
+	- effetto: tentativi `TERM/KILL` su PID non piu live -> errore `NO_MODEL`/`TERM_KILL_FAILED` in UI;
+	- fix: `delete_session` ora consulta solo il live state kernel (`STATUS.active_processes`) per decidere terminate;
+	- guard race-safe: se tra check e terminate il processo e gia uscito, `NO_MODEL`/`PID_NOT_FOUND` viene trattato come terminal state gia raggiunto;
+	- SQLite resta la verita persistita per la cancellazione storica (`history_db::delete_session` invariato).
+
+- Validazione hotfix regressione:
+	- `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`).
+	- `cd apps/agent-workspace/src-tauri && cargo test` verde (`22 passed, 0 failed`).
+
+## Aggiornamento operativo 2026-03-18
+
+- Avviato refactor strutturale runtime/remote/sync con completamento della **Fase A (Discovery + mappatura)**.
+- Deliverable prodotto: `docs/runtime_refactor_phaseA_discovery_2026-03-18.md` con:
+	- evidenza del loop attuale basato su polling fisso (`poll_timeout_ms`, default 5ms) e assenza di wakeup esplicito worker->event-loop;
+	- evidenza del path remoto attuale con lettura stream aggregata prima della propagazione runtime chunk;
+	- classificazione formale source-of-truth: kernel in-memory (live) + SQLite (persisted), con cache/view/debug derivati;
+	- mappa duplicazioni/merge fragili nel bridge Tauri (timeline/live/persisted/audit) e lista file target per Fasi B/C/D/E.
+- Stato piano operativo: Fase A marcata completata in `docs/runtime_refactor_coerente_plan_2026-03-18.md`.
+
+- **Fase B (event loop deadline-driven + wakeup esplicito)** completata su kernel runtime:
+	- introdotto planner esplicito delle deadline (`remote_timeout`, `syscall_timeout`, `retry_backoff`, `maintenance_cleanup`, `scheduled_work`, `checkpoint`) con modulo dedicato `crates/agentic-kernel/src/runtime/deadlines.rs`;
+	- loop kernel refactorato da timeout fisso a timeout calcolato per `poll` in funzione della prossima deadline reale + heartbeat fallback lento;
+	- introdotto wakeup esplicito worker->event-loop via `mio::Waker` (inference worker + syscall worker), eliminando la dipendenza dal tick fisso per il processamento dei risultati pronti;
+	- aggiunta osservabilita minima del motivo wakeup (`network`, `worker`, `deadline`, `heartbeat_fallback`) con contatori per eventi tick processati;
+	- introdotto timeout handling esplicito per syscall wait e reporting controlled per remote timeout in-flight (senza spin loop).
+
+- Validazione Fase B:
+	- `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`).
+
+- **Fase C (streaming remoto progressivo reale)** completata su backend/runtime path:
+	- introdotto `stream_observer` nel contratto di inferenza (`InferenceStepRequest`) per propagare chunk incrementali durante lo step;
+	- backend remoto OpenAI-compatible rifattorizzato da decode buffer-first a decode incrementale per read-chunk, con emissione live dei delta mentre lo stream e ancora aperto;
+	- inference worker aggiornato con evento intermedio `InferenceResult::StreamChunk` (con flag first-chunk) e deduplicazione del testo finale per separare nettamente partial stream vs completion finale;
+	- runtime aggiornato per inoltro immediato chunk a client owner + `KernelEvent::TimelineChunk`, mantenendo separato l evento finale di completamento (`InferenceResult::Token` -> lifecycle esistente);
+	- telemetria remota minima completata: `request_started`, `first_chunk_received`, `request_completed`/`request_failed`, `duration_ms`.
+	- cleanup tecnico effettuato: rimosso path legacy `run_step` nel worker in favore di pipeline unica streaming-aware.
+
+- Validazione Fase C:
+	- `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`).
+	- Verifica UX live workspace confermata (streaming progressivo reale end-to-end).
+
+- **Fase D (sync rigoroso live vs persisted)** avviata con primo slice strutturale su bridge Tauri:
+	- `fetch_workspace_snapshot(session_id, pid=None)` portata in modalita live-first: risoluzione preventiva PID live da `STATUS.active_processes` e fetch diretto snapshot live prima di qualsiasi fallback SQLite;
+	- rimosso merge live+persisted nel path `KernelBridge::fetch_workspace_snapshot(pid)`: lo snapshot live non viene piu arricchito con campi storici potenzialmente stantii;
+	- introdotta regola anti-overwrite per audit: eventi audit persisted usati solo come fallback se il live snapshot non ha audit, evitando sostituzioni non deterministiche del tracciato live;
+	- timeline live (`source=live_exec`) resa autoritativa sia nel command `fetch_timeline_snapshot` sia nel bridge eventi: niente augment ex-post da audit SQLite durante stream attivo.
+
+- Validazione slice Fase D:
+	- `cargo test -p agent-workspace` verde (`22 passed, 0 failed`).
+
+- **Fase D (slice 2: D1 + D3 + D5)** consolidata su bridge/workspace sync:
+	- naming/ruoli esplicitati nel modulo kernel Tauri con alias semantici: `persisted_truth` (SQLite storico), `live_cache` (timeline live in-memory), `debug_audit` (debug-only);
+	- guard anti-contaminazione `session_id<->pid` introdotte nei fetch snapshot/timeline: i path live/fallback ora verificano coerenza di sessione prima di accettare snapshot runtime;
+	- recovery storico mantenuta deterministicamente su `persisted_truth` (SQLite) quando il live non e disponibile;
+	- `delete_session` resa definitiva per sessione logica: terminate di tutti i PID live associati alla sessione, delete persistito e purge cache timeline sia per PID sia per `session_id`.
+
+- Validazione slice 2 Fase D:
+	- `cargo test -p agent-workspace` verde (`22 passed, 0 failed`).
+
+- **Fase D chiusa** con completamento D6 e validazione consolidata:
+	- GUI resa trasparente sul runtime state: separazione esplicita `session status` vs `runtime state` nelle view Session/Workspace, senza mascherare stati runtime specifici;
+	- completata dedup/guard dei fetch live nel bridge con check sistematico `session_id<->pid` e fallback deterministici su SQLite storico;
+	- semantica delete session confermata atomica su sessione logica (terminate multi-PID live + purge cache + delete persistito).
+	- validazione finale: `cargo test -p agent-workspace` verde (`22 passed, 0 failed`), `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`), `cd apps/agent-workspace && npm run build` verde.
+
+- **Fase E avviata** (slice iniziale E1/E3/E5):
+	- deduplicata la logica di derivazione stato sessione nel frontend (`deriveSessionStatus`) e introdotti helper centralizzati per label/tone runtime;
+	- deduplicata nel bridge la logica di fetch live snapshot con helper riusabili, riducendo branching duplicato e mantenendo le invarianti della Fase D;
+	- migliorata leggibilita dei path principali con separazione semantica e minore complessita accidentale.
+
+- **Fase E completata** (slice finale E1/E2/E4/E6):
+	- rimosse euristiche fragili nel path persisted: niente inferenza PID da `session_id` (`pid-*`) in `history_db`; la risoluzione PID usa solo campi persistiti/hint espliciti;
+	- aggiunto test di regressione su store storico per impedire reintroduzione della derivazione PID da naming (`lobby_sessions_do_not_infer_pid_from_session_id_text`);
+	- ridotta duplicazione residua nel fallback session UI (`WorkspacePage`) con builder sintetico condiviso;
+	- ridotto stato temporaneo ridondante nello `workspace-store` (rimozione `activePid` interno non necessario e mantenimento di stato derivato invalidabile).
+
+- Validazione Fase E:
+	- `cargo test -p agent-workspace` verde (`23 passed, 0 failed`).
+	- `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`).
+	- `npm run build` (`apps/agent-workspace`) verde.
+	- `cargo clippy --all-targets --all-features -- -D warnings` eseguito: non verde per issue preesistenti e trasversali fuori scope dello slice (es. `needless_borrow` in `commands/model.rs`, `too_many_arguments` in moduli storici, doc-style lint, alcuni `collapsible_if`).
+
+- **Fase F completata** (hardening finale + quality gate):
+	- risolti warning/lint clippy nel kernel su path core e test (`collapsible_if`, `needless_borrow`, `derivable_impls`, `ptr_arg`, `bool_assert_comparison`, `let_and_return`, `type_complexity`) e applicate annotazioni mirate `#[allow(clippy::too_many_arguments)]` sulle API intenzionalmente aggregate;
+	- aggiornato il piano operativo `docs/runtime_refactor_coerente_plan_2026-03-18.md` marcando F1/F2/F3/F4, DoD e criteri globali come completati;
+	- mantenuta la nota governance: `CRITICITY_TO_FIX.md` attualmente assente nel repository, quindi nessun aggiornamento file-specifico possibile.
+
+- Validazione Fase F:
+	- `cargo clippy -p agentic-kernel --all-targets -- -D warnings` verde.
+	- `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`).
+	- `cargo test -p agent-workspace` verde (`23 passed, 0 failed`).
+	- `cd apps/agent-workspace && npm run build` verde.
+
+---
+
 ## Template aggiornamento milestone
 
 ```md

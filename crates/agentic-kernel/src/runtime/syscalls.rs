@@ -14,6 +14,8 @@ use crate::tools::invocation::ToolCaller;
 use crate::tools::{handle_syscall, SysCallOutcome, SyscallRateMap};
 use crate::{audit, audit::AuditContext};
 use agentic_control_models::KernelEvent;
+use mio::Waker;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -24,6 +26,7 @@ use super::actions::{self, ActionInvocation, ActionName};
 pub(crate) enum SyscallCmd {
     Execute {
         pid: u64,
+        tool_call_id: String,
         content: String,
         caller: ToolCaller,
         registry: ToolRegistry,
@@ -34,9 +37,17 @@ pub(crate) enum SyscallCmd {
 #[derive(Debug)]
 pub(crate) struct SyscallCompletion {
     pub pid: u64,
+    pub tool_call_id: String,
     pub command: String,
     pub caller: ToolCaller,
     pub outcome: SysCallOutcome,
+}
+
+static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_tool_call_id(pid: u64) -> String {
+    let seq = TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("tool-{pid}-{seq}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +61,7 @@ pub(crate) fn spawn_syscall_worker(
     rate_map: Arc<Mutex<SyscallRateMap>>,
     result_tx: mpsc::Sender<SyscallCompletion>,
     cmd_rx: mpsc::Receiver<SyscallCmd>,
+    wake_loop: Option<Arc<Waker>>,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("syscall-worker".into())
@@ -58,15 +70,21 @@ pub(crate) fn spawn_syscall_worker(
                 match command {
                     SyscallCmd::Execute {
                         pid,
+                        tool_call_id,
                         content,
                         caller,
                         registry,
                     } => {
                         let command = content.clone();
                         let outcome = match rate_map.lock() {
-                            Ok(mut guard) => {
-                                handle_syscall(&content, pid, caller.clone(), &mut guard, &registry)
-                            }
+                            Ok(mut guard) => handle_syscall(
+                                &content,
+                                pid,
+                                caller.clone(),
+                                Some(tool_call_id.clone()),
+                                &mut guard,
+                                &registry,
+                            ),
                             Err(_) => SysCallOutcome {
                                 output: "SysCall Error: worker rate-limit state is unavailable."
                                     .to_string(),
@@ -78,6 +96,7 @@ pub(crate) fn spawn_syscall_worker(
                         if result_tx
                             .send(SyscallCompletion {
                                 pid,
+                                tool_call_id,
                                 command,
                                 caller,
                                 outcome,
@@ -86,12 +105,45 @@ pub(crate) fn spawn_syscall_worker(
                         {
                             break;
                         }
+                        if let Some(waker) = wake_loop.as_ref() {
+                            let _ = waker.wake();
+                        }
                     }
                     SyscallCmd::Shutdown => break,
                 }
             }
         })
         .expect("failed to spawn syscall worker")
+}
+
+fn extract_tool_name(content: &str) -> Option<&str> {
+    let trimmed = content.trim();
+    let rest = trimmed.strip_prefix("TOOL:")?;
+    let end = rest
+        .find(|ch: char| ch.is_whitespace() || ch == '{')
+        .unwrap_or(rest.len());
+    let name = &rest[..end];
+    (!name.is_empty()).then_some(name)
+}
+
+fn likely_superfluous_tool_call(content: &str) -> Option<&'static str> {
+    let trimmed = content.trim();
+    if trimmed.starts_with("TOOL:python")
+        && (trimmed.contains("\"print(")
+            || trimmed.contains("\"code\":\"echo")
+            || trimmed.contains("\"code\":\"format"))
+    {
+        return Some("python_text_only");
+    }
+    if trimmed.starts_with("TOOL:calc")
+        && (trimmed.contains("1+1")
+            || trimmed.contains("2+2")
+            || trimmed.contains("3+3")
+            || trimmed.contains("4+4"))
+    {
+        return Some("calc_trivial_expression");
+    }
+    None
 }
 
 pub(super) fn scan_syscall_buffer(buffer: &mut String) -> Option<String> {
@@ -135,6 +187,7 @@ pub(super) fn scan_syscall_buffer(buffer: &mut String) -> Option<String> {
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_process_syscall(
     runtime_id: &str,
     pid_floor: u64,
@@ -204,18 +257,43 @@ pub(super) fn dispatch_process_syscall(
             }
         }
     } else {
+        let tool_call_id = next_tool_call_id(pid);
         audit::record(
             storage,
             audit::TOOL_DISPATCHED,
-            format!("command={content} caller={} transport=text", caller.as_str()),
+            format!(
+                "tool_call_id={} command={} caller={} transport=text",
+                tool_call_id,
+                content,
+                caller.as_str()
+            ),
             AuditContext::for_process(
                 session_registry.session_id_for_pid(pid),
                 pid,
                 Some(runtime_id),
             ),
         );
+        if let Some(reason) = likely_superfluous_tool_call(content) {
+            audit::record(
+                storage,
+                audit::TOOL_USAGE_DIAGNOSTIC,
+                format!(
+                    "tool_call_id={} reason={} tool_name={} command={}",
+                    tool_call_id,
+                    reason,
+                    extract_tool_name(content).unwrap_or("unknown"),
+                    content
+                ),
+                AuditContext::for_process(
+                    session_registry.session_id_for_pid(pid),
+                    pid,
+                    Some(runtime_id),
+                ),
+            );
+        }
         let queued = syscall_cmd_tx.send(SyscallCmd::Execute {
             pid,
+            tool_call_id: tool_call_id.clone(),
             content: content.to_string(),
             caller,
             registry: tool_registry.clone(),
@@ -225,6 +303,10 @@ pub(super) fn dispatch_process_syscall(
                 if let Some(process) = engine.processes.get_mut(&pid) {
                     process.state = ProcessState::WaitingForSyscall;
                 }
+                pending_events.push(KernelEvent::WorkspaceChanged {
+                    pid,
+                    reason: "syscall_dispatched".to_string(),
+                });
             }
             Err(err) => {
                 let _ = engine.inject_context(
@@ -421,8 +503,10 @@ pub(super) fn drain_syscall_results(
     storage: &mut StorageService,
     result_rx: &mpsc::Receiver<SyscallCompletion>,
     pending_events: &mut Vec<KernelEvent>,
-) {
+) -> usize {
+    let mut processed_results = 0usize;
     while let Ok(completion) = result_rx.try_recv() {
+        processed_results = processed_results.saturating_add(1);
         let pid = completion.pid;
         let Some(runtime_id) = runtime_registry
             .runtime_id_for_pid(pid)
@@ -481,7 +565,8 @@ pub(super) fn drain_syscall_results(
                     storage,
                     audit::TOOL_KILLED,
                     format!(
-                        "command={} caller={} transport=text duration_ms={} success={} detail={}",
+                        "tool_call_id={} command={} caller={} transport=text duration_ms={} success={} detail={}",
+                        completion.tool_call_id,
                         completion.command,
                         completion.caller.as_str(),
                         completion.outcome.duration_ms,
@@ -519,7 +604,8 @@ pub(super) fn drain_syscall_results(
                     storage,
                     spec,
                     format!(
-                        "command={} caller={} transport=text duration_ms={} detail={}",
+                        "tool_call_id={} command={} caller={} transport=text duration_ms={} detail={}",
+                        completion.tool_call_id,
                         completion.command,
                         completion.caller.as_str(),
                         completion.outcome.duration_ms,
@@ -537,6 +623,8 @@ pub(super) fn drain_syscall_results(
             }
         }
     }
+
+    processed_results
 }
 
 fn dispatch_send_action(engine: &mut LLMEngine, pid: u64, target_pid: u64, message: &str) {

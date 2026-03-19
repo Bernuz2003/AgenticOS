@@ -1,4 +1,5 @@
 pub(crate) mod actions;
+pub(crate) mod deadlines;
 mod inference_results;
 mod orchestration;
 pub(crate) mod syscalls;
@@ -25,6 +26,21 @@ use inference_results::drain_worker_results;
 use orchestration::{advance_orchestrator, checkout_active_processes, handle_finished_processes};
 use syscalls::{drain_syscall_results, SyscallCmd, SyscallCompletion};
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TickReport {
+    pub swap_events: usize,
+    pub syscall_results: usize,
+    pub worker_results: usize,
+    pub finished_processes: usize,
+    pub checked_out_processes: usize,
+}
+
+impl TickReport {
+    pub fn woke_from_worker_activity(self) -> bool {
+        self.syscall_results > 0 || self.worker_results > 0
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run_engine_tick(
     runtime_registry: &mut RuntimeRegistry,
@@ -45,8 +61,10 @@ pub fn run_engine_tick(
     pending_kills: &mut Vec<u64>,
     pending_events: &mut Vec<KernelEvent>,
     tool_registry: &ToolRegistry,
-) {
+) -> TickReport {
+    let mut report = TickReport::default();
     let swap_events = memory.poll_swap_events();
+    report.swap_events = swap_events.len();
     for event in swap_events {
         let Some(engine) = runtime_registry.engine_for_pid_mut(event.pid) else {
             tracing::debug!(
@@ -164,7 +182,7 @@ pub fn run_engine_tick(
         }
     }
 
-    drain_syscall_results(
+    report.syscall_results = drain_syscall_results(
         runtime_registry,
         memory,
         scheduler,
@@ -174,7 +192,7 @@ pub fn run_engine_tick(
         pending_events,
     );
 
-    drain_worker_results(
+    report.worker_results = drain_worker_results(
         runtime_registry,
         memory,
         clients,
@@ -191,7 +209,7 @@ pub fn run_engine_tick(
         tool_registry,
     );
 
-    handle_finished_processes(
+    report.finished_processes = handle_finished_processes(
         runtime_registry,
         memory,
         clients,
@@ -202,7 +220,14 @@ pub fn run_engine_tick(
         storage,
         pending_events,
     );
-    checkout_active_processes(runtime_registry, scheduler, cmd_tx, in_flight);
+    report.checked_out_processes = checkout_active_processes(
+        runtime_registry,
+        scheduler,
+        cmd_tx,
+        in_flight,
+        session_registry,
+        storage,
+    );
     advance_orchestrator(
         runtime_registry,
         resource_governor,
@@ -220,6 +245,8 @@ pub fn run_engine_tick(
         cmd_tx,
         tool_registry,
     );
+
+    report
 }
 
 #[cfg(test)]

@@ -85,6 +85,7 @@ data: {"type":"response.output_text.delta","delta":"\nI should not continue"}
         stream,
         4096,
         &test_tokenizer(),
+        None,
     )
     .expect("decode stream");
 
@@ -130,6 +131,7 @@ data: [DONE]
         stream,
         4096,
         &test_tokenizer(),
+        None,
     )
     .expect("decode stream");
 

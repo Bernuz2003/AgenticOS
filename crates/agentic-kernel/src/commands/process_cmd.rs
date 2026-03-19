@@ -1,15 +1,27 @@
 use crate::protocol;
+use crate::services::model_runtime::activate_model_target;
 use crate::services::process_control::{
     request_process_kill_with_session, request_process_termination_with_session,
     ProcessSignalResult,
 };
+use crate::services::process_runtime::{
+    spawn_restored_managed_process_with_session, RestoredManagedProcessRequest,
+};
 use crate::{audit, audit::AuditContext};
-use agentic_control_models::{KernelEvent, SendInputResult, TurnControlResult};
+use agentic_control_models::{
+    KernelEvent, ResumeSessionResult, SendInputResult, TurnControlResult,
+};
 use agentic_protocol::ControlErrorCode;
 use serde::Deserialize;
 
 use super::context::ProcessCommandContext;
 use super::metrics::log_event;
+use crate::model_catalog::parse_workload_label;
+use crate::process::ProcessLifecyclePolicy;
+use crate::prompting::{format_initial_prompt_with_metadata, format_user_message_with_metadata};
+use crate::scheduler::ProcessPriority;
+use crate::storage::StoredReplayMessage;
+use crate::tools::invocation::ToolCaller;
 
 #[derive(Deserialize)]
 struct SendInputPayload {
@@ -22,12 +34,17 @@ struct PidPayload {
     pid: u64,
 }
 
+#[derive(Deserialize)]
+struct ResumeSessionPayload {
+    session_id: String,
+}
+
 pub(crate) fn handle_term(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let payload_text = String::from_utf8_lossy(payload).trim().to_string();
     if payload_text.is_empty() {
         protocol::response_protocol_err_typed(
             ctx.client,
-            &ctx.request_id,
+            ctx.request_id,
             ControlErrorCode::MissingPid,
             protocol::schema::ERROR,
             "TERM requires PID payload",
@@ -626,4 +643,379 @@ pub(crate) fn handle_stop_output(ctx: ProcessCommandContext<'_>, payload: &[u8])
             &err.to_string(),
         ),
     }
+}
+
+pub(crate) fn handle_resume_session(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+    let payload = match serde_json::from_slice::<ResumeSessionPayload>(payload)
+        .map_err(|err| err.to_string())
+    {
+        Ok(value) => value,
+        Err(detail) => {
+            return protocol::response_protocol_err_typed(
+                ctx.client,
+                ctx.request_id,
+                ControlErrorCode::ResumeSessionInvalid,
+                protocol::schema::ERROR,
+                &format!(
+                    "RESUME_SESSION expects JSON payload {{\"session_id\":\"...\"}}: {}",
+                    detail
+                ),
+            );
+        }
+    };
+
+    let session_id = payload.session_id.trim();
+    if session_id.is_empty() {
+        return protocol::response_protocol_err_typed(
+            ctx.client,
+            ctx.request_id,
+            ControlErrorCode::ResumeSessionInvalid,
+            protocol::schema::ERROR,
+            "RESUME_SESSION requires a non-empty session_id",
+        );
+    }
+
+    if let Some(active_pid) = ctx.session_registry.active_pid_for_session(session_id) {
+        return protocol::response_protocol_ok(
+            ctx.client,
+            ctx.request_id,
+            "RESUME_SESSION",
+            agentic_protocol::schema::RESUME_SESSION,
+            &ResumeSessionResult {
+                session_id: session_id.to_string(),
+                pid: active_pid,
+                resumed_from_history: false,
+            },
+            Some(&format!(
+                "Session {} is already bound to live PID {}",
+                session_id, active_pid
+            )),
+        );
+    }
+
+    let Some(session_record) = ctx.session_registry.session(session_id).cloned() else {
+        return protocol::response_protocol_err_typed(
+            ctx.client,
+            ctx.request_id,
+            ControlErrorCode::Generic,
+            protocol::schema::ERROR,
+            &format!("Session '{}' not found", session_id),
+        );
+    };
+
+    let mut runtime_id = session_record.runtime_id.clone().or_else(|| {
+        ctx.runtime_registry
+            .current_runtime_id()
+            .map(ToString::to_string)
+    });
+
+    let Some(candidate_runtime_id) = runtime_id.clone() else {
+        return protocol::response_protocol_err_typed(
+            ctx.client,
+            ctx.request_id,
+            ControlErrorCode::NoModel,
+            protocol::schema::ERROR,
+            &format!(
+                "Session '{}' has no persisted runtime binding and no runtime is currently loaded",
+                session_id
+            ),
+        );
+    };
+
+    if !ctx
+        .runtime_registry
+        .is_runtime_loaded(&candidate_runtime_id)
+    {
+        let selector =
+            match runtime_selector_for_session(ctx.runtime_registry, &candidate_runtime_id) {
+                Ok(selector) => selector,
+                Err(detail) => {
+                    return protocol::response_protocol_err_typed(
+                        ctx.client,
+                        ctx.request_id,
+                        ControlErrorCode::NoModel,
+                        protocol::schema::ERROR,
+                        &detail,
+                    );
+                }
+            };
+
+        if let Err(err) = ctx.model_catalog.refresh() {
+            tracing::warn!(
+                session_id,
+                runtime_id = candidate_runtime_id,
+                %err,
+                "PROCESS_CMD: failed to refresh model catalog before session resume"
+            );
+        }
+
+        let target = match ctx.model_catalog.resolve_load_target(&selector) {
+            Ok(target) => target,
+            Err(err) => {
+                return protocol::response_protocol_err_typed(
+                    ctx.client,
+                    ctx.request_id,
+                    ControlErrorCode::LoadFailed,
+                    protocol::schema::ERROR,
+                    &format!(
+                        "Failed to resolve runtime '{}' for session '{}': {}",
+                        candidate_runtime_id, session_id, err
+                    ),
+                );
+            }
+        };
+
+        match activate_model_target(
+            ctx.runtime_registry,
+            ctx.resource_governor,
+            ctx.session_registry,
+            ctx.storage,
+            ctx.model_catalog,
+            &target,
+        ) {
+            Ok(loaded) => {
+                runtime_id = Some(loaded.runtime_id);
+            }
+            Err(err) => {
+                return protocol::response_protocol_err_typed(
+                    ctx.client,
+                    ctx.request_id,
+                    ControlErrorCode::LoadFailed,
+                    protocol::schema::ERROR,
+                    err.message(),
+                );
+            }
+        }
+    }
+
+    let Some(runtime_id) = runtime_id else {
+        return protocol::response_protocol_err_typed(
+            ctx.client,
+            ctx.request_id,
+            ControlErrorCode::NoModel,
+            protocol::schema::ERROR,
+            "No Model Loaded",
+        );
+    };
+
+    let replay_messages = match ctx.storage.load_replay_messages_for_session(session_id) {
+        Ok(messages) => messages,
+        Err(err) => {
+            return protocol::response_protocol_err_typed(
+                ctx.client,
+                ctx.request_id,
+                ControlErrorCode::Generic,
+                protocol::schema::ERROR,
+                &format!(
+                    "Failed to load persisted history for session '{}': {}",
+                    session_id, err
+                ),
+            );
+        }
+    };
+
+    let system_prompt =
+        crate::agent_prompt::build_agent_system_prompt(ctx.tool_registry, ToolCaller::AgentText);
+    let rendered_prompt = {
+        let Some(engine) = ctx.runtime_registry.engine(&runtime_id) else {
+            return protocol::response_protocol_err_typed(
+                ctx.client,
+                ctx.request_id,
+                ControlErrorCode::NoModel,
+                protocol::schema::ERROR,
+                &format!(
+                    "Runtime '{}' is not loaded after activation for session '{}'",
+                    runtime_id, session_id
+                ),
+            );
+        };
+
+        match render_prompt_from_replay_history(&replay_messages, &system_prompt, engine) {
+            Ok(prompt) => prompt,
+            Err(detail) => {
+                return protocol::response_protocol_err_typed(
+                    ctx.client,
+                    ctx.request_id,
+                    ControlErrorCode::Generic,
+                    protocol::schema::ERROR,
+                    &detail,
+                );
+            }
+        }
+    };
+
+    let workload = ctx
+        .storage
+        .latest_workload_for_session(session_id)
+        .ok()
+        .flatten()
+        .and_then(|value| parse_workload_label(&value))
+        .unwrap_or_default();
+    let pid_floor = ctx.runtime_registry.next_pid_floor();
+
+    let spawn_result = {
+        let Some(engine) = ctx.runtime_registry.engine_mut(&runtime_id) else {
+            return protocol::response_protocol_err_typed(
+                ctx.client,
+                ctx.request_id,
+                ControlErrorCode::NoModel,
+                protocol::schema::ERROR,
+                &format!(
+                    "Runtime '{}' is not available for session resume",
+                    runtime_id
+                ),
+            );
+        };
+
+        spawn_restored_managed_process_with_session(
+            &runtime_id,
+            session_id,
+            pid_floor,
+            engine,
+            ctx.memory,
+            ctx.scheduler,
+            ctx.session_registry,
+            ctx.storage,
+            RestoredManagedProcessRequest {
+                rendered_prompt,
+                owner_id: ctx.client_id,
+                tool_caller: ToolCaller::AgentText,
+                workload,
+                required_backend_class: None,
+                priority: ProcessPriority::Normal,
+                lifecycle_policy: ProcessLifecyclePolicy::Interactive,
+                context_policy: None,
+            },
+        )
+    };
+
+    match spawn_result {
+        Ok(spawned) => {
+            if let Err(err) =
+                ctx.runtime_registry
+                    .register_pid(ctx.storage, &runtime_id, spawned.pid)
+            {
+                tracing::warn!(
+                    pid = spawned.pid,
+                    runtime_id,
+                    %err,
+                    "PROCESS_CMD: failed to register resumed pid in runtime registry"
+                );
+            }
+
+            ctx.pending_events.push(KernelEvent::WorkspaceChanged {
+                pid: spawned.pid,
+                reason: "session_resumed".to_string(),
+            });
+            ctx.pending_events.push(KernelEvent::LobbyChanged {
+                reason: "session_resumed".to_string(),
+            });
+            log_event(
+                "process_resume_session",
+                ctx.client_id,
+                Some(spawned.pid),
+                "session_resumed_from_persisted_history",
+            );
+
+            protocol::response_protocol_ok(
+                ctx.client,
+                ctx.request_id,
+                "RESUME_SESSION",
+                agentic_protocol::schema::RESUME_SESSION,
+                &ResumeSessionResult {
+                    session_id: spawned.session_id,
+                    pid: spawned.pid,
+                    resumed_from_history: true,
+                },
+                Some(&format!(
+                    "Session {} resumed on PID {}",
+                    session_id, spawned.pid
+                )),
+            )
+        }
+        Err(err) => protocol::response_protocol_err_typed(
+            ctx.client,
+            ctx.request_id,
+            ControlErrorCode::SpawnFailed,
+            protocol::schema::ERROR,
+            &err,
+        ),
+    }
+}
+
+fn runtime_selector_for_session(
+    runtime_registry: &crate::runtimes::RuntimeRegistry,
+    runtime_id: &str,
+) -> Result<String, String> {
+    let Some(descriptor) = runtime_registry.descriptor(runtime_id) else {
+        return Err(format!(
+            "Persisted runtime '{}' is not present in the runtime registry",
+            runtime_id
+        ));
+    };
+
+    if descriptor.target_kind == "remote_provider" {
+        let Some(provider_id) = descriptor.provider_id.as_deref() else {
+            return Err(format!(
+                "Runtime '{}' is missing provider metadata required for remote resume",
+                runtime_id
+            ));
+        };
+        let model_id = descriptor
+            .remote_model_id
+            .as_deref()
+            .unwrap_or(descriptor.logical_model_id.as_str());
+        return Ok(format!("cloud:{provider_id}:{model_id}"));
+    }
+
+    if descriptor.target_kind == "local_path" {
+        return Ok(descriptor.display_path.clone());
+    }
+
+    if !descriptor.logical_model_id.trim().is_empty() {
+        return Ok(descriptor.logical_model_id.clone());
+    }
+
+    Ok(descriptor.display_path.clone())
+}
+
+fn render_prompt_from_replay_history(
+    replay_messages: &[StoredReplayMessage],
+    system_prompt: &str,
+    engine: &crate::engine::LLMEngine,
+) -> Result<String, String> {
+    let mut rendered = String::new();
+    let mut saw_user_message = false;
+
+    for message in replay_messages {
+        match message.role.as_str() {
+            "user" => {
+                if !saw_user_message {
+                    rendered.push_str(&format_initial_prompt_with_metadata(
+                        Some(system_prompt),
+                        &message.content,
+                        engine.loaded_family(),
+                        engine.model_metadata(),
+                    ));
+                    saw_user_message = true;
+                } else {
+                    rendered.push_str(&format_user_message_with_metadata(
+                        &message.content,
+                        engine.loaded_family(),
+                        engine.model_metadata(),
+                    ));
+                }
+            }
+            "assistant" => {
+                rendered.push_str(&message.content);
+            }
+            _ => {}
+        }
+    }
+
+    if !saw_user_message {
+        return Err("Session has no persisted user messages to reconstruct for resume".to_string());
+    }
+
+    Ok(rendered)
 }
