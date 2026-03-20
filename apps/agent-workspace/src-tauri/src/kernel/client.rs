@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use agentic_control_models::{
     ControlMessage, LoadModelResult, ModelCatalogSnapshot, OrchStatusResponse, OrchSummaryResponse,
-    OrchestrateResult, PidStatusResponse, ResumeSessionResult, SelectModelResult, SendInputResult,
-    StatusResponse, TurnControlResult,
+    OrchestrateResult, PidStatusResponse, ResumeSessionResult, RetryTaskResult, ScheduleJobResult,
+    SelectModelResult, SendInputResult, StatusResponse, TurnControlResult,
 };
 use agentic_protocol::OpCode;
 
@@ -85,6 +85,7 @@ impl KernelBridge {
                     resource_governor: status.model.resource_governor,
                     runtime_load_queue: status.model.runtime_load_queue,
                     global_audit_events,
+                    scheduled_jobs: status.jobs.scheduled_jobs,
                     orchestrations: status
                         .orchestrations
                         .active_orchestrations
@@ -116,6 +117,7 @@ impl KernelBridge {
                 resource_governor: None,
                 runtime_load_queue: persisted_runtime_load_queue,
                 global_audit_events,
+                scheduled_jobs: Vec::new(),
                 orchestrations: Vec::new(),
                 sessions: archived_sessions,
                 error: Some(err.to_string()),
@@ -164,16 +166,21 @@ impl KernelBridge {
             &[agentic_protocol::schema::PID_STATUS],
         )?;
         let session_id = status.session_id.clone();
-        let (orchestration, orchestration_fetch_error) = if let Some(orch_id) =
-            status.orchestration_id
-        {
-            match self.fetch_orchestration_status(orch_id, status.orchestration_task_id.clone()) {
-                Ok(snapshot) => (Some(snapshot), None),
-                Err(err) => (None, Some(err)),
-            }
-        } else {
-            (None, None)
-        };
+        let (orchestration, orchestration_fetch_error) =
+            if let Some(orch_id) = status.orchestration_id {
+                match self.fetch_orchestration_status(orch_id) {
+                    Ok(orchestration) => (
+                        Some(map_orchestration_status_to_workspace_snapshot(
+                            orchestration,
+                            status.orchestration_task_id.clone(),
+                        )),
+                        None,
+                    ),
+                    Err(err) => (None, Some(err)),
+                }
+            } else {
+                (None, None)
+            };
         let mut snapshot = map_pid_status_to_workspace_snapshot(
             status,
             orchestration,
@@ -200,11 +207,10 @@ impl KernelBridge {
         self.decode_response(&response.payload, &[agentic_protocol::schema::STATUS])
     }
 
-    fn fetch_orchestration_status(
+    pub fn fetch_orchestration_status(
         &mut self,
         orch_id: u64,
-        task_id: Option<String>,
-    ) -> KernelBridgeResult<WorkspaceOrchestrationSnapshot> {
+    ) -> KernelBridgeResult<OrchStatusResponse> {
         let payload = format!("orch:{orch_id}");
         let response = self.send_control_command(OpCode::Status, payload.as_bytes())?;
 
@@ -220,28 +226,7 @@ impl KernelBridge {
             &response.payload,
             &[agentic_protocol::schema::ORCH_STATUS],
         )?;
-        Ok(WorkspaceOrchestrationSnapshot {
-            orchestration_id: orchestration.orchestration_id,
-            task_id: task_id.unwrap_or_default(),
-            total: orchestration.total,
-            completed: orchestration.completed,
-            running: orchestration.running,
-            pending: orchestration.pending,
-            failed: orchestration.failed,
-            skipped: orchestration.skipped,
-            finished: orchestration.finished,
-            elapsed_secs: orchestration.elapsed_secs,
-            policy: orchestration.policy,
-            tasks: orchestration
-                .tasks
-                .into_iter()
-                .map(|task| WorkspaceOrchestrationTask {
-                    task: task.task,
-                    status: task.status,
-                    pid: task.pid,
-                })
-                .collect(),
-        })
+        Ok(orchestration)
     }
 
     pub fn orchestrate(&mut self, payload: &str) -> KernelBridgeResult<OrchestrateResult> {
@@ -255,6 +240,41 @@ impl KernelBridge {
         }
 
         self.decode_response(&response.payload, &[agentic_protocol::schema::ORCHESTRATE])
+    }
+
+    pub fn schedule_job(&mut self, payload: &str) -> KernelBridgeResult<ScheduleJobResult> {
+        let response = self.send_control_command(OpCode::ScheduleJob, payload.as_bytes())?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(&response.payload, &[agentic_protocol::schema::SCHEDULE_JOB])
+    }
+
+    pub fn retry_task(
+        &mut self,
+        orch_id: u64,
+        task_id: &str,
+    ) -> KernelBridgeResult<RetryTaskResult> {
+        let payload = serde_json::json!({
+            "orchestration_id": orch_id,
+            "task_id": task_id,
+        });
+        let response =
+            self.send_control_command(OpCode::RetryTask, payload.to_string().as_bytes())?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(&response.payload, &[agentic_protocol::schema::RETRY_TASK])
     }
 
     pub fn ping(&mut self) -> KernelBridgeResult<String> {
@@ -593,6 +613,34 @@ fn map_orchestration_to_summary(orchestration: OrchSummaryResponse) -> LobbyOrch
     }
 }
 
+fn map_orchestration_status_to_workspace_snapshot(
+    orchestration: OrchStatusResponse,
+    task_id: Option<String>,
+) -> WorkspaceOrchestrationSnapshot {
+    WorkspaceOrchestrationSnapshot {
+        orchestration_id: orchestration.orchestration_id,
+        task_id: task_id.unwrap_or_default(),
+        total: orchestration.total,
+        completed: orchestration.completed,
+        running: orchestration.running,
+        pending: orchestration.pending,
+        failed: orchestration.failed,
+        skipped: orchestration.skipped,
+        finished: orchestration.finished,
+        elapsed_secs: orchestration.elapsed_secs,
+        policy: orchestration.policy,
+        tasks: orchestration
+            .tasks
+            .into_iter()
+            .map(|task| WorkspaceOrchestrationTask {
+                task: task.task,
+                status: task.status,
+                pid: task.pid,
+            })
+            .collect(),
+    }
+}
+
 fn map_pid_status_to_workspace_snapshot(
     process: PidStatusResponse,
     orchestration: Option<WorkspaceOrchestrationSnapshot>,
@@ -626,6 +674,7 @@ fn map_pid_status_to_workspace_snapshot(
         state: process.state,
         workload: process.workload,
         owner_id: (process.owner_id != 0).then_some(process.owner_id),
+        tool_caller: Some(process.tool_caller),
         index_pos: Some(process.index_pos),
         priority: (!process.priority.trim().is_empty()).then_some(process.priority),
         quota_tokens: Some(process.quota_tokens),
@@ -638,6 +687,7 @@ fn map_pid_status_to_workspace_snapshot(
         backend_class: process.backend_class,
         backend_capabilities: process.backend_capabilities,
         accounting: process.session_accounting,
+        permissions: Some(process.permissions),
         tokens_generated: process.tokens_generated,
         syscalls_used: process.syscalls_used,
         elapsed_secs: process.elapsed_secs,

@@ -42,6 +42,16 @@ impl ToolDispatcher {
             ));
         }
 
+        if !context.permissions.allows_tool(&invocation.name) {
+            return Err(ToolError::PolicyDenied(
+                invocation.name.clone(),
+                format!(
+                    "tool '{}' is outside the allowlist for trust scope '{}'",
+                    invocation.name, context.permissions.trust_scope
+                ),
+            ));
+        }
+
         if let Err(detail) = validate_value(
             &entry.descriptor.input_schema,
             &invocation.input,
@@ -163,6 +173,12 @@ mod tests {
             pid: Some(1),
             session_id: None,
             caller: ToolCaller::AgentText,
+            permissions: crate::tools::invocation::ProcessPermissionPolicy {
+                trust_scope: crate::tools::invocation::ProcessTrustScope::InteractiveChat,
+                actions_allowed: false,
+                allowed_tools: vec!["restricted_list".to_string()],
+                path_scopes: vec![".".to_string()],
+            },
             transport: ToolInvocationTransport::Text,
             call_id: None,
         };
@@ -199,6 +215,12 @@ mod tests {
             pid: Some(1),
             session_id: None,
             caller: ToolCaller::AgentText,
+            permissions: crate::tools::invocation::ProcessPermissionPolicy {
+                trust_scope: crate::tools::invocation::ProcessTrustScope::InteractiveChat,
+                actions_allowed: false,
+                allowed_tools: vec!["bad_list_contract".to_string()],
+                path_scopes: vec![".".to_string()],
+            },
             transport: ToolInvocationTransport::Text,
             call_id: None,
         };
@@ -207,5 +229,48 @@ mod tests {
             .dispatch(&invocation, &context, &registry)
             .expect_err("output schema violation");
         assert!(matches!(err, ToolError::OutputSchemaViolation(_, _)));
+    }
+
+    #[test]
+    fn rejects_tool_outside_process_allowlist() {
+        let mut registry = ToolRegistry::new();
+        register_host_tool(
+            &mut registry,
+            "scoped_tool",
+            json!({
+                "type": "object",
+                "required": ["output", "entries"],
+                "properties": {
+                    "output": {"type": "string"},
+                    "entries": {"type": "array", "items": {"type": "string"}}
+                },
+                "additionalProperties": false
+            }),
+            vec![ToolCaller::AgentText],
+        );
+        let dispatcher = ToolDispatcher::new();
+        let invocation = ToolInvocation {
+            name: "scoped_tool".to_string(),
+            input: json!({}),
+            call_id: None,
+        };
+        let context = ToolContext {
+            pid: Some(1),
+            session_id: None,
+            caller: ToolCaller::AgentText,
+            permissions: crate::tools::invocation::ProcessPermissionPolicy {
+                trust_scope: crate::tools::invocation::ProcessTrustScope::InteractiveChat,
+                actions_allowed: false,
+                allowed_tools: vec!["other_tool".to_string()],
+                path_scopes: vec![".".to_string()],
+            },
+            transport: ToolInvocationTransport::Text,
+            call_id: None,
+        };
+
+        let err = dispatcher
+            .dispatch(&invocation, &context, &registry)
+            .expect_err("allowlist denied");
+        assert!(matches!(err, ToolError::PolicyDenied(_, _)));
     }
 }

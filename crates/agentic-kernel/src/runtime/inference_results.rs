@@ -17,7 +17,7 @@ use crate::services::process_runtime::{
     kill_managed_process_with_session, release_process_resources_with_session,
 };
 use crate::session::SessionRegistry;
-use crate::storage::{StorageService, StoredAccountingEvent};
+use crate::storage::{current_timestamp_ms, StorageService, StoredAccountingEvent};
 use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
@@ -352,8 +352,27 @@ pub(super) fn drain_worker_results(
                     accounting_event,
                 );
                 tracing::error!(pid, %error, "Process error from worker, killing");
-                if orchestrator.is_orchestrated(pid) {
-                    orchestrator.mark_failed(pid, &error);
+                if let Some(finalized) = orchestrator.mark_failed(pid, &error) {
+                    match storage.finalize_workflow_task_attempt(
+                        finalized.orch_id,
+                        &finalized.task_id,
+                        finalized.attempt,
+                        &finalized.status,
+                        finalized.error.as_deref(),
+                        &finalized.output_text,
+                        finalized.truncated,
+                        current_timestamp_ms(),
+                    ) {
+                        Ok(Some(_artifact)) => {}
+                        Ok(None) => {}
+                        Err(err) => tracing::warn!(
+                            orch_id = finalized.orch_id,
+                            task_id = %finalized.task_id,
+                            attempt = finalized.attempt,
+                            %err,
+                            "RUNTIME: failed to persist failed workflow task output"
+                        ),
+                    }
                 }
                 let audit_context = audit::context_for_pid(session_registry, runtime_registry, pid);
                 {

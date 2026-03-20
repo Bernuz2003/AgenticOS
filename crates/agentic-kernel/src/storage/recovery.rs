@@ -11,6 +11,7 @@ pub(crate) struct BootRecoveryReport {
     pub(crate) stale_active_sessions_reset: usize,
     pub(crate) interrupted_process_runs: usize,
     pub(crate) interrupted_turns: usize,
+    pub(crate) interrupted_scheduler_job_runs: usize,
     pub(crate) logical_resume_sessions: usize,
     pub(crate) strong_restore_candidate_sessions: usize,
     pub(crate) pending_runtime_queue_entries: usize,
@@ -43,6 +44,8 @@ impl StorageService {
             mark_interrupted_process_runs(&transaction, recovered_at_ms)?;
         let stale_active_sessions_reset =
             reset_active_sessions_for_boot_tx(&transaction, recovered_at_ms)?;
+        let interrupted_scheduler_job_runs =
+            mark_interrupted_scheduler_job_runs(&transaction, recovered_at_ms)?;
         let (interrupted_turns, logical_resume_sessions, strong_restore_candidate_sessions) =
             mark_interrupted_turns(&transaction, recovered_at_ms, &candidates)?;
         let pending_runtime_queue_entries = count_rows(
@@ -58,6 +61,7 @@ impl StorageService {
             stale_active_sessions_reset,
             interrupted_process_runs,
             interrupted_turns,
+            interrupted_scheduler_job_runs,
             logical_resume_sessions,
             strong_restore_candidate_sessions,
             pending_runtime_queue_entries,
@@ -98,6 +102,26 @@ fn reset_active_sessions_for_boot_tx(
             END,
             updated_at_ms = ?1
         WHERE active_pid IS NOT NULL OR status = 'running'
+        "#,
+        params![recovered_at_ms],
+    )
+}
+
+fn mark_interrupted_scheduler_job_runs(
+    transaction: &Transaction<'_>,
+    recovered_at_ms: i64,
+) -> Result<usize, rusqlite::Error> {
+    transaction.execute(
+        r#"
+        UPDATE scheduled_job_runs
+        SET
+            status = 'interrupted',
+            completed_at_ms = COALESCE(completed_at_ms, ?1),
+            error = CASE
+                WHEN error IS NULL OR error = '' THEN 'kernel_restarted'
+                ELSE error
+            END
+        WHERE status = 'running' AND completed_at_ms IS NULL
         "#,
         params![recovered_at_ms],
     )

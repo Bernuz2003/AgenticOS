@@ -37,6 +37,7 @@ export interface LobbySnapshot {
   resourceGovernor: ResourceGovernorStatus | null;
   runtimeLoadQueue: RuntimeLoadQueueEntry[];
   globalAuditEvents: AuditEvent[];
+  scheduledJobs: ScheduledJob[];
   orchestrations: LobbyOrchestrationSummary[];
   sessions: LobbySnapshotSession[];
   error: string | null;
@@ -77,6 +78,7 @@ export interface WorkspaceSnapshot {
   state: string;
   workload: string;
   ownerId: number | null;
+  toolCaller: string | null;
   indexPos: number | null;
   priority: string | null;
   quotaTokens: number | null;
@@ -89,6 +91,7 @@ export interface WorkspaceSnapshot {
   backendClass: string | null;
   backendCapabilities: BackendCapabilities | null;
   accounting: BackendTelemetry | null;
+  permissions: ProcessPermissions | null;
   tokensGenerated: number;
   syscallsUsed: number;
   elapsedSecs: number;
@@ -97,6 +100,13 @@ export interface WorkspaceSnapshot {
   orchestration: WorkspaceOrchestrationSnapshot | null;
   context: WorkspaceContextSnapshot | null;
   auditEvents: AuditEvent[];
+}
+
+export interface ProcessPermissions {
+  trustScope: string;
+  actionsAllowed: boolean;
+  allowedTools: string[];
+  pathScopes: string[];
 }
 
 export interface MemoryStatus {
@@ -213,6 +223,125 @@ export interface OrchestrateResult {
   orchestrationId: number;
   totalTasks: number;
   spawned: number;
+}
+
+export interface RetryWorkflowTaskResult {
+  orchestrationId: number;
+  task: string;
+  resetTasks: string[];
+  spawned: number;
+}
+
+export interface ScheduleJobResult {
+  jobId: number;
+  nextRunAtMs: number | null;
+  triggerKind: string;
+}
+
+export interface ScheduledJobRun {
+  runId: number;
+  triggerAtMs: number;
+  attempt: number;
+  status: string;
+  startedAtMs: number | null;
+  completedAtMs: number | null;
+  orchestrationId: number | null;
+  deadlineAtMs: number | null;
+  error: string | null;
+}
+
+export interface ScheduledJob {
+  jobId: number;
+  name: string;
+  targetKind: string;
+  triggerKind: string;
+  triggerLabel: string;
+  enabled: boolean;
+  state: string;
+  nextRunAtMs: number | null;
+  currentTriggerAtMs: number | null;
+  currentAttempt: number;
+  timeoutMs: number;
+  maxRetries: number;
+  backoffMs: number;
+  lastRunStartedAtMs: number | null;
+  lastRunCompletedAtMs: number | null;
+  lastRunStatus: string | null;
+  lastError: string | null;
+  consecutiveFailures: number;
+  activeOrchestrationId: number | null;
+  recentRuns: ScheduledJobRun[];
+}
+
+export interface OrchestrationArtifactRef {
+  artifactId: string;
+  task: string;
+  attempt: number;
+  kind: string;
+  label: string;
+}
+
+export interface OrchestrationArtifact {
+  artifactId: string;
+  task: string;
+  attempt: number;
+  kind: string;
+  label: string;
+  mimeType: string;
+  preview: string;
+  content: string;
+  bytes: number;
+  createdAtMs: number;
+}
+
+export interface OrchestrationTaskAttempt {
+  attempt: number;
+  status: string;
+  sessionId: string | null;
+  pid: number | null;
+  error: string | null;
+  outputPreview: string;
+  outputChars: number;
+  truncated: boolean;
+  startedAtMs: number;
+  completedAtMs: number | null;
+  primaryArtifactId: string | null;
+}
+
+export interface OrchestrationTaskStatus {
+  task: string;
+  role: string | null;
+  workload: string | null;
+  backendClass: string | null;
+  contextStrategy: string | null;
+  deps: string[];
+  status: string;
+  currentAttempt: number | null;
+  pid: number | null;
+  error: string | null;
+  context: WorkspaceContextSnapshot | null;
+  latestOutputPreview: string | null;
+  latestOutputText: string | null;
+  latestOutputTruncated: boolean;
+  inputArtifacts: OrchestrationArtifactRef[];
+  outputArtifacts: OrchestrationArtifact[];
+  attempts: OrchestrationTaskAttempt[];
+}
+
+export interface OrchestrationStatus {
+  orchestrationId: number;
+  total: number;
+  completed: number;
+  running: number;
+  pending: number;
+  failed: number;
+  skipped: number;
+  finished: boolean;
+  elapsedSecs: number;
+  policy: string;
+  truncations: number;
+  outputCharsStored: number;
+  tasks: OrchestrationTaskStatus[];
 }
 
 export interface BackendCapabilities {
@@ -503,6 +632,38 @@ export interface LobbySnapshotDto {
     updated_at_ms: number;
   }>;
   global_audit_events: AuditEventDto[];
+  scheduled_jobs: Array<{
+    job_id: number;
+    name: string;
+    target_kind: string;
+    trigger_kind: string;
+    trigger_label: string;
+    enabled: boolean;
+    state: string;
+    next_run_at_ms: number | null;
+    current_trigger_at_ms: number | null;
+    current_attempt: number;
+    timeout_ms: number;
+    max_retries: number;
+    backoff_ms: number;
+    last_run_started_at_ms: number | null;
+    last_run_completed_at_ms: number | null;
+    last_run_status: string | null;
+    last_error: string | null;
+    consecutive_failures: number;
+    active_orchestration_id: number | null;
+    recent_runs: Array<{
+      run_id: number;
+      trigger_at_ms: number;
+      attempt: number;
+      status: string;
+      started_at_ms: number | null;
+      completed_at_ms: number | null;
+      orchestration_id: number | null;
+      deadline_at_ms: number | null;
+      error: string | null;
+    }>;
+  }>;
   orchestrations: Array<{
     orchestration_id: number;
     total: number;
@@ -547,6 +708,7 @@ export interface WorkspaceSnapshotDto {
   state: string;
   workload: string;
   owner_id: number | null;
+  tool_caller: string | null;
   index_pos: number | null;
   priority: string | null;
   quota_tokens: number | null;
@@ -581,6 +743,12 @@ export interface WorkspaceSnapshotDto {
     transport_errors: number;
     last_model: string | null;
     last_error: string | null;
+  } | null;
+  permissions: {
+    trust_scope: string;
+    actions_allowed: boolean;
+    allowed_tools: string[];
+    path_scopes: string[];
   } | null;
   tokens_generated: number;
   syscalls_used: number;
@@ -657,6 +825,7 @@ export function normalizeLobbySnapshot(snapshot: LobbySnapshotDto): LobbySnapsho
     resourceGovernor: mapResourceGovernor(snapshot.resource_governor),
     runtimeLoadQueue: snapshot.runtime_load_queue.map(mapRuntimeLoadQueueEntry),
     globalAuditEvents: snapshot.global_audit_events.map(normalizeAuditEvent),
+    scheduledJobs: snapshot.scheduled_jobs.map(mapScheduledJob),
     orchestrations: snapshot.orchestrations.map((orchestration) => ({
       orchestrationId: orchestration.orchestration_id,
       total: orchestration.total,
@@ -716,6 +885,41 @@ export function auditEventKey(event: AuditEvent): string {
   ].join("|");
 }
 
+function mapScheduledJob(job: LobbySnapshotDto["scheduled_jobs"][number]): ScheduledJob {
+  return {
+    jobId: job.job_id,
+    name: job.name,
+    targetKind: job.target_kind,
+    triggerKind: job.trigger_kind,
+    triggerLabel: job.trigger_label,
+    enabled: job.enabled,
+    state: job.state,
+    nextRunAtMs: job.next_run_at_ms,
+    currentTriggerAtMs: job.current_trigger_at_ms,
+    currentAttempt: job.current_attempt,
+    timeoutMs: job.timeout_ms,
+    maxRetries: job.max_retries,
+    backoffMs: job.backoff_ms,
+    lastRunStartedAtMs: job.last_run_started_at_ms,
+    lastRunCompletedAtMs: job.last_run_completed_at_ms,
+    lastRunStatus: job.last_run_status,
+    lastError: job.last_error,
+    consecutiveFailures: job.consecutive_failures,
+    activeOrchestrationId: job.active_orchestration_id,
+    recentRuns: job.recent_runs.map((run) => ({
+      runId: run.run_id,
+      triggerAtMs: run.trigger_at_ms,
+      attempt: run.attempt,
+      status: run.status,
+      startedAtMs: run.started_at_ms,
+      completedAtMs: run.completed_at_ms,
+      orchestrationId: run.orchestration_id,
+      deadlineAtMs: run.deadline_at_ms,
+      error: run.error,
+    })),
+  };
+}
+
 function mapRemoteRuntimeModel(
   model: LobbySnapshotDto["loaded_remote_model"],
 ): RemoteRuntimeModel | null {
@@ -771,6 +975,7 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
     state: snapshot.state,
     workload: snapshot.workload,
     ownerId: snapshot.owner_id,
+    toolCaller: snapshot.tool_caller,
     indexPos: snapshot.index_pos,
     priority: snapshot.priority,
     quotaTokens: snapshot.quota_tokens,
@@ -783,6 +988,14 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
     backendClass: snapshot.backend_class,
     backendCapabilities: mapBackendCapabilities(snapshot.backend_capabilities),
     accounting: mapBackendTelemetry(snapshot.accounting),
+    permissions: snapshot.permissions
+      ? {
+          trustScope: snapshot.permissions.trust_scope,
+          actionsAllowed: snapshot.permissions.actions_allowed,
+          allowedTools: snapshot.permissions.allowed_tools,
+          pathScopes: snapshot.permissions.path_scopes,
+        }
+      : null,
     tokensGenerated: snapshot.tokens_generated,
     syscallsUsed: snapshot.syscalls_used,
     elapsedSecs: snapshot.elapsed_secs,
@@ -1014,6 +1227,191 @@ export async function orchestrate(payload: string): Promise<OrchestrateResult> {
   return {
     orchestrationId: result.orchestration_id,
     totalTasks: result.total_tasks,
+    spawned: result.spawned,
+  };
+}
+
+export async function scheduleWorkflowJob(
+  payload: string,
+): Promise<ScheduleJobResult> {
+  const result = await invoke<{
+    job_id: number;
+    next_run_at_ms: number | null;
+    trigger_kind: string;
+  }>("schedule_workflow_job", { payload });
+
+  return {
+    jobId: result.job_id,
+    nextRunAtMs: result.next_run_at_ms,
+    triggerKind: result.trigger_kind,
+  };
+}
+
+export async function fetchOrchestrationStatus(
+  orchestrationId: number,
+): Promise<OrchestrationStatus> {
+  const result = await invoke<{
+    orchestration_id: number;
+    total: number;
+    completed: number;
+    running: number;
+    pending: number;
+    failed: number;
+    skipped: number;
+    finished: boolean;
+    elapsed_secs: number;
+    policy: string;
+    truncations: number;
+    output_chars_stored: number;
+    tasks: Array<{
+      task: string;
+      role?: string | null;
+      workload?: string | null;
+      backend_class?: string | null;
+      context_strategy?: string | null;
+      deps?: string[];
+      status: string;
+      current_attempt?: number | null;
+      pid: number | null;
+      error: string | null;
+      context: null | {
+        context_strategy: string;
+        context_tokens_used: number;
+        context_window_size: number;
+        context_compressions: number;
+        context_retrieval_hits: number;
+        last_compaction_reason: string | null;
+        last_summary_ts: string | null;
+        context_segments: number;
+      };
+      latest_output_preview?: string | null;
+      latest_output_text?: string | null;
+      latest_output_truncated?: boolean;
+      input_artifacts?: Array<{
+        artifact_id: string;
+        task: string;
+        attempt: number;
+        kind: string;
+        label: string;
+      }>;
+      output_artifacts?: Array<{
+        artifact_id: string;
+        task: string;
+        attempt: number;
+        kind: string;
+        label: string;
+        mime_type: string;
+        preview: string;
+        content: string;
+        bytes: number;
+        created_at_ms: number;
+      }>;
+      attempts?: Array<{
+        attempt: number;
+        status: string;
+        session_id?: string | null;
+        pid?: number | null;
+        error?: string | null;
+        output_preview: string;
+        output_chars: number;
+        truncated: boolean;
+        started_at_ms: number;
+        completed_at_ms?: number | null;
+        primary_artifact_id?: string | null;
+      }>;
+    }>;
+  }>("fetch_orchestration_status", { orchestrationId });
+
+  return {
+    orchestrationId: result.orchestration_id,
+    total: result.total,
+    completed: result.completed,
+    running: result.running,
+    pending: result.pending,
+    failed: result.failed,
+    skipped: result.skipped,
+    finished: result.finished,
+    elapsedSecs: result.elapsed_secs,
+    policy: result.policy,
+    truncations: result.truncations,
+    outputCharsStored: result.output_chars_stored,
+    tasks: result.tasks.map((task) => ({
+      task: task.task,
+      role: task.role ?? null,
+      workload: task.workload ?? null,
+      backendClass: task.backend_class ?? null,
+      contextStrategy: task.context_strategy ?? null,
+      deps: task.deps ?? [],
+      status: task.status,
+      currentAttempt: task.current_attempt ?? null,
+      pid: task.pid,
+      error: task.error,
+      context: task.context
+        ? {
+            contextStrategy: task.context.context_strategy,
+            contextTokensUsed: task.context.context_tokens_used,
+            contextWindowSize: task.context.context_window_size,
+            contextCompressions: task.context.context_compressions,
+            contextRetrievalHits: task.context.context_retrieval_hits,
+            lastCompactionReason: task.context.last_compaction_reason,
+            lastSummaryTs: task.context.last_summary_ts,
+            contextSegments: task.context.context_segments,
+          }
+        : null,
+      latestOutputPreview: task.latest_output_preview ?? null,
+      latestOutputText: task.latest_output_text ?? null,
+      latestOutputTruncated: task.latest_output_truncated ?? false,
+      inputArtifacts: (task.input_artifacts ?? []).map((artifact) => ({
+        artifactId: artifact.artifact_id,
+        task: artifact.task,
+        attempt: artifact.attempt,
+        kind: artifact.kind,
+        label: artifact.label,
+      })),
+      outputArtifacts: (task.output_artifacts ?? []).map((artifact) => ({
+        artifactId: artifact.artifact_id,
+        task: artifact.task,
+        attempt: artifact.attempt,
+        kind: artifact.kind,
+        label: artifact.label,
+        mimeType: artifact.mime_type,
+        preview: artifact.preview,
+        content: artifact.content,
+        bytes: artifact.bytes,
+        createdAtMs: artifact.created_at_ms,
+      })),
+      attempts: (task.attempts ?? []).map((attempt) => ({
+        attempt: attempt.attempt,
+        status: attempt.status,
+        sessionId: attempt.session_id ?? null,
+        pid: attempt.pid ?? null,
+        error: attempt.error ?? null,
+        outputPreview: attempt.output_preview,
+        outputChars: attempt.output_chars,
+        truncated: attempt.truncated,
+        startedAtMs: attempt.started_at_ms,
+        completedAtMs: attempt.completed_at_ms ?? null,
+        primaryArtifactId: attempt.primary_artifact_id ?? null,
+      })),
+    })),
+  };
+}
+
+export async function retryWorkflowTask(
+  orchestrationId: number,
+  taskId: string,
+): Promise<RetryWorkflowTaskResult> {
+  const result = await invoke<{
+    orchestration_id: number;
+    task: string;
+    reset_tasks: string[];
+    spawned: number;
+  }>("retry_workflow_task", { orchestrationId, taskId });
+
+  return {
+    orchestrationId: result.orchestration_id,
+    task: result.task,
+    resetTasks: result.reset_tasks,
     spawned: result.spawned,
   };
 }

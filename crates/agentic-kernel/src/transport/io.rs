@@ -14,6 +14,7 @@ use crate::protocol;
 use crate::resource_governor::ResourceGovernor;
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
+use crate::services::job_scheduler::JobScheduler;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
@@ -135,6 +136,7 @@ pub fn handle_read_with_test_state(
         let mut resource_governor =
             ResourceGovernor::load(storage, crate::config::ResourceGovernorConfig::default())
                 .expect("load transport test governor");
+        let mut job_scheduler = JobScheduler::load(storage).expect("load transport test jobs");
         handle_read_with_registry(
             client,
             memory,
@@ -142,6 +144,7 @@ pub fn handle_read_with_test_state(
             &mut resource_governor,
             model_catalog,
             scheduler,
+            &mut job_scheduler,
             orchestrator,
             session_registry,
             storage,
@@ -165,6 +168,7 @@ pub fn handle_read_with_registry(
     resource_governor: &mut ResourceGovernor,
     model_catalog: &mut ModelCatalog,
     scheduler: &mut ProcessScheduler,
+    job_scheduler: &mut JobScheduler,
     orchestrator: &mut Orchestrator,
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
@@ -208,6 +212,7 @@ pub fn handle_read_with_registry(
                 resource_governor,
                 model_catalog,
                 scheduler,
+                job_scheduler,
                 orchestrator,
                 tool_registry,
                 session_registry,

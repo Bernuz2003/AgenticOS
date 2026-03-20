@@ -17,8 +17,10 @@ use crate::prompting::PromptFamily;
 use crate::resource_governor::ResourceGovernor;
 use crate::runtimes::{RuntimeRegistry, RuntimeReservation};
 use crate::scheduler::{CheckedOutProcessMetadata, ProcessScheduler, RestoredProcessMetadata};
+use crate::services::job_scheduler::JobScheduler;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
+use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 use anyhow::Result;
 use std::collections::HashSet;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -86,6 +88,8 @@ fn checked_out_status_preserves_backend_slot_metadata() {
         None,
         &CheckedOutProcessMetadata {
             owner_id: 7,
+            tool_caller: ToolCaller::AgentSupervisor,
+            permission_policy: test_permissions(),
             state: "InFlight".to_string(),
             checked_out_at: Instant::now(),
             tokens: 128,
@@ -133,6 +137,8 @@ fn checked_out_status_preserves_backend_slot_metadata() {
             .map(|capabilities| capabilities.save_restore_slots),
         Some(true)
     );
+    assert_eq!(response.tool_caller, "agent_supervisor");
+    assert_eq!(response.permissions.trust_scope, "interactive_chat");
 }
 
 #[test]
@@ -143,6 +149,8 @@ fn restored_status_can_surface_absent_backend_slot_metadata() {
         None,
         &RestoredProcessMetadata {
             owner_id: 3,
+            tool_caller: ToolCaller::AgentText,
+            permission_policy: test_permissions(),
             state: "Restored".to_string(),
             token_count: 32,
             max_tokens: 256,
@@ -164,6 +172,8 @@ fn restored_status_can_surface_absent_backend_slot_metadata() {
     assert_eq!(response.backend_id, None);
     assert_eq!(response.backend_class, None);
     assert_eq!(response.backend_capabilities, None);
+    assert_eq!(response.tool_caller, "agent_text");
+    assert_eq!(response.permissions.path_scopes, vec![".".to_string()]);
 }
 
 fn test_openai_config() -> OpenAIResponsesConfig {
@@ -212,6 +222,7 @@ fn global_status_surfaces_cloud_backend_metadata_for_lobby() {
         ModelCatalog::discover(crate::config::kernel_config().paths.models_dir.clone())
             .expect("discover model catalog");
     let scheduler = ProcessScheduler::new();
+    let job_scheduler = JobScheduler::new();
     let orchestrator = Orchestrator::new();
     let in_flight = HashSet::new();
     let metrics = MetricsState::new();
@@ -227,6 +238,7 @@ fn global_status_surfaces_cloud_backend_metadata_for_lobby() {
         resource_governor: &resource_governor,
         model_catalog: &model_catalog,
         scheduler: &scheduler,
+        job_scheduler: &job_scheduler,
         orchestrator: &orchestrator,
         in_flight: &in_flight,
         metrics: &metrics,
@@ -292,6 +304,15 @@ fn fresh_session_registry() -> SessionRegistry {
         .record_kernel_boot("status-snapshot-test")
         .expect("record status snapshot boot");
     SessionRegistry::load(&mut storage, boot.boot_id).expect("load session registry")
+}
+
+fn test_permissions() -> ProcessPermissionPolicy {
+    ProcessPermissionPolicy {
+        trust_scope: ProcessTrustScope::InteractiveChat,
+        actions_allowed: false,
+        allowed_tools: vec!["read_file".to_string()],
+        path_scopes: vec![".".to_string()],
+    }
 }
 
 fn fresh_runtime_registry() -> (StorageService, RuntimeRegistry, ResourceGovernor) {

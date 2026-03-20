@@ -2,7 +2,8 @@ import { createHashRouter } from "react-router-dom";
 import { AppLayout } from "./layout";
 import { DashboardPage } from "../pages/dashboard-page";
 import { SessionsPage } from "../pages/sessions-page";
-import { ResourcesPage } from "../pages/resources-page";
+import { ControlCenterPage, ResourcesPage } from "../pages/resources-page";
+import { WorkflowsPage } from "../pages/workflows-page";
 import { WorkspacePage } from "../pages/workspace-page";
 
 export const appRouter = createHashRouter([
@@ -17,6 +18,14 @@ export const appRouter = createHashRouter([
       {
         path: "sessions",
         element: <SessionsPage />,
+      },
+      {
+        path: "workflows",
+        element: <WorkflowsPage />,
+      },
+      {
+        path: "control-center",
+        element: <ControlCenterPage />,
       },
       {
         path: "resources",

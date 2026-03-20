@@ -8,11 +8,12 @@ use super::state::*;
 use crate::backend::RuntimeModel;
 use crate::memory::ContextSlotId;
 use crate::prompting::GenerationConfig;
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 
 pub struct AgentProcess {
     pub owner_id: usize,
     pub tool_caller: ToolCaller,
+    pub permission_policy: ProcessPermissionPolicy,
     pub context_slot_id: Option<ContextSlotId>,
     pub resident_slot_policy: ResidentSlotPolicy,
     pub resident_slot_state: ResidentSlotState,
@@ -39,6 +40,7 @@ impl AgentProcess {
         _id: u64,
         owner_id: usize,
         tool_caller: ToolCaller,
+        permission_policy: ProcessPermissionPolicy,
         lifecycle_policy: ProcessLifecyclePolicy,
         model: RuntimeModel,
         tokenizer: Tokenizer,
@@ -51,6 +53,7 @@ impl AgentProcess {
         AgentProcess {
             owner_id,
             tool_caller,
+            permission_policy,
             context_slot_id: None,
             resident_slot_policy: ResidentSlotPolicy::Unmanaged,
             resident_slot_state: ResidentSlotState::Unbound,

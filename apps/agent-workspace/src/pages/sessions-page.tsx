@@ -1,5 +1,13 @@
 import { useSessionsStore } from "../store/sessions-store";
-import { TimerReset, Trash2, ArrowRight, Plus, X, LoaderCircle } from "lucide-react";
+import {
+  TimerReset,
+  Trash2,
+  ArrowRight,
+  Plus,
+  X,
+  LoaderCircle,
+  Waypoints,
+} from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { deleteSession, startSession } from "../lib/api";
 import { useState } from "react";
@@ -54,16 +62,28 @@ export function SessionsPage() {
     <div className="max-w-6xl mx-auto space-y-8 relative">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-slate-900">Session Hub</h1>
-          <p className="text-slate-500 mt-2">Manage your active and past interactions with AgenticOS.</p>
+          <h1 className="text-3xl font-bold tracking-tight text-slate-900">Chat Sessions</h1>
+          <p className="text-slate-500 mt-2">
+            Interactive chats stay here. Workflow orchestration now lives in a
+            dedicated control-plane view.
+          </p>
         </div>
-        <button
-          onClick={() => setIsModalOpen(true)}
-          className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-sm"
-        >
-          <Plus className="w-5 h-5" />
-          Nuova Sessione
-        </button>
+        <div className="flex items-center gap-3">
+          <Link
+            to="/workflows"
+            className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-sm"
+          >
+            <Waypoints className="w-5 h-5" />
+            New Workflow
+          </Link>
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-sm"
+          >
+            <Plus className="w-5 h-5" />
+            Nuova Chat
+          </button>
+        </div>
       </div>
 
       {sessions.length === 0 ? (
@@ -142,7 +162,7 @@ export function SessionsPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm px-4">
           <div className="bg-white rounded-3xl shadow-xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-200">
              <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
-               <h3 className="text-lg font-bold text-slate-900">Inizia Nuova Sessione</h3>
+               <h3 className="text-lg font-bold text-slate-900">Inizia Nuova Chat</h3>
                <button 
                  onClick={() => setIsModalOpen(false)}
                  className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"

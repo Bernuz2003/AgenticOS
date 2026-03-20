@@ -21,7 +21,7 @@ use crate::process::ProcessLifecyclePolicy;
 use crate::prompting::{format_initial_prompt_with_metadata, format_user_message_with_metadata};
 use crate::scheduler::ProcessPriority;
 use crate::storage::StoredReplayMessage;
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 
 #[derive(Deserialize)]
 struct SendInputPayload {
@@ -851,6 +851,18 @@ pub(crate) fn handle_resume_session(ctx: ProcessCommandContext<'_>, payload: &[u
         .flatten()
         .and_then(|value| parse_workload_label(&value))
         .unwrap_or_default();
+    let permission_policy = match ProcessPermissionPolicy::interactive_chat(ctx.tool_registry) {
+        Ok(policy) => policy,
+        Err(err) => {
+            return protocol::response_protocol_err_typed(
+                ctx.client,
+                ctx.request_id,
+                ControlErrorCode::SpawnFailed,
+                protocol::schema::ERROR,
+                &err,
+            );
+        }
+    };
     let pid_floor = ctx.runtime_registry.next_pid_floor();
 
     let spawn_result = {
@@ -880,6 +892,7 @@ pub(crate) fn handle_resume_session(ctx: ProcessCommandContext<'_>, payload: &[u
                 rendered_prompt,
                 owner_id: ctx.client_id,
                 tool_caller: ToolCaller::AgentText,
+                permission_policy: Some(permission_policy),
                 workload,
                 required_backend_class: None,
                 priority: ProcessPriority::Normal,

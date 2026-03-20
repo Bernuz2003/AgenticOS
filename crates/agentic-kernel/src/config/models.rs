@@ -53,6 +53,8 @@ impl Default for ProtocolRuntimeConfig {
                 "tool_remote_v1".to_string(),
                 "tool_alias_compat_v1".to_string(),
                 "orchestrate_v1".to_string(),
+                "schedule_job_v1".to_string(),
+                "retry_task_v1".to_string(),
                 "event_stream_v1".to_string(),
             ],
         }

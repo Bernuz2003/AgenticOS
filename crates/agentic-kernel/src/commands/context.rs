@@ -10,6 +10,7 @@ use crate::orchestrator::Orchestrator;
 use crate::resource_governor::ResourceGovernor;
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
+use crate::services::job_scheduler::JobScheduler;
 use crate::services::status_snapshot::StatusSnapshotDeps;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
@@ -27,6 +28,7 @@ pub(crate) struct CommandContext<'a> {
     pub resource_governor: &'a mut ResourceGovernor,
     pub model_catalog: &'a mut ModelCatalog,
     pub scheduler: &'a mut ProcessScheduler,
+    pub job_scheduler: &'a mut JobScheduler,
     pub orchestrator: &'a mut Orchestrator,
     pub tool_registry: &'a mut ToolRegistry,
     pub session_registry: &'a mut SessionRegistry,
@@ -109,6 +111,7 @@ pub(crate) struct OrchestrationCommandContext<'a> {
     pub memory: &'a mut NeuralMemory,
     pub model_catalog: &'a mut ModelCatalog,
     pub scheduler: &'a mut ProcessScheduler,
+    pub job_scheduler: &'a mut JobScheduler,
     pub orchestrator: &'a mut Orchestrator,
     pub pending_events: &'a mut Vec<KernelEvent>,
     pub metrics: &'a mut MetricsState,
@@ -167,6 +170,7 @@ impl<'a> CommandContext<'a> {
                 resource_governor: &*self.resource_governor,
                 model_catalog: &*self.model_catalog,
                 scheduler: &*self.scheduler,
+                job_scheduler: &*self.job_scheduler,
                 orchestrator: &*self.orchestrator,
                 in_flight: self.in_flight,
                 metrics: &*self.metrics,
@@ -247,6 +251,7 @@ impl<'a> CommandContext<'a> {
             memory: &mut *self.memory,
             model_catalog: &mut *self.model_catalog,
             scheduler: &mut *self.scheduler,
+            job_scheduler: &mut *self.job_scheduler,
             orchestrator: &mut *self.orchestrator,
             pending_events: &mut *self.pending_events,
             metrics: &mut *self.metrics,

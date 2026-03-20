@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::service::StorageError;
 
-pub(crate) const LATEST_SCHEMA_VERSION: i32 = 7;
+pub(crate) const LATEST_SCHEMA_VERSION: i32 = 9;
 
 pub(super) fn apply_pending_migrations(connection: &mut Connection) -> Result<(), StorageError> {
     let current_version: i32 =
@@ -35,6 +35,12 @@ pub(super) fn apply_pending_migrations(connection: &mut Connection) -> Result<()
     }
     if current_version < 7 {
         apply_v7_schema(connection)?;
+    }
+    if current_version < 8 {
+        apply_v8_schema(connection)?;
+    }
+    if current_version < 9 {
+        apply_v9_schema(connection)?;
     }
 
     Ok(())
@@ -339,6 +345,143 @@ fn apply_v7_schema(connection: &mut Connection) -> Result<(), StorageError> {
 
         CREATE INDEX IF NOT EXISTS idx_audit_events_category_kind_recorded
             ON audit_events(category, kind, recorded_at_ms DESC);
+        "#,
+    )?;
+    transaction.pragma_update(None, "user_version", LATEST_SCHEMA_VERSION)?;
+    transaction.commit()?;
+
+    Ok(())
+}
+
+fn apply_v8_schema(connection: &mut Connection) -> Result<(), StorageError> {
+    let transaction = connection.transaction()?;
+
+    transaction.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS workflow_task_attempts (
+            orchestration_id INTEGER NOT NULL,
+            task_id TEXT NOT NULL,
+            attempt INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            session_id TEXT NULL,
+            pid INTEGER NULL,
+            error TEXT NULL,
+            output_preview TEXT NOT NULL DEFAULT '',
+            output_chars INTEGER NOT NULL DEFAULT 0,
+            truncated INTEGER NOT NULL DEFAULT 0,
+            started_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            completed_at_ms INTEGER NULL,
+            primary_artifact_id TEXT NULL,
+            PRIMARY KEY(orchestration_id, task_id, attempt),
+            FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_workflow_task_attempts_orch_task
+            ON workflow_task_attempts(orchestration_id, task_id, attempt DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_workflow_task_attempts_status
+            ON workflow_task_attempts(orchestration_id, status, updated_at_ms DESC);
+
+        CREATE TABLE IF NOT EXISTS workflow_artifacts (
+            artifact_id TEXT PRIMARY KEY,
+            orchestration_id INTEGER NOT NULL,
+            producer_task_id TEXT NOT NULL,
+            producer_attempt INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            label TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            content_text TEXT NOT NULL,
+            preview TEXT NOT NULL,
+            bytes INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_workflow_artifacts_orch_task
+            ON workflow_artifacts(orchestration_id, producer_task_id, producer_attempt DESC);
+
+        CREATE TABLE IF NOT EXISTS workflow_task_artifact_inputs (
+            orchestration_id INTEGER NOT NULL,
+            consumer_task_id TEXT NOT NULL,
+            consumer_attempt INTEGER NOT NULL,
+            artifact_id TEXT NOT NULL,
+            producer_task_id TEXT NOT NULL,
+            producer_attempt INTEGER NOT NULL,
+            PRIMARY KEY(orchestration_id, consumer_task_id, consumer_attempt, artifact_id),
+            FOREIGN KEY(artifact_id) REFERENCES workflow_artifacts(artifact_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_workflow_task_artifact_inputs_consumer
+            ON workflow_task_artifact_inputs(
+                orchestration_id,
+                consumer_task_id,
+                consumer_attempt
+            );
+        "#,
+    )?;
+    transaction.pragma_update(None, "user_version", LATEST_SCHEMA_VERSION)?;
+    transaction.commit()?;
+
+    Ok(())
+}
+
+fn apply_v9_schema(connection: &mut Connection) -> Result<(), StorageError> {
+    let transaction = connection.transaction()?;
+
+    transaction.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS scheduled_jobs (
+            job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            target_kind TEXT NOT NULL,
+            workflow_payload TEXT NOT NULL,
+            trigger_kind TEXT NOT NULL,
+            trigger_payload TEXT NOT NULL,
+            timeout_ms INTEGER NOT NULL,
+            max_retries INTEGER NOT NULL,
+            backoff_ms INTEGER NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            state TEXT NOT NULL,
+            next_run_at_ms INTEGER NULL,
+            current_trigger_at_ms INTEGER NULL,
+            current_attempt INTEGER NOT NULL DEFAULT 0,
+            active_run_id INTEGER NULL,
+            active_orchestration_id INTEGER NULL,
+            active_deadline_at_ms INTEGER NULL,
+            last_run_started_at_ms INTEGER NULL,
+            last_run_completed_at_ms INTEGER NULL,
+            last_run_status TEXT NULL,
+            last_error TEXT NULL,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next_run
+            ON scheduled_jobs(enabled, next_run_at_ms);
+
+        CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_active_orch
+            ON scheduled_jobs(active_orchestration_id);
+
+        CREATE TABLE IF NOT EXISTS scheduled_job_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL,
+            trigger_at_ms INTEGER NOT NULL,
+            attempt INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            started_at_ms INTEGER NULL,
+            completed_at_ms INTEGER NULL,
+            orchestration_id INTEGER NULL,
+            deadline_at_ms INTEGER NULL,
+            error TEXT NULL,
+            FOREIGN KEY(job_id) REFERENCES scheduled_jobs(job_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_job_id
+            ON scheduled_job_runs(job_id, run_id DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_orch
+            ON scheduled_job_runs(orchestration_id);
         "#,
     )?;
     transaction.pragma_update(None, "user_version", LATEST_SCHEMA_VERSION)?;

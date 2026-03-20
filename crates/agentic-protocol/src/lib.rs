@@ -25,8 +25,10 @@ pub mod schema {
     pub const PID_STATUS: &str = "agenticos.control.pid_status.v1";
     pub const PING: &str = "agenticos.control.ping.v1";
     pub const REGISTER_TOOL: &str = "agenticos.control.register_tool.v1";
+    pub const RETRY_TASK: &str = "agenticos.control.retry_task.v1";
     pub const RESTORE: &str = "agenticos.control.restore.v1";
     pub const RESUME_SESSION: &str = "agenticos.control.resume_session.v1";
+    pub const SCHEDULE_JOB: &str = "agenticos.control.schedule_job.v1";
     pub const SEND_INPUT: &str = "agenticos.control.send_input.v1";
     pub const SELECT_MODEL: &str = "agenticos.control.select_model.v1";
     pub const SET_GEN: &str = "agenticos.control.set_gen.v1";
@@ -72,12 +74,14 @@ pub enum ControlErrorCode {
     OrchNotFound,
     OrchestrateInvalid,
     OrchestrateJson,
+    RetryTaskInvalid,
     PidNotFound,
     ProtocolSerialize,
     RegisterToolFailed,
     RestoreBusy,
     RestoreFailed,
     ResumeSessionInvalid,
+    ScheduleJobInvalid,
     SchedulerLoadFailed,
     SchedulerTargetFailed,
     SendInputInvalid,
@@ -124,12 +128,14 @@ impl ControlErrorCode {
             Self::OrchNotFound => "ORCH_NOT_FOUND",
             Self::OrchestrateInvalid => "ORCHESTRATE_INVALID",
             Self::OrchestrateJson => "ORCHESTRATE_JSON",
+            Self::RetryTaskInvalid => "RETRY_TASK_INVALID",
             Self::PidNotFound => "PID_NOT_FOUND",
             Self::ProtocolSerialize => "PROTOCOL_SERIALIZE",
             Self::RegisterToolFailed => "REGISTER_TOOL_FAILED",
             Self::RestoreBusy => "RESTORE_BUSY",
             Self::RestoreFailed => "RESTORE_FAILED",
             Self::ResumeSessionInvalid => "RESUME_SESSION_INVALID",
+            Self::ScheduleJobInvalid => "SCHEDULE_JOB_INVALID",
             Self::SchedulerLoadFailed => "SCHEDULER_LOAD_FAILED",
             Self::SchedulerTargetFailed => "SCHEDULER_TARGET_FAILED",
             Self::SendInputInvalid => "SEND_INPUT_INVALID",
@@ -229,7 +235,9 @@ pub enum OpCode {
     Checkpoint,
     Restore,
     ResumeSession,
+    ScheduleJob,
     Orchestrate,
+    RetryTask,
     ListTools,
     RegisterTool,
     ToolInfo,
@@ -265,7 +273,9 @@ impl OpCode {
             "CHECKPOINT" => Some(Self::Checkpoint),
             "RESTORE" => Some(Self::Restore),
             "RESUME_SESSION" => Some(Self::ResumeSession),
+            "SCHEDULE_JOB" => Some(Self::ScheduleJob),
             "ORCHESTRATE" => Some(Self::Orchestrate),
+            "RETRY_TASK" => Some(Self::RetryTask),
             "LIST_TOOLS" => Some(Self::ListTools),
             "REGISTER_TOOL" => Some(Self::RegisterTool),
             "TOOL_INFO" => Some(Self::ToolInfo),
@@ -302,7 +312,9 @@ impl OpCode {
             Self::Checkpoint => "CHECKPOINT",
             Self::Restore => "RESTORE",
             Self::ResumeSession => "RESUME_SESSION",
+            Self::ScheduleJob => "SCHEDULE_JOB",
             Self::Orchestrate => "ORCHESTRATE",
+            Self::RetryTask => "RETRY_TASK",
             Self::ListTools => "LIST_TOOLS",
             Self::RegisterTool => "REGISTER_TOOL",
             Self::ToolInfo => "TOOL_INFO",

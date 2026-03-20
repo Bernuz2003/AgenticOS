@@ -6,6 +6,7 @@ use crate::checkpoint::{
 use crate::model_catalog::ModelCatalog;
 use crate::process::{ContextPolicy, ContextState, ContextStrategy};
 use crate::scheduler::ProcessScheduler;
+use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -46,6 +47,8 @@ fn apply_restore_snapshot_clears_existing_scheduler_state() {
         processes: vec![ProcessSnapshot {
             pid: 7,
             owner_id: 1,
+            tool_caller: ToolCaller::AgentText,
+            permission_policy: test_permissions(),
             state: "Orphaned".to_string(),
             token_count: 0,
             max_tokens: 256,
@@ -106,6 +109,15 @@ fn apply_restore_snapshot_clears_existing_scheduler_state() {
     assert_eq!(restored.context_state.tokens_used, 12);
 
     let _ = fs::remove_dir_all(base);
+}
+
+fn test_permissions() -> ProcessPermissionPolicy {
+    ProcessPermissionPolicy {
+        trust_scope: ProcessTrustScope::InteractiveChat,
+        actions_allowed: false,
+        allowed_tools: Vec::new(),
+        path_scopes: vec![".".to_string()],
+    }
 }
 
 fn mk_temp_dir(prefix: &str) -> PathBuf {

@@ -13,7 +13,7 @@ use crate::model_catalog::{RemoteModelEntry, ResolvedModelTarget, WorkloadClass}
 use crate::process::ProcessLifecyclePolicy;
 use crate::prompting::PromptFamily;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokenizers::models::wordlevel::WordLevel;
@@ -102,6 +102,7 @@ fn remote_stateless_processes_skip_resident_slot_binding() {
             system_prompt: None,
             owner_id: 7,
             tool_caller: ToolCaller::AgentText,
+            permission_policy: Some(test_permissions()),
             workload: WorkloadClass::Fast,
             required_backend_class: Some(BackendClass::RemoteStateless),
             priority: ProcessPriority::Normal,
@@ -161,6 +162,7 @@ fn remote_stateless_engine_rejects_resident_local_task_policy() {
             system_prompt: None,
             owner_id: 7,
             tool_caller: ToolCaller::AgentText,
+            permission_policy: Some(test_permissions()),
             workload: WorkloadClass::Code,
             required_backend_class: Some(BackendClass::ResidentLocal),
             priority: ProcessPriority::Normal,
@@ -203,6 +205,7 @@ fn resident_local_engine_rejects_remote_stateless_task_policy() {
             system_prompt: None,
             owner_id: 7,
             tool_caller: ToolCaller::AgentText,
+            permission_policy: Some(test_permissions()),
             workload: WorkloadClass::Fast,
             required_backend_class: Some(BackendClass::RemoteStateless),
             priority: ProcessPriority::Normal,
@@ -256,6 +259,7 @@ fn spawn_managed_process_injects_system_prompt_without_losing_user_prompt() {
             system_prompt: Some("kernel policy".to_string()),
             owner_id: 7,
             tool_caller: ToolCaller::AgentText,
+            permission_policy: Some(test_permissions()),
             workload: WorkloadClass::Fast,
             required_backend_class: Some(BackendClass::RemoteStateless),
             priority: ProcessPriority::Normal,
@@ -311,6 +315,7 @@ fn restored_managed_process_starts_waiting_for_input_with_persisted_prompt_cache
             rendered_prompt: "system\nuser hello\nassistant world".to_string(),
             owner_id: 7,
             tool_caller: ToolCaller::AgentText,
+            permission_policy: Some(test_permissions()),
             workload: WorkloadClass::General,
             required_backend_class: Some(BackendClass::RemoteStateless),
             priority: ProcessPriority::Normal,
@@ -328,4 +333,13 @@ fn restored_managed_process_starts_waiting_for_input_with_persisted_prompt_cache
     assert_eq!(process.state, crate::process::ProcessState::WaitingForInput);
     assert!(process.prompt_text().contains("user hello"));
     assert!(process.prompt_text().contains("assistant world"));
+}
+
+fn test_permissions() -> ProcessPermissionPolicy {
+    ProcessPermissionPolicy {
+        trust_scope: ProcessTrustScope::InteractiveChat,
+        actions_allowed: false,
+        allowed_tools: Vec::new(),
+        path_scopes: vec![".".to_string()],
+    }
 }

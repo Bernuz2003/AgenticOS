@@ -1,312 +1,425 @@
-# AgenticOS — Roadmap Operativa (Compattata)
 
-Questa roadmap e' la fonte unica di verita' per il piano corrente.
-Il dettaglio storico fine-grained vive nella git history e nei documenti di critica (`CRITICITY_TO_FIX.md`).
+## M34) Orchestrazione come feature di primo livello
 
-## Regole di mantenimento
-
-- Tenere qui solo: stato corrente, decisioni architetturali attive, milestone in corso/prossime, archivio sintetico.
-- Evitare log narrativi lunghi per milestone concluse.
-- Aggiornare ogni milestone con stati `TODO` -> `IN_PROGRESS` -> `DONE`.
-- Ogni milestone deve avere DoD verificabile e validazione esplicita.
-
----
-
-## Snapshot corrente
-
-- Data snapshot: 2026-03-10
-- Versione progetto: `v0.5.0`
-- Runtime: TCP event-driven (`mio`) + inference worker + kernel process-centric
-- Focus prodotto: AI workstation OS local-first, single-node
-- Test Rust: `cargo test` verde (`166 passed, 0 failed, 1 ignored`)
-- Qualita': clippy verde con `-D warnings` nell'ultima validazione M28/M29
-- GUI: `Agent Workspace` (Tauri) come workspace primario; PySide6 in fallback diagnostico `deprecated`
-- Cloud onboarding Fase 6 estesa: oltre a `openai-responses`, il kernel supporta ora `groq-responses` e `openrouter` tramite runtime remoto OpenAI-compatible condiviso; resta aperto solo il routing orchestrator backend-aware.
-- Config hardening in corso: bootstrap layered su `config/kernel` + `config/env` per separare file pubblici versionabili e segreti locali push-safe.
-
----
-
-## Decisioni architetturali attive
-
-1. Il framing TCP locale resta invariato; evoluzione su payload/contratti machine-readable.
-2. `RESTORE` resta metadata-only: non promette live process restore/KV cache restore.
-3. Tooling: registry dinamico + policy esplicite; no hardcode crescente nel syscall plane.
-4. Context management: policy per processo, osservabile via `STATUS`, integrata con orchestration.
-5. Scope breve termine: robustezza kernel locale e control plane; no salto immediato a distributed/Tokio migration totale.
-
----
-
-## Roadmap attiva
-
-### M28) Tool registry dinamico
-**Status:** `DONE` (con hardening incrementale)
-
-**Obiettivo**
-- Registry tool dinamico e tipizzato, con discovery/control-plane JSON e dispatch syscall canonico.
-
-**Completato**
-- `ToolDescriptor` + `ToolBackendConfig` + `ToolRegistry` in-memory con bootstrap built-in.
-- OpCodes: `REGISTER_TOOL`, `UNREGISTER_TOOL`, `LIST_TOOLS`, `TOOL_INFO`.
-- Invocazione canonica separata per piani distinti: `TOOL:<name> <json-object>` per il tool plane e `ACTION:<name> <json-object>` per il runtime/process-control plane.
-- Manifest dinamico tool/action derivato dal registry reale e usato nel bootstrap dei nuovi agenti.
-- Path structured interno parallelo al parser testuale, convergente sulla stessa `ToolInvocation` e sullo stesso dispatcher.
-- Backend `remote_http` con policy di sicurezza (allowlist, timeout, payload/header checks).
-- Integrazione GUI completa (list/info/register/unregister) + test parser/client.
-- Validazione: `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, test Python GUI.
-
-**Hardening residuo (non bloccante)**
-- Formalizzare ulteriormente policy per permessi/scope per processo (integrazione con scheduler/orchestration).
-- Rafforzare governance compatibilita' semantica per endpoint legacy dove serve.
-
----
-
-### M29) Context window management
 **Status:** `DONE`
 
-**Obiettivo**
-- Rendere la gestione contesto per PID una capability strutturale del process model (non un accessorio di `EXEC`).
+### Obiettivo
 
-**Completato**
-- Process model esteso con `ContextStrategy`, `ContextPolicy`, `ContextState`, `ContextSegment`.
-- Hint additive in `EXEC` (`context_strategy`, `context_window`, `context_trigger`, `context_target`).
-- `sliding_window` con enforcement pre-step e reset coerente del context slot backend.
-- `summarize` come compaction event non bloccante.
-- `retrieve` pragmatico con store episodico serializzabile e hit accounting.
-- Override espliciti della context policy nei task `ORCHESTRATE` JSON, propagati fino agli spawn request runtime.
-- Ranking retrieval evoluto a ibrido lessicale+recency; non e' ancora semantic retrieval pieno, ma non e' piu' FIFO puro.
-- Campi context additive in `STATUS` globale/per-PID/per-orchestration.
-- Schema control-plane e GUI Orchestration aggiornati per mostrare policy context e snapshot dei task running.
-- Checkpoint/restore metadata-only estesi per policy e stato context.
+Trasformare l’orchestrazione da meccanismo backend già esistente a capability esplicita del prodotto.
 
-**Chiusura milestone**
-- Test long-running multi-turn aggiunti sul process model per `sliding_window`, `summarize` e `retrieve`, con verifica di bound, compaction e osservabilita'.
-- `ARCHITECTURE.md` e `gui/README.md` riallineati ai nuovi contratti di context policy per `EXEC`/`ORCHESTRATE` e allo snapshot context in `STATUS orch:`.
+### Cosa vogliamo ottenere
 
-**Validazione di chiusura**
-- `cargo test`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `python3 -m compileall gui`
+* separazione netta tra:
+
+  * `New Chat`
+  * `New Workflow`
+* avvio workflow dal control-plane, non da `ACTION:spawn` dentro una chat normale
+* workflow/task graph come entità di primo livello
+* possibilità di definire task con:
+
+  * ruolo
+  * prompt
+  * dipendenze
+  * workload
+  * runtime target
+  * policy context
+* monitoraggio chiaro di task, dipendenze e stato
+
+### Perché è prioritario
+
+Perché il backend ha già il motore di orchestrazione, ma non lo esprime ancora come feature vera.
+Finché non emerge questo livello, AgenticOS continuerà a sembrare soprattutto una chat evoluta.
+
+### DoD
+
+* [x] workflow mode distinto dalla chat normale
+* [x] avvio orchestrazione esplicito dal control-plane
+* [x] monitor UI dei task di workflow
+* [x] niente esposizione impropria di orchestrazione nella chat base
 
 ---
 
-## Prossimi task candidati (post M29)
+## M30) Process-scoped Tool Permissions & Supervisor Boundaries
 
-### M33) Agent Workspace (Tauri GUI Rewrite)
 **Status:** `DONE`
 
-**Perche'**
-- La GUI PySide6 attuale resta utile come fallback diagnostico, ma non e' piu' adeguata come workspace primario per osservabilita' agentica, sessioni e workflow inspection.
+### Obiettivo
 
-**Target**
-- Nuova app desktop Tauri con frontend web moderno (`React + TypeScript + Tailwind`) e backend Rust come bridge TCP autenticato verso il kernel.
-- UX a due livelli: `Lobby` sessioni/agenti a card + `Workspace` con timeline interattiva e `Mind Panel` telemetrico.
-- Event model tipizzato nel bridge desktop, senza dipendere da parsing fragile del testo raw del kernel.
-- Deprecazione progressiva della GUI PySide6 solo dopo parita' minima verificata.
+Introdurre una vera governabilità per processo/task su tool e action.
 
-**Slice completata**
-- Estratta la crate condivisa `crates/agentic-protocol` e primo riuso kernel-side di header/opcode/envelope/schema.
-- Scaffold iniziale creato in `apps/agent-workspace/` con shell Tauri, frontend `React + TypeScript + Tailwind`, routing `Lobby -> Workspace` e component skeleton non-demo.
-- Bridge Tauri evoluto da placeholder a client TCP persistente per `AUTH`/`HELLO`/`STATUS`, con primo snapshot Lobby agganciato ai dati reali del kernel (`active_processes`).
-- Workspace agganciata a `STATUS <pid>` per il `Mind Panel`, con polling live di budget contesto, strategy, compressions e retrieval hits.
-- CTA `Nuova sessione` collegata a `EXEC` reale via bridge Tauri, con apertura immediata della Workspace sul PID appena creato.
-- Timeline Workspace alimentata da stream `EXEC` reale per le sessioni avviate dalla nuova GUI, con buffer eventi per PID (`user_message`, chunk assistant, `PROCESS_FINISHED`).
-- Strategia di fallback introdotta per PID nati fuori dal bridge Tauri: la Workspace sintetizza una timeline degradata da `STATUS <pid>` e audit events, marcata esplicitamente come fallback.
-- Timeline assistant rifinita con renderer Markdown e autoscroll coerente; `Mind Panel` aggiornato con audit events strutturati/human-readable e feedback visuale per compaction.
-- Timeline live ora normalizza anche i marker runtime gia' esistenti per `thinking` (`<think>...</think>`) e `tool_call` (`[[...]]`), senza estendere ancora il protocollo del kernel.
-- Timeline arricchita con eventi `tool_result` di prima classe derivati dall'audit log per PID.
-- `STATUS` globale esteso con indice delle orchestration attive e payload per-PID estesi con metadata orchestration/task.
-- Lobby e Workspace rese orchestration-aware: aggregati live in Lobby e dettaglio task/policy in Workspace per PID orchestrati.
-- Validazione desktop Tauri completata con `npm exec tauri build -- --debug` dopo installazione librerie Linux richieste.
+### Cosa vogliamo ottenere
 
-**Chiusura milestone**
-- `Agent Workspace` e' ora la GUI desktop primaria del progetto.
-- PySide6 resta disponibile ma viene mantenuta come fallback diagnostico `deprecated` fino a un ulteriore ciclo operativo sul campo.
-- Resta fuori scope M33 una capability protocollo/kernel di attach o replay su stream `EXEC` gia' esistenti; il fallback `STATUS <pid>` resta il comportamento ufficiale per PID esterni al bridge.
+* allowlist tool per PID / task / orchestration
+* path scope e trust scope per processo
+* distinzione forte tra:
 
-### M30) Process-scoped Tool Permissions
+  * agente interattivo normale
+  * supervisore/orchestratore
+  * caller programmatici / control-plane
+* `ACTION:spawn/send` non disponibili ai normali agenti chat
+* inheritance pulita:
+
+  * default kernel
+  * default orchestrazione
+  * override task
+
+### Perché è prioritario
+
+Perché senza permessi per processo non puoi esporre seriamente orchestrazione, agenti pro-attivi e tool più forti.
+
+### DoD
+
+* [x] enforcement runtime uniforme
+* [x] policy osservabile via STATUS / GUI
+* [x] no orchestrazione spontanea da chat normale
+* [x] audit coerente dei deny / allow
+
+---
+
+## M35) Artifacts & Structured Task I/O
+
+**Status:** `DONE`
+
+### Obiettivo
+
+Rendere gli output dei task entità strutturate e passabili tra task/agenti.
+
+### Cosa vogliamo ottenere
+
+* output strutturato per task
+* artifact store locale/persistito
+* edges del workflow che passano artifacts, non solo messaggi liberi
+* input/output task leggibili, persistiti e osservabili
+* base per retry, replay parziale e debugging serio
+
+### Perché è prioritario
+
+Perché l’orchestrazione senza artifacts rischia di dipendere troppo da messaggi opachi tra processi.
+Gli artifacts sono il vero collante di workflow robusti.
+
+### DoD
+
+* [x] task output strutturato persistito
+* [x] artifacts visibili nella GUI
+* [x] passaggio artifacts tra task supportato dal runtime
+* [x] retry di task senza perdere output precedenti
+
+---
+
+## M36) Scheduler di sistema & Proactive Agents
+
+**Status:** `DONE`
+
+### Obiettivo
+
+Introdurre job persistiti e agenti/workflow che si attivano da soli nel tempo.
+
+### Cosa vogliamo ottenere
+
+* scheduler persistente con trigger:
+
+  * at time
+  * interval
+  * cron-like
+* workflow schedulabili come background jobs
+* stato persistito del job
+* retry / backoff / timeout
+* wake-up di processi o workflow senza intervento umano
+* base per agenti demone locali
+
+### Perché è prioritario
+
+Perché è il passo che trasforma AgenticOS da runtime reattivo a sistema davvero autonomo.
+
+### DoD
+
+* [x] job scheduler persistito
+* [x] workflow lanciabile da trigger temporale
+* [x] stato job osservabile in GUI
+* [x] retry/backoff/timeout per job
+
+---
+
+## M37) Control Center & Deep Observability
+
+**Status:** `DONE`
+
+### Obiettivo
+
+Fare della GUI un vero centro di controllo del runtime.
+
+### Cosa vogliamo ottenere
+
+* vista chiara di:
+
+  * stato processi
+  * task workflow
+  * runtime/backend/model
+  * queue/in-flight
+  * tool calls
+  * request remote
+  * timeout / retry
+  * artifacts
+* timeline chat pulita
+* pannello tecnico separato per:
+
+  * tool execution
+  * runtime events
+  * diagnostics
+  * errors
+* monitor dell’albero dei processi / workflow execution
+
+### Perché è prioritario
+
+Perché orchestrazione e proactive agents senza osservabilità trasformano il sistema in una black box ingestibile.
+
+### DoD
+
+* [x] chat separata da pannello tecnico
+* [x] runtime state non ambiguo in GUI
+* [x] workflow monitor leggibile
+* [x] debugging remoto e tool plane osservabile
+
+---
+
+## M31) Protocol Contracts v2 & Workflow Control API
+
 **Status:** `TODO`
 
-**Perche'**
-- Il registry da solo offre estensibilita'; serve governabilita' per PID/orchestrazione.
+### Obiettivo
 
-**Target**
-- Policy per processo/task su: tool allowlist, path scope, timeout, budget syscall/costo, livello trust.
-- Enforcement runtime uniforme + audit coerente.
-- Inheritance policy: kernel default -> orchestration default -> task override.
+Rendere i contratti control-plane più stabili e adatti a workflow/scheduler/artifacts.
+
+### Cosa vogliamo ottenere
+
+* envelope/versioning più espliciti
+* schema JSON stabili per:
+
+  * workflow definition
+  * workflow status
+  * artifacts
+  * scheduler jobs
+  * runtime diagnostics
+* capability negotiation coerente
+* base per futuri gateway esterni / API di integrazione
+
+### Perché è importante
+
+Perché quando workflow e scheduler diventano di primo livello, il protocollo deve rifletterli in modo pulito e machine-readable.
+
+### DoD
+
+* [ ] schema stabili per orchestration/scheduler/artifacts
+* [ ] control-plane coerente con le nuove entità
+* [ ] additive-first evolution policy documentata
 
 ---
 
-### M31) Protocol Contracts v2 (negoziabili)
+## M32) Episodic Memory & Semantic Retrieval
+
 **Status:** `TODO`
 
-**Target**
-- Envelope versionato e capability negotiation esplicita.
-- Schema JSON stabili per tutti gli endpoint control-plane (status/diag/tools/orchestration/backend).
-- Strategia additive-first + compat policy documentata.
+### Obiettivo
+
+Passare dal retrieval pragmatico attuale a una memoria episodica semanticamente utile.
+
+### Cosa vogliamo ottenere
+
+* retrieval semantico locale
+* ranking migliore del contesto richiamato
+* controllo costo/latenza
+* memory relevance misurabile
+* integrazione con workflow e agenti pro-attivi
+
+### Perché viene dopo
+
+Perché è importante, ma prima bisogna far emergere bene orchestrazione, artifacts e scheduler.
+La memoria semantica diventa molto più utile quando il sistema esegue workload autonomi complessi e persistenti.
+
+### DoD
+
+* [ ] retrieval semantico integrato
+* [ ] metriche utili su qualità retrieval
+* [ ] cost controls / latency controls
+* [ ] visibilità in STATUS / GUI
 
 ---
 
-### M32) Episodic Memory & Semantic Retrieval
+## M38) Human-in-the-Loop nativo
+
 **Status:** `TODO`
 
-**Target**
-- Evolvere il retrieval M29 da recency-based a semantico (ranking migliore, quality guardrail, cost controls).
-- Misure osservabili in `STATUS` per precisione/recall operativa e impatto su latenza.
+### Obiettivo
+
+Integrare punti di sospensione/approvazione umana nel runtime.
+
+### Cosa vogliamo ottenere
+
+* syscall/tool di tipo `ask_human`
+* processo che si sospende senza consumare risorse inutilmente
+* ripresa del workflow su risposta umana
+* supporto nativo a approval steps nei workflow
+
+### Perché è molto importante
+
+Perché rende AgenticOS adatto a task reali con autonomia governata.
+
+### DoD
+
+* [ ] wait state HITL supportato nel kernel
+* [ ] notifica/risposta dalla GUI
+* [ ] ripresa pulita del processo/workflow
+* [ ] approvazioni integrabili nei workflow
 
 ---
 
-## Archivio milestone completate (sintesi)
+# Kill-features candidate (post-core)
 
-| Fase | Milestone | Stato | Output principale |
-|---|---|---|---|
-| Foundation | M1-M12 | DONE | Stabilita' runtime/protocollo, scheduler, memory, GUI base, hardening architetturale |
-| Consolidamento | M13-M17 | DONE | Swap extraction, checkpoint/restore metadata-only, orchestrator DAG, benchmark+OOM fix |
-| GUI Redesign | M10.1-M10.2 | DONE | Sidebar+sezioni dedicate, copertura completa opcode control-plane |
-| Criticita' | C1-C21 | DONE | Chiusura criticita' alte/medie: concorrenza, protocol/GUI drift, bound orchestrazione, trust operatore |
-| Workstation hardening | M18-M20 | DONE | Contratti coerenti, GUI fidelity, context discipline su orchestration |
-| Future-model flexibility | M21-M25 | DONE | Backend abstraction, metadata runtime-first, capability routing v2, pilot Qwen3.5 |
-| Microkernel boundary | M26-M27 | DONE | Context slots astratti + driver RPC esterno `llama.cpp` + backend diagnostics |
+## M39) Workflow Templates Library
 
-Note: il dettaglio completo delle sub-task concluse e' mantenuto nella cronologia git e nei documenti di review/criticita'.
+**Status:** `TODO`
 
----
+### Obiettivo
 
-## Stato validazione (ultimo giro)
+Rendere l’orchestrazione usabile subito senza richiedere all’utente di progettare DAG da zero.
 
-- Rust tests: verdi (`166 passed, 0 failed, 1 ignored`)
-- Clippy: verde (`-D warnings` su all-targets/all-features)
-- Frontend Tauri: `cd apps/agent-workspace && npm run build` verde
-- Desktop Tauri: `cd apps/agent-workspace && npm exec tauri build -- --debug` verde
-- GUI Python: `python3 -m compileall gui` verde nell'ultimo passaggio M29
+### Esempi
+
+* planner → worker → reviewer
+* research pipeline
+* multi-model compare
+* codebase analyst
+* summarize a directory/project
+
+### Perché è una kill-feature
+
+Perché rende immediatamente sfruttabile il motore di orchestrazione e abbassa enormemente la soglia d’ingresso.
 
 ---
 
-## Aggiornamento operativo 2026-03-17
+## M40) IPC evoluto / Message Bus tipizzato
 
-- Refactor affidabilita'/osservabilita' runtime+GUI completato sul workspace Tauri e kernel control-plane:
-	- tracciamento tool reso deterministico con `tool_call_id` end-to-end (dispatch/completion/failure) e timeline Tauri agganciata ad audit persistito di sessione;
-	- stati runtime resi piu' espliciti in UI (`runtime_state` esposto in Lobby/Workspace, incluso `AwaitingRemoteResponse`);
-	- osservabilita' remote path ampliata con audit dedicato `remote.request_started|completed|failed` e `duration_ms` su accounting event;
-	- semantica `delete session` riallineata a `terminate + remove` (tentativo TERM/KILL live PID, purge live timeline, delete persistito);
-	- system prompt globale rafforzato contro tool-use superfluo (nessuna policy differenziata per backend/modello).
+**Status:** `TODO`
 
-- Validazione eseguita:
-	- `cargo test` verde.
-	- `cd apps/agent-workspace && npm run build` verde.
-	- `cd apps/agent-workspace && npm exec tauri build -- --debug` verde.
-	- `cargo clippy --all-targets --all-features -- -D warnings` non verde per issue preesistenti fuori scope slice + warning dead-code nel modulo legacy `apps/agent-workspace/src-tauri/src/kernel/audit.rs`.
+### Obiettivo
 
-- Hotfix regressione `delete_session` (single-source-of-truth alignment):
-	- root cause: il path Tauri `delete_session` deduceva il PID da `fetch_lobby_snapshot()` (view ibrida live+persisted) usando anche `last_pid` storico;
-	- effetto: tentativi `TERM/KILL` su PID non piu live -> errore `NO_MODEL`/`TERM_KILL_FAILED` in UI;
-	- fix: `delete_session` ora consulta solo il live state kernel (`STATUS.active_processes`) per decidere terminate;
-	- guard race-safe: se tra check e terminate il processo e gia uscito, `NO_MODEL`/`PID_NOT_FOUND` viene trattato come terminal state gia raggiunto;
-	- SQLite resta la verita persistita per la cancellazione storica (`history_db::delete_session` invariato).
+Evolvere la semplice `ACTION:send` in un meccanismo di comunicazione più robusto e tracciabile.
 
-- Validazione hotfix regressione:
-	- `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`).
-	- `cd apps/agent-workspace/src-tauri && cargo test` verde (`22 passed, 0 failed`).
+### Cosa vogliamo ottenere
 
-## Aggiornamento operativo 2026-03-18
+* mailbox o canali tipizzati
+* passaggio strutturato di messaggi/eventi tra agenti
+* tracciamento dei flussi di comunicazione
+* integrazione con workflow e task outputs
 
-- Avviato refactor strutturale runtime/remote/sync con completamento della **Fase A (Discovery + mappatura)**.
-- Deliverable prodotto: `docs/runtime_refactor_phaseA_discovery_2026-03-18.md` con:
-	- evidenza del loop attuale basato su polling fisso (`poll_timeout_ms`, default 5ms) e assenza di wakeup esplicito worker->event-loop;
-	- evidenza del path remoto attuale con lettura stream aggregata prima della propagazione runtime chunk;
-	- classificazione formale source-of-truth: kernel in-memory (live) + SQLite (persisted), con cache/view/debug derivati;
-	- mappa duplicazioni/merge fragili nel bridge Tauri (timeline/live/persisted/audit) e lista file target per Fasi B/C/D/E.
-- Stato piano operativo: Fase A marcata completata in `docs/runtime_refactor_coerente_plan_2026-03-18.md`.
+### Perché viene dopo artifacts
 
-- **Fase B (event loop deadline-driven + wakeup esplicito)** completata su kernel runtime:
-	- introdotto planner esplicito delle deadline (`remote_timeout`, `syscall_timeout`, `retry_backoff`, `maintenance_cleanup`, `scheduled_work`, `checkpoint`) con modulo dedicato `crates/agentic-kernel/src/runtime/deadlines.rs`;
-	- loop kernel refactorato da timeout fisso a timeout calcolato per `poll` in funzione della prossima deadline reale + heartbeat fallback lento;
-	- introdotto wakeup esplicito worker->event-loop via `mio::Waker` (inference worker + syscall worker), eliminando la dipendenza dal tick fisso per il processamento dei risultati pronti;
-	- aggiunta osservabilita minima del motivo wakeup (`network`, `worker`, `deadline`, `heartbeat_fallback`) con contatori per eventi tick processati;
-	- introdotto timeout handling esplicito per syscall wait e reporting controlled per remote timeout in-flight (senza spin loop).
-
-- Validazione Fase B:
-	- `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`).
-
-- **Fase C (streaming remoto progressivo reale)** completata su backend/runtime path:
-	- introdotto `stream_observer` nel contratto di inferenza (`InferenceStepRequest`) per propagare chunk incrementali durante lo step;
-	- backend remoto OpenAI-compatible rifattorizzato da decode buffer-first a decode incrementale per read-chunk, con emissione live dei delta mentre lo stream e ancora aperto;
-	- inference worker aggiornato con evento intermedio `InferenceResult::StreamChunk` (con flag first-chunk) e deduplicazione del testo finale per separare nettamente partial stream vs completion finale;
-	- runtime aggiornato per inoltro immediato chunk a client owner + `KernelEvent::TimelineChunk`, mantenendo separato l evento finale di completamento (`InferenceResult::Token` -> lifecycle esistente);
-	- telemetria remota minima completata: `request_started`, `first_chunk_received`, `request_completed`/`request_failed`, `duration_ms`.
-	- cleanup tecnico effettuato: rimosso path legacy `run_step` nel worker in favore di pipeline unica streaming-aware.
-
-- Validazione Fase C:
-	- `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`).
-	- Verifica UX live workspace confermata (streaming progressivo reale end-to-end).
-
-- **Fase D (sync rigoroso live vs persisted)** avviata con primo slice strutturale su bridge Tauri:
-	- `fetch_workspace_snapshot(session_id, pid=None)` portata in modalita live-first: risoluzione preventiva PID live da `STATUS.active_processes` e fetch diretto snapshot live prima di qualsiasi fallback SQLite;
-	- rimosso merge live+persisted nel path `KernelBridge::fetch_workspace_snapshot(pid)`: lo snapshot live non viene piu arricchito con campi storici potenzialmente stantii;
-	- introdotta regola anti-overwrite per audit: eventi audit persisted usati solo come fallback se il live snapshot non ha audit, evitando sostituzioni non deterministiche del tracciato live;
-	- timeline live (`source=live_exec`) resa autoritativa sia nel command `fetch_timeline_snapshot` sia nel bridge eventi: niente augment ex-post da audit SQLite durante stream attivo.
-
-- Validazione slice Fase D:
-	- `cargo test -p agent-workspace` verde (`22 passed, 0 failed`).
-
-- **Fase D (slice 2: D1 + D3 + D5)** consolidata su bridge/workspace sync:
-	- naming/ruoli esplicitati nel modulo kernel Tauri con alias semantici: `persisted_truth` (SQLite storico), `live_cache` (timeline live in-memory), `debug_audit` (debug-only);
-	- guard anti-contaminazione `session_id<->pid` introdotte nei fetch snapshot/timeline: i path live/fallback ora verificano coerenza di sessione prima di accettare snapshot runtime;
-	- recovery storico mantenuta deterministicamente su `persisted_truth` (SQLite) quando il live non e disponibile;
-	- `delete_session` resa definitiva per sessione logica: terminate di tutti i PID live associati alla sessione, delete persistito e purge cache timeline sia per PID sia per `session_id`.
-
-- Validazione slice 2 Fase D:
-	- `cargo test -p agent-workspace` verde (`22 passed, 0 failed`).
-
-- **Fase D chiusa** con completamento D6 e validazione consolidata:
-	- GUI resa trasparente sul runtime state: separazione esplicita `session status` vs `runtime state` nelle view Session/Workspace, senza mascherare stati runtime specifici;
-	- completata dedup/guard dei fetch live nel bridge con check sistematico `session_id<->pid` e fallback deterministici su SQLite storico;
-	- semantica delete session confermata atomica su sessione logica (terminate multi-PID live + purge cache + delete persistito).
-	- validazione finale: `cargo test -p agent-workspace` verde (`22 passed, 0 failed`), `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`), `cd apps/agent-workspace && npm run build` verde.
-
-- **Fase E avviata** (slice iniziale E1/E3/E5):
-	- deduplicata la logica di derivazione stato sessione nel frontend (`deriveSessionStatus`) e introdotti helper centralizzati per label/tone runtime;
-	- deduplicata nel bridge la logica di fetch live snapshot con helper riusabili, riducendo branching duplicato e mantenendo le invarianti della Fase D;
-	- migliorata leggibilita dei path principali con separazione semantica e minore complessita accidentale.
-
-- **Fase E completata** (slice finale E1/E2/E4/E6):
-	- rimosse euristiche fragili nel path persisted: niente inferenza PID da `session_id` (`pid-*`) in `history_db`; la risoluzione PID usa solo campi persistiti/hint espliciti;
-	- aggiunto test di regressione su store storico per impedire reintroduzione della derivazione PID da naming (`lobby_sessions_do_not_infer_pid_from_session_id_text`);
-	- ridotta duplicazione residua nel fallback session UI (`WorkspacePage`) con builder sintetico condiviso;
-	- ridotto stato temporaneo ridondante nello `workspace-store` (rimozione `activePid` interno non necessario e mantenimento di stato derivato invalidabile).
-
-- Validazione Fase E:
-	- `cargo test -p agent-workspace` verde (`23 passed, 0 failed`).
-	- `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`).
-	- `npm run build` (`apps/agent-workspace`) verde.
-	- `cargo clippy --all-targets --all-features -- -D warnings` eseguito: non verde per issue preesistenti e trasversali fuori scope dello slice (es. `needless_borrow` in `commands/model.rs`, `too_many_arguments` in moduli storici, doc-style lint, alcuni `collapsible_if`).
-
-- **Fase F completata** (hardening finale + quality gate):
-	- risolti warning/lint clippy nel kernel su path core e test (`collapsible_if`, `needless_borrow`, `derivable_impls`, `ptr_arg`, `bool_assert_comparison`, `let_and_return`, `type_complexity`) e applicate annotazioni mirate `#[allow(clippy::too_many_arguments)]` sulle API intenzionalmente aggregate;
-	- aggiornato il piano operativo `docs/runtime_refactor_coerente_plan_2026-03-18.md` marcando F1/F2/F3/F4, DoD e criteri globali come completati;
-	- mantenuta la nota governance: `CRITICITY_TO_FIX.md` attualmente assente nel repository, quindi nessun aggiornamento file-specifico possibile.
-
-- Validazione Fase F:
-	- `cargo clippy -p agentic-kernel --all-targets -- -D warnings` verde.
-	- `cargo test -p agentic-kernel` verde (`264 passed, 0 failed, 1 ignored`).
-	- `cargo test -p agent-workspace` verde (`23 passed, 0 failed`).
-	- `cd apps/agent-workspace && npm run build` verde.
+Perché prima vogliamo una base artifact-first; l’IPC avanzato va aggiunto solo dopo.
 
 ---
 
-## Template aggiornamento milestone
+## M41) Hybrid Local/Cloud Orchestration
 
-```md
-### MX) Titolo
-**Status:** `TODO|IN_PROGRESS|DONE`
+**Status:** `TODO`
 
-**Obiettivo**
-- ...
+### Obiettivo
 
-**DoD**
-- [ ] ...
-- [ ] ...
+Sfruttare pienamente il routing multi-runtime già presente per orchestrare task su backend diversi.
 
-**Validazione**
-- test/command: ...
-- evidenze: ...
-```
+### Cosa vogliamo ottenere
+
+* planner locale + heavy reasoner cloud + finalizer locale
+* policy runtime-aware per task graph
+* ottimizzazione costi/latenza/qualità tra backend diversi
+
+### Perché è una kill-feature
+
+Perché trasforma AgenticOS in un vero sistema operativo per workload AI eterogenei, non in un semplice frontend multi-provider.
+
+---
+
+## M42) Browser / Computer Use sicuro
+
+**Status:** `TODO`
+
+### Obiettivo
+
+Introdurre tool di navigazione/interazione web come capability di primo livello, in sandbox.
+
+### Cosa vogliamo ottenere
+
+* browser automation isolata
+* interazione con pagine/form
+* scraping visivo/strutturato
+* governance forte di sicurezza
+
+### Perché è una kill-feature
+
+Perché apre il sistema al “mondo reale”, ma solo dopo che tool permissions, HITL e observability sono mature.
+
+---
+
+## M43) Visual Workflow Builder
+
+**Status:** `TODO`
+
+### Obiettivo
+
+Costruire una UI visuale per comporre workflow e inspectare execution graph.
+
+### Perché viene tardi
+
+Perché prima bisogna stabilizzare:
+
+* workflow model
+* artifacts
+* scheduler
+* control-plane
+* observability
+
+Il visual builder ha senso solo sopra primitive già solide.
+
+---
+
+# Ordine di implementazione consigliato
+
+## Priorità immediata
+
+1. **M34 — Orchestrazione come feature di primo livello**
+2. **M30 — Process-scoped permissions / supervisor boundaries**
+3. **M35 — Artifacts & structured task I/O**
+4. **M37 — Control Center & deep observability**
+
+## Subito dopo
+
+5. **M36 — Scheduler & proactive agents**
+6. **M31 — Protocol Contracts v2**
+7. **M32 — Semantic episodic memory**
+8. **M38 — Human-in-the-loop**
+
+## Kill-features successive
+
+9. **M39 — Workflow templates**
+10. **M40 — IPC evoluto**
+11. **M41 — Hybrid local/cloud orchestration**
+12. **M42 — Browser / computer use**
+13. **M43 — Visual workflow builder**
+
+---
+
+# Perché questa è la sequenza giusta
+
+Perché prima dobbiamo:
+
+* esporre davvero l’orchestrazione,
+* metterle i confini giusti,
+* dare struttura agli output,
+* osservare bene cosa succede,
+* solo dopo schedulare agenti autonomi,
+* e solo in un secondo tempo costruire le grandi killer features sopra una base già governabile.
+
+Se vuoi, nel prossimo messaggio posso trasformare questa proposta in una **versione ancora più pronta da incollare nella ROADMAP**, con stile coerente al file attuale (`Status`, `Obiettivo`, `DoD`, `Validazione`).
+
+
+> Tutte le milestone future dovranno essere implementate con il massimo rigore ingegneristico, rispettando sistematicamente le best practice di sviluppo software: pulizia architetturale, responsabilità ben separate, moduli piccoli e coesi, interfacce esplicite, error handling chiaro, niente duplicazioni inutili e niente complessità accidentale.
+> La progettazione e l’implementazione dovranno mantenere il sistema il più semplice possibile rispetto agli obiettivi reali, introducendo nuovi file e moduli quando serve a separare correttamente la logica, evitando monoliti, scorciatoie fragili e accoppiamenti inutili.

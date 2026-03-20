@@ -37,6 +37,7 @@ export function MindPanel({
   const runtimeState = snapshot?.state ?? session.runtimeState ?? null;
   const runtimeLabel = snapshot?.runtimeLabel ?? session.runtimeLabel ?? "unbound";
   const ownerId = snapshot?.ownerId ?? null;
+  const toolCaller = snapshot?.toolCaller ?? null;
   const indexPos = snapshot?.indexPos ?? null;
   const priority = snapshot?.priority ?? null;
   const quotaTokens = snapshot?.quotaTokens ?? null;
@@ -45,6 +46,7 @@ export function MindPanel({
   const residentSlotState = snapshot?.residentSlotState ?? "unbound";
   const residentKv = snapshot?.backendCapabilities?.residentKv ?? false;
   const accounting = snapshot?.accounting ?? null;
+  const permissions = snapshot?.permissions ?? null;
   const auditEvents = [...(snapshot?.auditEvents ?? [])].sort(
     (left, right) => right.recordedAtMs - left.recordedAtMs,
   );
@@ -196,6 +198,50 @@ export function MindPanel({
           <div>
             <span className="block text-slate-500 mb-0.5">Backend</span>
             <span className="font-medium text-slate-900">{backendClass}</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-2xl bg-white border border-slate-200 p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              Process Permissions
+            </div>
+            <div className="text-sm font-semibold text-slate-900 mt-1">
+              {permissions?.trustScope ?? "unknown"}
+            </div>
+          </div>
+          <span
+            className={`rounded-full border px-3 py-1 text-[11px] font-bold ${
+              permissions?.actionsAllowed
+                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                : "border-slate-200 bg-slate-50 text-slate-600"
+            }`}
+          >
+            {permissions?.actionsAllowed ? "Actions enabled" : "Actions blocked"}
+          </span>
+        </div>
+        <div className="grid grid-cols-1 gap-3 text-xs">
+          <div>
+            <span className="block text-slate-500 mb-0.5">Caller</span>
+            <span className="font-medium text-slate-900">{formatValue(toolCaller)}</span>
+          </div>
+          <div>
+            <span className="block text-slate-500 mb-0.5">Path Scopes</span>
+            <span className="font-medium text-slate-900">
+              {permissions && permissions.pathScopes.length > 0
+                ? permissions.pathScopes.join(", ")
+                : "none"}
+            </span>
+          </div>
+          <div>
+            <span className="block text-slate-500 mb-0.5">Allowed Tools</span>
+            <span className="font-medium text-slate-900">
+              {permissions && permissions.allowedTools.length > 0
+                ? permissions.allowedTools.join(", ")
+                : "none"}
+            </span>
           </div>
         </div>
       </section>

@@ -228,6 +228,8 @@ fn apply_restore_snapshot(
             process.pid,
             RestoredProcessMetadata {
                 owner_id: process.owner_id,
+                tool_caller: process.tool_caller.clone(),
+                permission_policy: process.permission_policy.clone(),
                 state: process.state.clone(),
                 token_count: process.token_count,
                 max_tokens: process.max_tokens,

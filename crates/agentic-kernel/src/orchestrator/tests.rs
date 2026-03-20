@@ -1,5 +1,4 @@
 use crate::backend::BackendClass;
-use std::collections::HashMap;
 
 use crate::model_catalog::WorkloadClass;
 use crate::policy::workload_from_label_or_default;
@@ -11,6 +10,7 @@ use super::*;
 fn task_node(id: &str, prompt: &str, workload: Option<&str>, deps: Vec<&str>) -> TaskNodeDef {
     TaskNodeDef {
         id: id.into(),
+        role: None,
         prompt: prompt.into(),
         workload: workload.map(str::to_string),
         backend_class: None,
@@ -19,6 +19,10 @@ fn task_node(id: &str, prompt: &str, workload: Option<&str>, deps: Vec<&str>) ->
         context_trigger_tokens: None,
         context_target_tokens: None,
         context_retrieve_top_k: None,
+        trust_scope: None,
+        allow_actions: None,
+        allowed_tools: None,
+        path_scopes: None,
         deps: deps.into_iter().map(str::to_string).collect(),
     }
 }
@@ -62,6 +66,7 @@ fn task_context_policy_overrides_are_preserved_in_spawn_requests() {
     let graph = TaskGraphDef {
         tasks: vec![TaskNodeDef {
             id: "A".into(),
+            role: None,
             prompt: "Task A".into(),
             workload: None,
             backend_class: None,
@@ -70,6 +75,10 @@ fn task_context_policy_overrides_are_preserved_in_spawn_requests() {
             context_trigger_tokens: Some(250),
             context_target_tokens: Some(180),
             context_retrieve_top_k: Some(4),
+            trust_scope: None,
+            allow_actions: None,
+            allowed_tools: None,
+            path_scopes: None,
             deps: vec![],
         }],
         failure_policy: FailurePolicy::FailFast,
@@ -91,6 +100,7 @@ fn task_backend_class_is_preserved_in_spawn_requests() {
     let graph = TaskGraphDef {
         tasks: vec![TaskNodeDef {
             id: "A".into(),
+            role: None,
             prompt: "Use cloud runtime".into(),
             workload: Some("fast".into()),
             backend_class: Some(BackendClass::RemoteStateless),
@@ -99,6 +109,10 @@ fn task_backend_class_is_preserved_in_spawn_requests() {
             context_trigger_tokens: None,
             context_target_tokens: None,
             context_retrieve_top_k: None,
+            trust_scope: None,
+            allow_actions: None,
+            allowed_tools: None,
+            path_scopes: None,
             deps: vec![],
         }],
         failure_policy: FailurePolicy::FailFast,
@@ -127,9 +141,20 @@ fn linear_graph_advances_step_by_step() {
     let (id, spawns) = orch.register(make_linear_graph(), 1).unwrap();
 
     let pid_a = 100;
-    orch.register_pid(pid_a, id, &spawns[0].task_id);
+    orch.register_pid(pid_a, id, &spawns[0].task_id, spawns[0].attempt);
     orch.append_output(pid_a, "result of A");
     orch.mark_completed(pid_a);
+    orch.record_completed_artifact(
+        id,
+        "A",
+        TaskArtifact {
+            artifact_id: "artifact:A:1".to_string(),
+            producer_task_id: "A".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: "result of A".to_string(),
+        },
+    );
 
     let (ready, kills) = orch.advance();
     assert!(kills.is_empty());
@@ -139,9 +164,20 @@ fn linear_graph_advances_step_by_step() {
     assert!(ready[0].prompt.contains("Task B"));
 
     let pid_b = 101;
-    orch.register_pid(pid_b, id, &ready[0].task_id);
+    orch.register_pid(pid_b, id, &ready[0].task_id, ready[0].attempt);
     orch.append_output(pid_b, "result of B");
     orch.mark_completed(pid_b);
+    orch.record_completed_artifact(
+        id,
+        "B",
+        TaskArtifact {
+            artifact_id: "artifact:B:1".to_string(),
+            producer_task_id: "B".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: "result of B".to_string(),
+        },
+    );
 
     let (ready, _) = orch.advance();
     assert_eq!(ready.len(), 1);
@@ -149,7 +185,7 @@ fn linear_graph_advances_step_by_step() {
     assert!(ready[0].prompt.contains("result of B"));
 
     let pid_c = 102;
-    orch.register_pid(pid_c, id, &ready[0].task_id);
+    orch.register_pid(pid_c, id, &ready[0].task_id, ready[0].attempt);
     orch.mark_completed(pid_c);
 
     let (ready, _) = orch.advance();
@@ -163,9 +199,20 @@ fn parallel_graph_spawns_b_and_c_after_a() {
     let (id, _) = orch.register(make_parallel_graph(), 1).unwrap();
 
     let pid_a = 100;
-    orch.register_pid(pid_a, id, "A");
+    orch.register_pid(pid_a, id, "A", 1);
     orch.append_output(pid_a, "A output");
     orch.mark_completed(pid_a);
+    orch.record_completed_artifact(
+        id,
+        "A",
+        TaskArtifact {
+            artifact_id: "artifact:A:1".to_string(),
+            producer_task_id: "A".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: "A output".to_string(),
+        },
+    );
 
     let (ready, _) = orch.advance();
     assert_eq!(ready.len(), 2);
@@ -175,12 +222,42 @@ fn parallel_graph_spawns_b_and_c_after_a() {
 
     let pid_b = 101;
     let pid_c = 102;
-    orch.register_pid(pid_b, id, "B");
-    orch.register_pid(pid_c, id, "C");
+    let req_b = ready
+        .iter()
+        .find(|req| req.task_id == "B")
+        .expect("B ready");
+    let req_c = ready
+        .iter()
+        .find(|req| req.task_id == "C")
+        .expect("C ready");
+    orch.register_pid(pid_b, id, "B", req_b.attempt);
+    orch.register_pid(pid_c, id, "C", req_c.attempt);
     orch.append_output(pid_b, "B output");
     orch.append_output(pid_c, "C output");
     orch.mark_completed(pid_b);
     orch.mark_completed(pid_c);
+    orch.record_completed_artifact(
+        id,
+        "B",
+        TaskArtifact {
+            artifact_id: "artifact:B:1".to_string(),
+            producer_task_id: "B".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: "B output".to_string(),
+        },
+    );
+    orch.record_completed_artifact(
+        id,
+        "C",
+        TaskArtifact {
+            artifact_id: "artifact:C:1".to_string(),
+            producer_task_id: "C".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: "C output".to_string(),
+        },
+    );
 
     let (ready, _) = orch.advance();
     assert_eq!(ready.len(), 1);
@@ -195,7 +272,7 @@ fn fail_fast_skips_pending_on_failure() {
     let (id, spawns) = orch.register(make_linear_graph(), 1).unwrap();
 
     let pid_a = 100;
-    orch.register_pid(pid_a, id, &spawns[0].task_id);
+    orch.register_pid(pid_a, id, &spawns[0].task_id, spawns[0].attempt);
     orch.mark_failed(pid_a, "process error");
 
     let (ready, kill_pids) = orch.advance();
@@ -222,15 +299,34 @@ fn fail_fast_kills_running_tasks() {
     let (id, _) = orch.register(graph, 1).unwrap();
 
     let pid_a = 100;
-    orch.register_pid(pid_a, id, "A");
+    orch.register_pid(pid_a, id, "A", 1);
     orch.mark_completed(pid_a);
+    orch.record_completed_artifact(
+        id,
+        "A",
+        TaskArtifact {
+            artifact_id: "artifact:A:1".to_string(),
+            producer_task_id: "A".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: String::new(),
+        },
+    );
     let (ready, _) = orch.advance();
     assert_eq!(ready.len(), 2);
 
     let pid_b = 101;
     let pid_c = 102;
-    orch.register_pid(pid_b, id, "B");
-    orch.register_pid(pid_c, id, "C");
+    let req_b = ready
+        .iter()
+        .find(|req| req.task_id == "B")
+        .expect("B ready");
+    let req_c = ready
+        .iter()
+        .find(|req| req.task_id == "C")
+        .expect("C ready");
+    orch.register_pid(pid_b, id, "B", req_b.attempt);
+    orch.register_pid(pid_c, id, "C", req_c.attempt);
     orch.mark_failed(pid_b, "oops");
 
     let (ready, kill_pids) = orch.advance();
@@ -245,20 +341,50 @@ fn best_effort_skips_dependents_of_failed() {
     let (id, _) = orch.register(make_parallel_graph(), 1).unwrap();
 
     let pid_a = 100;
-    orch.register_pid(pid_a, id, "A");
+    orch.register_pid(pid_a, id, "A", 1);
     orch.append_output(pid_a, "A done");
     orch.mark_completed(pid_a);
+    orch.record_completed_artifact(
+        id,
+        "A",
+        TaskArtifact {
+            artifact_id: "artifact:A:1".to_string(),
+            producer_task_id: "A".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: "A done".to_string(),
+        },
+    );
 
     let (ready, _) = orch.advance();
     assert_eq!(ready.len(), 2);
 
     let pid_b = 101;
     let pid_c = 102;
-    orch.register_pid(pid_b, id, "B");
-    orch.register_pid(pid_c, id, "C");
+    let req_b = ready
+        .iter()
+        .find(|req| req.task_id == "B")
+        .expect("B ready");
+    let req_c = ready
+        .iter()
+        .find(|req| req.task_id == "C")
+        .expect("C ready");
+    orch.register_pid(pid_b, id, "B", req_b.attempt);
+    orch.register_pid(pid_c, id, "C", req_c.attempt);
     orch.mark_failed(pid_b, "B error");
     orch.append_output(pid_c, "C output");
     orch.mark_completed(pid_c);
+    orch.record_completed_artifact(
+        id,
+        "C",
+        TaskArtifact {
+            artifact_id: "artifact:C:1".to_string(),
+            producer_task_id: "C".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: "C output".to_string(),
+        },
+    );
 
     let (ready, kill_pids) = orch.advance();
     assert!(kill_pids.is_empty());
@@ -268,6 +394,67 @@ fn best_effort_skips_dependents_of_failed() {
         TaskStatus::Skipped
     ));
     assert!(orch.get(id).unwrap().is_finished());
+}
+
+#[test]
+fn retry_resets_subtree_and_increments_attempt() {
+    let mut orch = Orchestrator::new();
+    let (id, spawns) = orch.register(make_linear_graph(), 1).unwrap();
+
+    let pid_a = 100;
+    orch.register_pid(pid_a, id, &spawns[0].task_id, spawns[0].attempt);
+    orch.append_output(pid_a, "A output");
+    orch.mark_completed(pid_a);
+    orch.record_completed_artifact(
+        id,
+        "A",
+        TaskArtifact {
+            artifact_id: "artifact:A:1".to_string(),
+            producer_task_id: "A".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: "A output".to_string(),
+        },
+    );
+
+    let (ready, _) = orch.advance();
+    let task_b = ready.iter().find(|request| request.task_id == "B").unwrap();
+    let pid_b = 101;
+    orch.register_pid(pid_b, id, "B", task_b.attempt);
+    orch.append_output(pid_b, "B output");
+    orch.mark_completed(pid_b);
+    orch.record_completed_artifact(
+        id,
+        "B",
+        TaskArtifact {
+            artifact_id: "artifact:B:1".to_string(),
+            producer_task_id: "B".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: "B output".to_string(),
+        },
+    );
+
+    let _ = orch.advance();
+    let retry_plan = orch.retry_task(id, "B").expect("retry B");
+    assert_eq!(
+        retry_plan.reset_tasks,
+        vec!["B".to_string(), "C".to_string()]
+    );
+    assert!(matches!(
+        orch.get(id).unwrap().status["B"],
+        TaskStatus::Pending
+    ));
+    assert!(matches!(
+        orch.get(id).unwrap().status["C"],
+        TaskStatus::Pending
+    ));
+
+    let (retry_ready, retry_kills) = orch.advance_one(id);
+    assert!(retry_kills.is_empty());
+    assert_eq!(retry_ready.len(), 1);
+    assert_eq!(retry_ready[0].task_id, "B");
+    assert_eq!(retry_ready[0].attempt, 2);
 }
 
 #[test]
@@ -411,11 +598,24 @@ fn workload_parsing() {
 #[test]
 fn build_prompt_injects_dependency_output() {
     let task = task_node("D", "Summarise everything", None, vec!["A", "B"]);
-    let mut outputs = HashMap::new();
-    outputs.insert("A".to_string(), "output A".to_string());
-    outputs.insert("B".to_string(), "output B".to_string());
+    let artifacts = vec![
+        TaskInputArtifact {
+            artifact_id: "artifact:A:1".to_string(),
+            producer_task_id: "A".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: "output A".to_string(),
+        },
+        TaskInputArtifact {
+            artifact_id: "artifact:B:1".to_string(),
+            producer_task_id: "B".to_string(),
+            producer_attempt: 1,
+            mime_type: "text/plain".to_string(),
+            content_text: "output B".to_string(),
+        },
+    ];
 
-    let prompt = build_task_prompt(&task, &outputs);
+    let prompt = build_task_prompt(&task, &artifacts);
     assert!(prompt.contains("output A"));
     assert!(prompt.contains("output B"));
     assert!(prompt.contains("Summarise everything"));
@@ -424,7 +624,7 @@ fn build_prompt_injects_dependency_output() {
 #[test]
 fn build_prompt_without_deps_returns_raw() {
     let task = task_node("root", "do it", None, vec![]);
-    let prompt = build_task_prompt(&task, &HashMap::new());
+    let prompt = build_task_prompt(&task, &[]);
     assert_eq!(prompt, "do it");
 }
 
@@ -435,15 +635,15 @@ fn append_output_truncates_and_marks_status() {
 
     let (id, spawns) = orch.register(make_linear_graph(), 1).unwrap();
     let pid_a = 100;
-    orch.register_pid(pid_a, id, &spawns[0].task_id);
+    orch.register_pid(pid_a, id, &spawns[0].task_id, spawns[0].attempt);
     orch.append_output(pid_a, "abcdefghijklmnopqrstuvwxyz");
 
     let stored = orch
         .get(id)
         .unwrap()
-        .output
+        .running_output
         .get("A")
-        .cloned()
+        .map(|output| output.text.clone())
         .unwrap_or_default();
     assert!(stored.contains("[TRUNCATED]"));
     assert!(orch.get(id).unwrap().truncated_outputs >= 1);

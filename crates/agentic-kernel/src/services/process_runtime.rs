@@ -7,7 +7,7 @@ use crate::process::{ContextPolicy, ProcessLifecyclePolicy};
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 
 #[derive(Debug)]
 pub struct ManagedProcessSpawn {
@@ -21,6 +21,7 @@ pub struct ManagedProcessRequest {
     pub system_prompt: Option<String>,
     pub owner_id: usize,
     pub tool_caller: ToolCaller,
+    pub permission_policy: Option<ProcessPermissionPolicy>,
     pub workload: WorkloadClass,
     pub required_backend_class: Option<BackendClass>,
     pub priority: ProcessPriority,
@@ -32,6 +33,7 @@ pub struct RestoredManagedProcessRequest {
     pub rendered_prompt: String,
     pub owner_id: usize,
     pub tool_caller: ToolCaller,
+    pub permission_policy: Option<ProcessPermissionPolicy>,
     pub workload: WorkloadClass,
     pub required_backend_class: Option<BackendClass>,
     pub priority: ProcessPriority,
@@ -125,6 +127,7 @@ pub fn spawn_managed_process(
         system_prompt,
         owner_id,
         tool_caller,
+        permission_policy,
         workload,
         required_backend_class,
         priority,
@@ -135,6 +138,8 @@ pub fn spawn_managed_process(
     validate_backend_class_policy(engine.loaded_backend_class(), required_backend_class)?;
 
     let context_policy = context_policy.unwrap_or_else(ContextPolicy::from_kernel_defaults);
+    let permission_policy = permission_policy
+        .ok_or_else(|| "Missing process permission policy for spawn request.".to_string())?;
     let pid = engine
         .spawn_process(
             &prompt,
@@ -142,6 +147,7 @@ pub fn spawn_managed_process(
             0,
             owner_id,
             tool_caller,
+            permission_policy,
             lifecycle_policy,
             context_policy,
         )
@@ -165,6 +171,7 @@ pub fn spawn_restored_managed_process(
         rendered_prompt,
         owner_id,
         tool_caller,
+        permission_policy,
         workload,
         required_backend_class,
         priority,
@@ -175,11 +182,14 @@ pub fn spawn_restored_managed_process(
     validate_backend_class_policy(engine.loaded_backend_class(), required_backend_class)?;
 
     let context_policy = context_policy.unwrap_or_else(ContextPolicy::from_kernel_defaults);
+    let permission_policy = permission_policy
+        .ok_or_else(|| "Missing process permission policy for restored request.".to_string())?;
     let pid = engine
         .restore_process_from_rendered_prompt(
             &rendered_prompt,
             owner_id,
             tool_caller,
+            permission_policy,
             lifecycle_policy,
             context_policy,
         )

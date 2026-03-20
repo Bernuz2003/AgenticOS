@@ -2,12 +2,9 @@
 //!
 //! Provides kernel-side logic for structured multi-agent workflows.
 //! An orchestration is a directed acyclic graph (DAG) of tasks where each
-//! task is an LLM prompt execution. Dependencies define data-flow: the
-//! output of completed tasks is injected as context into successor tasks.
-//!
-//! This module does **not** spawn LLM processes — it produces
-//! [`SpawnRequest`] values consumed by the runtime loop to call
-//! `LLMEngine::spawn_process`.
+//! task is an LLM prompt execution. Dependencies define data-flow: task
+//! artifacts from completed upstream nodes are injected as context into
+//! successor tasks.
 
 mod output;
 #[cfg(test)]
@@ -22,7 +19,9 @@ use crate::policy::workload_from_label_or_default;
 
 use output::{append_with_cap, build_task_prompt};
 pub use types::{
-    FailurePolicy, Orchestration, Orchestrator, SpawnRequest, TaskGraphDef, TaskNodeDef, TaskStatus,
+    FailurePolicy, Orchestration, Orchestrator, RetryPlan, RunningTaskOutput, SpawnRequest,
+    TaskArtifact, TaskAttemptFinalization, TaskGraphDef, TaskInputArtifact, TaskNodeDef,
+    TaskStatus,
 };
 use validation::validate_and_sort;
 
@@ -59,50 +58,100 @@ impl Orchestrator {
             .map(|task| (task.id.clone(), TaskStatus::Pending))
             .collect();
 
+        let mut orchestration =
+            Orchestration::new(owner_id, graph.failure_policy, tasks, topo_order, status);
+        let root_ids = orchestration
+            .topo_order
+            .iter()
+            .filter(|task_id| {
+                orchestration
+                    .tasks
+                    .get(task_id.as_str())
+                    .map(|task| task.deps.is_empty())
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
         let mut spawn_requests = Vec::new();
-        for task_id in &topo_order {
-            let Some(task) = tasks.get(task_id) else {
-                continue;
-            };
-            if task.deps.is_empty() {
-                spawn_requests.push(SpawnRequest {
-                    orch_id,
-                    task_id: task_id.clone(),
-                    prompt: task.prompt.clone(),
-                    workload: workload_from_label_or_default(task.workload.as_deref()),
-                    required_backend_class: task.backend_class,
-                    owner_id,
-                    context_policy: task.resolved_context_policy(),
-                });
-            }
+        for task_id in root_ids {
+            let task = orchestration
+                .tasks
+                .get(task_id.as_str())
+                .expect("task must exist")
+                .clone();
+            spawn_requests.push(build_spawn_request(
+                orch_id,
+                owner_id,
+                &mut orchestration,
+                &task_id,
+                &task,
+                Vec::new(),
+            )?);
         }
 
-        self.orchestrations.insert(
-            orch_id,
-            Orchestration::new(owner_id, graph.failure_policy, tasks, topo_order, status),
-        );
-
+        self.orchestrations.insert(orch_id, orchestration);
         Ok((orch_id, spawn_requests))
     }
 
-    /// Register a spawned PID for a task.
-    pub fn register_pid(&mut self, pid: u64, orch_id: u64, task_id: &str) {
-        self.pid_to_task.insert(pid, (orch_id, task_id.to_string()));
+    /// Register a spawned PID for a task attempt.
+    pub fn register_pid(&mut self, pid: u64, orch_id: u64, task_id: &str, attempt: u32) {
+        self.pid_to_task
+            .insert(pid, (orch_id, task_id.to_string(), attempt));
         if let Some(orch) = self.orchestrations.get_mut(&orch_id) {
             orch.status
-                .insert(task_id.to_string(), TaskStatus::Running { pid });
+                .insert(task_id.to_string(), TaskStatus::Running { pid, attempt });
+            orch.running_output.insert(
+                task_id.to_string(),
+                RunningTaskOutput {
+                    attempt,
+                    text: String::new(),
+                    truncated: false,
+                },
+            );
+            refresh_output_metrics(orch);
         }
     }
 
-    /// Mark a task whose spawn failed (memory admission, etc.).
-    pub fn mark_spawn_failed(&mut self, orch_id: u64, task_id: &str, error: &str) {
+    /// Mark a task whose spawn failed (routing/admission/spawn).
+    pub fn mark_spawn_failed(
+        &mut self,
+        orch_id: u64,
+        task_id: &str,
+        attempt: u32,
+        error: &str,
+    ) -> Option<TaskAttemptFinalization> {
+        let orch = self.orchestrations.get_mut(&orch_id)?;
+        orch.running_output.remove(task_id);
+        orch.latest_artifacts.remove(task_id);
+        orch.status.insert(
+            task_id.to_string(),
+            TaskStatus::Failed {
+                error: error.to_string(),
+                attempt,
+            },
+        );
+        refresh_output_metrics(orch);
+        Some(TaskAttemptFinalization {
+            orch_id,
+            task_id: task_id.to_string(),
+            attempt,
+            status: "failed".to_string(),
+            error: Some(error.to_string()),
+            output_text: String::new(),
+            truncated: false,
+        })
+    }
+
+    pub fn record_completed_artifact(
+        &mut self,
+        orch_id: u64,
+        task_id: &str,
+        artifact: TaskArtifact,
+    ) {
         if let Some(orch) = self.orchestrations.get_mut(&orch_id) {
-            orch.status.insert(
-                task_id.to_string(),
-                TaskStatus::Failed {
-                    error: error.to_string(),
-                },
-            );
+            orch.latest_artifacts.insert(task_id.to_string(), artifact);
+            refresh_output_metrics(orch);
         }
     }
 
@@ -111,54 +160,157 @@ impl Orchestrator {
         self.pid_to_task.contains_key(&pid)
     }
 
-    /// Append generated text to a task's output buffer.
+    /// Append generated text to the live output buffer of a task attempt.
     pub fn append_output(&mut self, pid: u64, text: &str) {
-        if let Some((orch_id, task_id)) = self.pid_to_task.get(&pid) {
+        if let Some((orch_id, task_id, attempt)) = self.pid_to_task.get(&pid) {
             if let Some(orch) = self.orchestrations.get_mut(orch_id) {
-                let entry = orch.output.entry(task_id.clone()).or_default();
+                let entry = orch
+                    .running_output
+                    .entry(task_id.clone())
+                    .or_insert_with(|| RunningTaskOutput {
+                        attempt: *attempt,
+                        text: String::new(),
+                        truncated: false,
+                    });
+                let previous_truncations = orch.truncated_outputs;
                 append_with_cap(
-                    entry,
+                    &mut entry.text,
                     text,
                     self.max_output_chars,
                     &mut orch.truncated_outputs,
                 );
-                orch.output_chars_stored = orch.output.values().map(|value| value.len()).sum();
+                if orch.truncated_outputs > previous_truncations {
+                    entry.truncated = true;
+                }
+                refresh_output_metrics(orch);
             }
         }
     }
 
-    /// Mark a task as completed (process finished normally).
-    pub fn mark_completed(&mut self, pid: u64) {
-        if let Some((orch_id, task_id)) = self.pid_to_task.remove(&pid) {
-            if let Some(orch) = self.orchestrations.get_mut(&orch_id) {
-                orch.status.insert(task_id, TaskStatus::Completed);
-            }
-        }
+    /// Mark a task as completed and return the finalized attempt payload.
+    pub fn mark_completed(&mut self, pid: u64) -> Option<TaskAttemptFinalization> {
+        let (orch_id, task_id, attempt) = self.pid_to_task.remove(&pid)?;
+        let orch = self.orchestrations.get_mut(&orch_id)?;
+        let output = orch.running_output.remove(&task_id);
+        orch.status
+            .insert(task_id.clone(), TaskStatus::Completed { attempt });
+        refresh_output_metrics(orch);
+        Some(TaskAttemptFinalization {
+            orch_id,
+            task_id,
+            attempt,
+            status: "completed".to_string(),
+            error: None,
+            output_text: output
+                .as_ref()
+                .map(|item| item.text.clone())
+                .unwrap_or_default(),
+            truncated: output.as_ref().map(|item| item.truncated).unwrap_or(false),
+        })
     }
 
-    /// Mark a task as failed (process error).
-    pub fn mark_failed(&mut self, pid: u64, error: &str) {
-        if let Some((orch_id, task_id)) = self.pid_to_task.remove(&pid) {
-            if let Some(orch) = self.orchestrations.get_mut(&orch_id) {
-                orch.status.insert(
-                    task_id,
-                    TaskStatus::Failed {
-                        error: error.to_string(),
-                    },
-                );
+    /// Mark a task as failed and return the finalized attempt payload.
+    pub fn mark_failed(&mut self, pid: u64, error: &str) -> Option<TaskAttemptFinalization> {
+        let (orch_id, task_id, attempt) = self.pid_to_task.remove(&pid)?;
+        let orch = self.orchestrations.get_mut(&orch_id)?;
+        let output = orch.running_output.remove(&task_id);
+        orch.status.insert(
+            task_id.clone(),
+            TaskStatus::Failed {
+                error: error.to_string(),
+                attempt,
+            },
+        );
+        refresh_output_metrics(orch);
+        Some(TaskAttemptFinalization {
+            orch_id,
+            task_id,
+            attempt,
+            status: "failed".to_string(),
+            error: Some(error.to_string()),
+            output_text: output
+                .as_ref()
+                .map(|item| item.text.clone())
+                .unwrap_or_default(),
+            truncated: output.as_ref().map(|item| item.truncated).unwrap_or(false),
+        })
+    }
+
+    pub fn retry_task(
+        &mut self,
+        orch_id: u64,
+        task_id: &str,
+    ) -> Result<RetryPlan, OrchestratorError> {
+        let Some(orch) = self.orchestrations.get_mut(&orch_id) else {
+            return Err(OrchestratorError::RetryTaskNotFound {
+                orchestration_id: orch_id,
+                task: task_id.to_string(),
+            });
+        };
+        if !orch.tasks.contains_key(task_id) {
+            return Err(OrchestratorError::RetryTaskNotFound {
+                orchestration_id: orch_id,
+                task: task_id.to_string(),
+            });
+        }
+
+        let reset_tasks = descendant_tasks(orch, task_id);
+        if let Some(running_task) = reset_tasks.iter().find(|candidate| {
+            matches!(
+                orch.status.get(candidate.as_str()),
+                Some(TaskStatus::Running { .. })
+            )
+        }) {
+            return Err(OrchestratorError::RetryTaskBusy {
+                orchestration_id: orch_id,
+                task: running_task.clone(),
+            });
+        }
+
+        if orch.failure_policy == FailurePolicy::FailFast {
+            if let Some(blocking_task) = orch
+                .status
+                .iter()
+                .find(|(candidate, status)| {
+                    !reset_tasks.contains(candidate) && matches!(status, TaskStatus::Failed { .. })
+                })
+                .map(|(candidate, _)| candidate.clone())
+            {
+                return Err(OrchestratorError::RetryBlockedByFailure {
+                    orchestration_id: orch_id,
+                    task: task_id.to_string(),
+                    blocking_task,
+                });
             }
         }
+
+        for candidate in &reset_tasks {
+            orch.status.insert(candidate.clone(), TaskStatus::Pending);
+            orch.running_output.remove(candidate);
+            orch.latest_artifacts.remove(candidate);
+        }
+        refresh_output_metrics(orch);
+
+        Ok(RetryPlan { reset_tasks })
     }
 
     /// Advance all orchestrations: propagate failures, collect tasks ready
     /// to spawn. Also returns PIDs of running tasks that must be killed
     /// (fail-fast policy).
     pub fn advance(&mut self) -> (Vec<SpawnRequest>, Vec<u64>) {
+        let orch_ids = self.orchestrations.keys().copied().collect::<Vec<_>>();
+        self.advance_ids(&orch_ids)
+    }
+
+    pub fn advance_one(&mut self, orch_id: u64) -> (Vec<SpawnRequest>, Vec<u64>) {
+        self.advance_ids(&[orch_id])
+    }
+
+    fn advance_ids(&mut self, orch_ids: &[u64]) -> (Vec<SpawnRequest>, Vec<u64>) {
         let mut all_requests = Vec::new();
         let mut kill_pids = Vec::new();
 
-        let orch_ids: Vec<u64> = self.orchestrations.keys().copied().collect();
-        for orch_id in orch_ids {
+        for &orch_id in orch_ids {
             let Some(orch) = self.orchestrations.get_mut(&orch_id) else {
                 continue;
             };
@@ -176,7 +328,7 @@ impl Orchestrator {
                     }
                 }
                 self.pid_to_task
-                    .retain(|_, (existing_orch_id, _)| *existing_orch_id != orch_id);
+                    .retain(|_, (existing_orch_id, _, _)| *existing_orch_id != orch_id);
                 continue;
             }
 
@@ -206,26 +358,33 @@ impl Orchestrator {
                     continue;
                 }
 
-                let Some(task) = orch.tasks.get(task_id) else {
+                let Some(task) = orch.tasks.get(task_id).cloned() else {
                     continue;
                 };
                 let all_deps_done = task
                     .deps
                     .iter()
-                    .all(|dep| matches!(orch.status.get(dep), Some(TaskStatus::Completed)));
+                    .all(|dep| matches!(orch.status.get(dep), Some(TaskStatus::Completed { .. })));
                 if !all_deps_done {
                     continue;
                 }
 
-                all_requests.push(SpawnRequest {
-                    orch_id,
-                    task_id: task_id.clone(),
-                    prompt: build_task_prompt(task, &orch.output),
-                    workload: workload_from_label_or_default(task.workload.as_deref()),
-                    required_backend_class: task.backend_class,
-                    owner_id,
-                    context_policy: task.resolved_context_policy(),
-                });
+                let input_artifacts = task
+                    .deps
+                    .iter()
+                    .filter_map(|dep| orch.latest_artifacts.get(dep))
+                    .map(|artifact| TaskInputArtifact {
+                        artifact_id: artifact.artifact_id.clone(),
+                        producer_task_id: artifact.producer_task_id.clone(),
+                        producer_attempt: artifact.producer_attempt,
+                        mime_type: artifact.mime_type.clone(),
+                        content_text: artifact.content_text.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                all_requests.push(
+                    build_spawn_request(orch_id, owner_id, orch, task_id, &task, input_artifacts)
+                        .expect("orchestration task permissions must be validated at registration"),
+                );
             }
         }
 
@@ -237,8 +396,18 @@ impl Orchestrator {
         self.orchestrations.get(&orch_id)
     }
 
-    pub fn task_binding(&self, pid: u64) -> Option<(u64, String)> {
+    pub fn task_binding(&self, pid: u64) -> Option<(u64, String, u32)> {
         self.pid_to_task.get(&pid).cloned()
+    }
+
+    pub fn running_output_for_task(
+        &self,
+        orch_id: u64,
+        task_id: &str,
+    ) -> Option<&RunningTaskOutput> {
+        self.orchestrations
+            .get(&orch_id)
+            .and_then(|orch| orch.running_output.get(task_id))
     }
 
     pub fn active_ids(&self) -> Vec<u64> {
@@ -279,8 +448,13 @@ impl Orchestrator {
                 continue;
             };
             let detail = match status {
-                TaskStatus::Running { pid } => format!(" pid={}", pid),
-                TaskStatus::Failed { error } => format!(" error={}", error),
+                TaskStatus::Running { pid, attempt } => {
+                    format!(" pid={} attempt={}", pid, attempt)
+                }
+                TaskStatus::Completed { attempt } => format!(" attempt={}", attempt),
+                TaskStatus::Failed { error, attempt } => {
+                    format!(" attempt={} error={}", attempt, error)
+                }
                 _ => String::new(),
             };
             lines.push(format!(
@@ -293,4 +467,68 @@ impl Orchestrator {
 
         Some(lines.join("\n"))
     }
+}
+
+fn build_spawn_request(
+    orch_id: u64,
+    owner_id: usize,
+    orchestration: &mut Orchestration,
+    task_id: &str,
+    task: &TaskNodeDef,
+    input_artifacts: Vec<TaskInputArtifact>,
+) -> Result<SpawnRequest, OrchestratorError> {
+    let attempt = allocate_attempt(orchestration, task_id);
+    Ok(SpawnRequest {
+        orch_id,
+        task_id: task_id.to_string(),
+        attempt,
+        prompt: build_task_prompt(task, &input_artifacts),
+        input_artifacts,
+        workload: workload_from_label_or_default(task.workload.as_deref()),
+        required_backend_class: task.backend_class,
+        owner_id,
+        context_policy: task.resolved_context_policy(),
+        permission_overrides: task.permission_overrides()?,
+    })
+}
+
+fn allocate_attempt(orch: &mut Orchestration, task_id: &str) -> u32 {
+    let next = orch.next_attempt.entry(task_id.to_string()).or_insert(1);
+    let attempt = *next;
+    *next = next.saturating_add(1);
+    attempt
+}
+
+fn refresh_output_metrics(orch: &mut Orchestration) {
+    orch.output_chars_stored = orch
+        .latest_artifacts
+        .values()
+        .map(|artifact| artifact.content_text.len())
+        .sum::<usize>()
+        + orch
+            .running_output
+            .values()
+            .map(|output| output.text.len())
+            .sum::<usize>();
+}
+
+fn descendant_tasks(orch: &Orchestration, root_task: &str) -> Vec<String> {
+    let mut selected = vec![root_task.to_string()];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for task_id in &orch.topo_order {
+            if selected.contains(task_id) {
+                continue;
+            }
+            let Some(task) = orch.tasks.get(task_id) else {
+                continue;
+            };
+            if task.deps.iter().any(|dep| selected.contains(dep)) {
+                selected.push(task_id.clone());
+                changed = true;
+            }
+        }
+    }
+    selected
 }

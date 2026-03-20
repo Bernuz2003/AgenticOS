@@ -6,6 +6,8 @@ pub enum DeadlineReason {
     RemoteTimeout,
     SyscallTimeout,
     Checkpoint,
+    ScheduledJob,
+    ScheduledJobTimeout,
 }
 
 impl DeadlineReason {
@@ -14,6 +16,8 @@ impl DeadlineReason {
             Self::RemoteTimeout => "remote_timeout",
             Self::SyscallTimeout => "syscall_timeout",
             Self::Checkpoint => "checkpoint",
+            Self::ScheduledJob => "scheduled_job",
+            Self::ScheduledJobTimeout => "scheduled_job_timeout",
         }
     }
 }
@@ -22,14 +26,14 @@ impl DeadlineReason {
 pub struct DeadlineCandidate {
     pub reason: DeadlineReason,
     pub at: Instant,
-    pub subject_pid: Option<u64>,
+    pub subject_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct NextDeadline {
     pub reason: DeadlineReason,
     pub at: Instant,
-    pub subject_pid: Option<u64>,
+    pub subject_id: Option<u64>,
 }
 
 pub fn pick_next_deadline(candidates: &[DeadlineCandidate]) -> Option<NextDeadline> {
@@ -43,7 +47,7 @@ pub fn pick_next_deadline(candidates: &[DeadlineCandidate]) -> Option<NextDeadli
         .map(|candidate| NextDeadline {
             reason: candidate.reason,
             at: candidate.at,
-            subject_pid: candidate.subject_pid,
+            subject_id: candidate.subject_id,
         })
 }
 

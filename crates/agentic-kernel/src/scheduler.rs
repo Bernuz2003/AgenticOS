@@ -15,6 +15,7 @@ use std::time::Instant;
 use crate::backend::BackendCapabilities;
 use crate::model_catalog::WorkloadClass;
 use crate::process::{ContextPolicy, ContextState, ContextStatusSnapshot};
+use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 
 // ── Priority ────────────────────────────────────────────────────────────
 
@@ -117,6 +118,8 @@ pub struct ProcessSchedulerSnapshot {
 #[derive(Debug, Clone)]
 pub struct RestoredProcessMetadata {
     pub owner_id: usize,
+    pub tool_caller: ToolCaller,
+    pub permission_policy: ProcessPermissionPolicy,
     pub state: String,
     pub token_count: usize,
     pub max_tokens: usize,
@@ -134,6 +137,8 @@ pub struct RestoredProcessMetadata {
 #[derive(Debug, Clone)]
 pub struct CheckedOutProcessMetadata {
     pub owner_id: usize,
+    pub tool_caller: ToolCaller,
+    pub permission_policy: ProcessPermissionPolicy,
     pub state: String,
     pub checked_out_at: Instant,
     pub tokens: usize,

@@ -283,6 +283,7 @@ fn emit_lobby_snapshot(app: &AppHandle, bridge: &Arc<Mutex<KernelBridge>>) {
             resource_governor: None,
             runtime_load_queue: Vec::new(),
             global_audit_events: Vec::new(),
+            scheduled_jobs: Vec::new(),
             orchestrations: Vec::new(),
             sessions: Vec::new(),
             error: Some("Bridge state lock poisoned".to_string()),

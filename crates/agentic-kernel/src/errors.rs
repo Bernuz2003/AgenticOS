@@ -111,6 +111,24 @@ pub enum OrchestratorError {
 
     #[error("task graph contains a cycle")]
     CycleDetected,
+
+    #[error("task permission policy is invalid: {0}")]
+    InvalidTaskPermissions(String),
+
+    #[error("orchestration {orchestration_id} has no task '{task}'")]
+    RetryTaskNotFound { orchestration_id: u64, task: String },
+
+    #[error("orchestration {orchestration_id} cannot retry running task '{task}'")]
+    RetryTaskBusy { orchestration_id: u64, task: String },
+
+    #[error(
+        "orchestration {orchestration_id} cannot retry task '{task}' while failed task '{blocking_task}' remains outside the retry subtree"
+    )]
+    RetryBlockedByFailure {
+        orchestration_id: u64,
+        task: String,
+        blocking_task: String,
+    },
 }
 
 // ── Model catalog errors ────────────────────────────────────────────────

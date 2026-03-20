@@ -102,6 +102,21 @@ pub(crate) const PROCESS_KILLED: AuditSpec = AuditSpec {
     kind: "killed",
     title: "Process killed",
 };
+pub(crate) const ACTION_DISPATCHED: AuditSpec = AuditSpec {
+    category: "process",
+    kind: "action_dispatched",
+    title: "Action dispatched",
+};
+pub(crate) const ACTION_COMPLETED: AuditSpec = AuditSpec {
+    category: "process",
+    kind: "action_completed",
+    title: "Action completed",
+};
+pub(crate) const ACTION_DENIED: AuditSpec = AuditSpec {
+    category: "process",
+    kind: "action_denied",
+    title: "Action denied",
+};
 
 pub(crate) const TOOL_DISPATCHED: AuditSpec = AuditSpec {
     category: "tool",

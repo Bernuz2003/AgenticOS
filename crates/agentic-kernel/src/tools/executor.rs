@@ -55,13 +55,26 @@ mod tests {
         ToolRegistryEntry, ToolSource,
     };
     use crate::tools::error::ToolError;
-    use crate::tools::invocation::{ToolCaller, ToolContext, ToolInvocationTransport};
+    use crate::tools::invocation::{
+        ProcessPermissionPolicy, ProcessTrustScope, ToolCaller, ToolContext,
+        ToolInvocationTransport,
+    };
 
     fn text_context() -> ToolContext {
         ToolContext {
             pid: Some(1),
             session_id: Some("session-1".to_string()),
             caller: ToolCaller::AgentText,
+            permissions: ProcessPermissionPolicy {
+                trust_scope: ProcessTrustScope::InteractiveChat,
+                actions_allowed: false,
+                allowed_tools: vec![
+                    "calc".to_string(),
+                    "list_files".to_string(),
+                    "restricted".to_string(),
+                ],
+                path_scopes: vec![".".to_string()],
+            },
             transport: ToolInvocationTransport::Text,
             call_id: None,
         }

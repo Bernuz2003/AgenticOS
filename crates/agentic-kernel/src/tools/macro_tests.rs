@@ -10,7 +10,10 @@ use serde_json::{json, Value};
 use super::api::{typed_output_to_tool_result, Tool, ToolResult};
 use super::error::ToolError;
 use super::executor::{build_structured_invocation, execute_structured_invocation};
-use super::invocation::{ToolCaller, ToolContext, ToolInvocation, ToolInvocationTransport};
+use super::invocation::{
+    ProcessPermissionPolicy, ProcessTrustScope, ToolCaller, ToolContext, ToolInvocation,
+    ToolInvocationTransport,
+};
 use super::path_guard::workspace_root;
 use crate::tool_registry::{
     HostExecutor, ToolBackendConfig, ToolBackendKind, ToolDescriptor, ToolRegistry,
@@ -109,6 +112,16 @@ fn text_context() -> ToolContext {
         pid: Some(1),
         session_id: Some("session-1".to_string()),
         caller: ToolCaller::AgentText,
+        permissions: ProcessPermissionPolicy {
+            trust_scope: ProcessTrustScope::InteractiveChat,
+            actions_allowed: false,
+            allowed_tools: vec![
+                "echo_macro".to_string(),
+                "custom_echo".to_string(),
+                "read_file".to_string(),
+            ],
+            path_scopes: vec![".".to_string()],
+        },
         transport: ToolInvocationTransport::Text,
         call_id: None,
     }

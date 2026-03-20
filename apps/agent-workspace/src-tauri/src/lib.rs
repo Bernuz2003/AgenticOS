@@ -25,6 +25,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::kernel::bootstrap_state,
             commands::kernel::fetch_lobby_snapshot,
+            commands::kernel::fetch_orchestration_status,
             commands::kernel::fetch_timeline_snapshot,
             commands::kernel::fetch_workspace_snapshot,
             commands::kernel::list_models,
@@ -32,6 +33,8 @@ pub fn run() {
             commands::kernel::orchestrate,
             commands::kernel::ping_kernel,
             commands::kernel::protocol_preview,
+            commands::kernel::retry_workflow_task,
+            commands::kernel::schedule_workflow_job,
             commands::kernel::continue_session_output,
             commands::kernel::resume_session,
             commands::kernel::send_session_input,

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::error::ToolError;
 use super::invocation::ToolContext;
-use super::path_guard::{resolve_safe_path, workspace_root};
+use super::path_guard::{resolve_safe_path, resolve_safe_path_for_context, workspace_root};
 
 const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
 const DEFAULT_FIND_FILES_MAX_RESULTS: usize = 100;
@@ -37,11 +37,11 @@ struct PathInfoOutput {
     name = "path_info",
     description = "Inspect file or directory metadata inside the workspace.",
     capabilities = ["fs", "metadata"],
-    allowed_callers = [AgentText, Programmatic]
+    allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
-fn path_info(input: PathInfoInput, _ctx: &ToolContext) -> Result<PathInfoOutput, ToolError> {
+fn path_info(input: PathInfoInput, ctx: &ToolContext) -> Result<PathInfoOutput, ToolError> {
     ensure_non_empty_path("path_info", &input.path)?;
-    let path = resolve_safe_path(&input.path)
+    let path = resolve_safe_path_for_context(&input.path, ctx)
         .map_err(|err| ToolError::ExecutionFailed("path_info".into(), err))?;
 
     let metadata = match fs::symlink_metadata(&path) {
@@ -119,10 +119,10 @@ struct FindFilesOutput {
     name = "find_files",
     description = "Find files by name pattern or extension inside the workspace.",
     capabilities = ["fs", "search"],
-    allowed_callers = [AgentText, Programmatic]
+    allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
-fn find_files(input: FindFilesInput, _ctx: &ToolContext) -> Result<FindFilesOutput, ToolError> {
-    let root = resolve_search_root("find_files", input.path.as_deref())?;
+fn find_files(input: FindFilesInput, ctx: &ToolContext) -> Result<FindFilesOutput, ToolError> {
+    let root = resolve_search_root("find_files", input.path.as_deref(), ctx)?;
     let recursive = input.recursive.unwrap_or(true);
     let max_results = normalize_max_results(input.max_results, DEFAULT_FIND_FILES_MAX_RESULTS);
     let pattern = input
@@ -210,9 +210,9 @@ struct SearchTextOutput {
     name = "search_text",
     description = "Search text across UTF-8 files inside the workspace.",
     capabilities = ["fs", "search", "text"],
-    allowed_callers = [AgentText, Programmatic]
+    allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
-fn search_text(input: SearchTextInput, _ctx: &ToolContext) -> Result<SearchTextOutput, ToolError> {
+fn search_text(input: SearchTextInput, ctx: &ToolContext) -> Result<SearchTextOutput, ToolError> {
     if input.query.trim().is_empty() {
         return Err(ToolError::InvalidInput(
             "search_text".into(),
@@ -220,7 +220,7 @@ fn search_text(input: SearchTextInput, _ctx: &ToolContext) -> Result<SearchTextO
         ));
     }
 
-    let root = resolve_search_root("search_text", input.path.as_deref())?;
+    let root = resolve_search_root("search_text", input.path.as_deref(), ctx)?;
     let recursive = input.recursive.unwrap_or(true);
     let case_sensitive = input.case_sensitive.unwrap_or(true);
     let max_results = normalize_max_results(input.max_results, DEFAULT_SEARCH_TEXT_MAX_RESULTS);
@@ -310,11 +310,11 @@ struct ReadFileRangeOutput {
     name = "read_file_range",
     description = "Read an inclusive line range from a UTF-8 file inside the workspace.",
     capabilities = ["fs", "read", "range"],
-    allowed_callers = [AgentText, Programmatic]
+    allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
 fn read_file_range(
     input: ReadFileRangeInput,
-    _ctx: &ToolContext,
+    ctx: &ToolContext,
 ) -> Result<ReadFileRangeOutput, ToolError> {
     ensure_non_empty_path("read_file_range", &input.path)?;
     if input.start_line == 0 {
@@ -341,7 +341,7 @@ fn read_file_range(
         ));
     }
 
-    let path = resolve_safe_path(&input.path)
+    let path = resolve_safe_path_for_context(&input.path, ctx)
         .map_err(|err| ToolError::ExecutionFailed("read_file_range".into(), err))?;
     let content = read_required_utf8_file("read_file_range", &path, MAX_TEXT_FILE_BYTES)?;
 
@@ -399,11 +399,11 @@ struct MkdirOutput {
     name = "mkdir",
     description = "Create a directory inside the workspace.",
     capabilities = ["fs", "mkdir"],
-    allowed_callers = [AgentText, Programmatic]
+    allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
-fn mkdir(input: MkdirInput, _ctx: &ToolContext) -> Result<MkdirOutput, ToolError> {
+fn mkdir(input: MkdirInput, ctx: &ToolContext) -> Result<MkdirOutput, ToolError> {
     ensure_non_empty_path("mkdir", &input.path)?;
-    let path = resolve_safe_path(&input.path)
+    let path = resolve_safe_path_for_context(&input.path, ctx)
         .map_err(|err| ToolError::ExecutionFailed("mkdir".into(), err))?;
 
     if path.exists() {
@@ -456,10 +456,14 @@ fn ensure_non_empty_path(tool_name: &str, path: &str) -> Result<(), ToolError> {
     }
 }
 
-fn resolve_search_root(tool_name: &str, path: Option<&str>) -> Result<SearchRoot, ToolError> {
+fn resolve_search_root(
+    tool_name: &str,
+    path: Option<&str>,
+    ctx: &ToolContext,
+) -> Result<SearchRoot, ToolError> {
     match path.map(str::trim).filter(|value| !value.is_empty()) {
         Some(path) => {
-            let absolute = resolve_safe_path(path)
+            let absolute = resolve_safe_path_for_context(path, ctx)
                 .map_err(|err| ToolError::ExecutionFailed(tool_name.into(), err))?;
             if !absolute.exists() {
                 return Err(ToolError::ExecutionFailed(
@@ -472,10 +476,33 @@ fn resolve_search_root(tool_name: &str, path: Option<&str>) -> Result<SearchRoot
                 display: path.to_string(),
             })
         }
-        None => Ok(SearchRoot {
-            absolute: workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?,
+        None => default_scoped_search_root(tool_name, ctx),
+    }
+}
+
+fn default_scoped_search_root(tool_name: &str, ctx: &ToolContext) -> Result<SearchRoot, ToolError> {
+    let root = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
+    match ctx.permissions.path_scopes.as_slice() {
+        [] => Err(ToolError::PolicyDenied(
+            tool_name.into(),
+            "no path scopes are available for this process".into(),
+        )),
+        [scope] if scope == "." => Ok(SearchRoot {
+            absolute: root,
             display: ".".to_string(),
         }),
+        [scope] => {
+            let absolute = resolve_safe_path(scope)
+                .map_err(|err| ToolError::ExecutionFailed(tool_name.into(), err))?;
+            Ok(SearchRoot {
+                absolute,
+                display: scope.clone(),
+            })
+        }
+        _ => Err(ToolError::InvalidInput(
+            tool_name.into(),
+            "this process is scoped to multiple roots; provide an explicit 'path'".into(),
+        )),
     }
 }
 

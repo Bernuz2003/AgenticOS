@@ -16,6 +16,7 @@ use crate::resource_governor::ResourceGovernor;
 use crate::runtime::syscalls::{self, SyscallCmd, SyscallCompletion};
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
+use crate::services::job_scheduler::JobScheduler;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
@@ -82,6 +83,7 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         ResourceGovernor::load(&mut storage, config.resources.clone()).map_err(io::Error::other)?;
     let session_registry =
         SessionRegistry::load(&mut storage, boot_record.boot_id).map_err(io::Error::other)?;
+    let job_scheduler = JobScheduler::load(&mut storage).map_err(io::Error::other)?;
 
     // 6. Generazione del token di autenticazione per la sessione corrente
     let auth_disabled = config.auth.disabled;
@@ -100,9 +102,11 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         recovery_reset_sessions = recovery_report.stale_active_sessions_reset,
         recovery_interrupted_runs = recovery_report.interrupted_process_runs,
         recovery_interrupted_turns = recovery_report.interrupted_turns,
+        recovery_interrupted_scheduler_runs = recovery_report.interrupted_scheduler_job_runs,
         recovery_logical_resume_sessions = recovery_report.logical_resume_sessions,
         recovery_strong_restore_candidates = recovery_report.strong_restore_candidate_sessions,
         recovery_pending_runtime_queue = recovery_report.pending_runtime_queue_entries,
+        persisted_scheduler_jobs = job_scheduler.scheduled_jobs().len(),
         resource_ram_budget_bytes = config.resources.ram_budget_bytes,
         resource_vram_budget_bytes = config.resources.vram_budget_bytes,
         persisted_runtimes = runtime_registry.runtime_count(),
@@ -126,6 +130,7 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         shutdown_requested,
         model_catalog,
         scheduler: ProcessScheduler::new(),
+        job_scheduler,
         orchestrator: Orchestrator::new(),
         remote_deadline_timeout: std::time::Duration::from_millis(
             config

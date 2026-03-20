@@ -1,6 +1,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use crate::config::ensure_workspace_root;
+use crate::tools::invocation::ToolContext;
 
 pub(crate) fn workspace_root() -> Result<PathBuf, String> {
     ensure_workspace_root().map_err(|e| format!("SysCall Error: {}", e))
@@ -47,4 +48,45 @@ pub(crate) fn normalize_relative_path(root: &Path, input: &str) -> Result<PathBu
 pub(crate) fn resolve_safe_path(filename: &str) -> Result<PathBuf, String> {
     let root = workspace_root()?;
     normalize_relative_path(&root, filename)
+}
+
+pub(crate) fn resolve_safe_path_for_context(
+    filename: &str,
+    context: &ToolContext,
+) -> Result<PathBuf, String> {
+    let root = workspace_root()?;
+    let resolved = normalize_relative_path(&root, filename)?;
+    ensure_path_scope(&root, &resolved, context)?;
+    Ok(resolved)
+}
+
+pub(crate) fn ensure_path_scope(
+    root: &Path,
+    candidate: &Path,
+    context: &ToolContext,
+) -> Result<(), String> {
+    if context.permissions.path_scopes.is_empty() {
+        return Err("SysCall Error: No path scopes are available for this process.".to_string());
+    }
+
+    for scope in &context.permissions.path_scopes {
+        let allowed_root = if scope == "." {
+            root.to_path_buf()
+        } else {
+            normalize_relative_path(root, scope)?
+        };
+        if candidate.starts_with(&allowed_root) {
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "SysCall Error: Path '{}' is outside allowed scopes [{}].",
+        candidate
+            .strip_prefix(root)
+            .ok()
+            .unwrap_or(candidate)
+            .display(),
+        context.permissions.path_scopes.join(", ")
+    ))
 }

@@ -1,11 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use agentic_control_models::{
     BackendCapabilitiesView, BackendTelemetryView,
-    ContextStatusSnapshot as ControlContextStatusSnapshot, GenerationStatus, MemoryStatus,
-    ModelStatus, OrchStatusResponse, OrchSummaryResponse, OrchTaskEntry, OrchestrationsStatus,
-    PidStatusResponse, ProcessesStatus, ResourceGovernorStatusView, RuntimeInstanceView,
-    RuntimeLoadQueueEntryView, SchedulerStatus, StatusResponse,
+    ContextStatusSnapshot as ControlContextStatusSnapshot, GenerationStatus, JobsStatus,
+    MemoryStatus, ModelStatus, OrchArtifactRefView, OrchArtifactView, OrchStatusResponse,
+    OrchSummaryResponse, OrchTaskAttemptView, OrchTaskEntry, OrchestrationsStatus,
+    PidStatusResponse, ProcessPermissionsView, ProcessesStatus, ResourceGovernorStatusView,
+    RuntimeInstanceView, RuntimeLoadQueueEntryView, SchedulerStatus, StatusResponse,
 };
 
 use crate::backend::{runtime_backend_telemetry, BackendCapabilities, RuntimeModel};
@@ -19,6 +20,7 @@ use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::{
     CheckedOutProcessMetadata, ProcessScheduler, ProcessSchedulerSnapshot, RestoredProcessMetadata,
 };
+use crate::services::job_scheduler::JobScheduler;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 
@@ -28,6 +30,7 @@ pub struct StatusSnapshotDeps<'a> {
     pub resource_governor: &'a ResourceGovernor,
     pub model_catalog: &'a ModelCatalog,
     pub scheduler: &'a ProcessScheduler,
+    pub job_scheduler: &'a JobScheduler,
     pub orchestrator: &'a Orchestrator,
     pub in_flight: &'a HashSet<u64>,
     pub metrics: &'a MetricsState,
@@ -273,6 +276,14 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
             priority_normal: sched_norm,
             priority_low: sched_low,
         },
+        jobs: JobsStatus {
+            scheduled_jobs: deps
+                .job_scheduler
+                .scheduled_jobs()
+                .into_iter()
+                .map(|job| job.to_view())
+                .collect(),
+        },
         orchestrations: OrchestrationsStatus {
             active_orchestrations: build_orchestration_summaries(deps),
         },
@@ -324,36 +335,214 @@ pub fn build_orchestration_status(
     orch_id: u64,
 ) -> Option<OrchStatusResponse> {
     let orch = deps.orchestrator.get(orch_id)?;
+    let workflow_io = deps.storage.load_workflow_io(orch_id).ok()?;
     let (pending, running, completed, failed, skipped) = orch.counts();
     let total = orch.tasks.len();
     let elapsed = orch.created_at.elapsed().as_secs_f64();
     let finished = orch.is_finished();
+    let attempts_by_task = workflow_io.attempts.into_iter().fold(
+        HashMap::<String, Vec<crate::storage::StoredWorkflowTaskAttempt>>::new(),
+        |mut acc, attempt| {
+            acc.entry(attempt.task_id.clone())
+                .or_default()
+                .push(attempt);
+            acc
+        },
+    );
+    let artifacts_by_id = workflow_io
+        .artifacts
+        .iter()
+        .cloned()
+        .map(|artifact| (artifact.artifact_id.clone(), artifact))
+        .collect::<HashMap<_, _>>();
+    let artifacts_by_task = workflow_io.artifacts.into_iter().fold(
+        HashMap::<String, Vec<crate::storage::StoredWorkflowArtifact>>::new(),
+        |mut acc, artifact| {
+            acc.entry(artifact.producer_task_id.clone())
+                .or_default()
+                .push(artifact);
+            acc
+        },
+    );
+    let inputs_by_attempt = workflow_io.inputs.into_iter().fold(
+        HashMap::<(String, u32), Vec<crate::storage::StoredWorkflowArtifactInput>>::new(),
+        |mut acc, input| {
+            acc.entry((input.consumer_task_id.clone(), input.consumer_attempt))
+                .or_default()
+                .push(input);
+            acc
+        },
+    );
 
-    let tasks = orch
+    let tasks: Vec<OrchTaskEntry> = orch
         .topo_order
         .iter()
         .map(|task_id| {
             let status = &orch.status[task_id];
+            let task_def = orch.tasks.get(task_id);
+            let task_attempts = attempts_by_task.get(task_id).cloned().unwrap_or_default();
+            let output_artifacts = artifacts_by_task.get(task_id).cloned().unwrap_or_default();
+            let current_attempt = match status {
+                crate::orchestrator::TaskStatus::Running { attempt, .. }
+                | crate::orchestrator::TaskStatus::Completed { attempt }
+                | crate::orchestrator::TaskStatus::Failed { attempt, .. } => Some(*attempt),
+                crate::orchestrator::TaskStatus::Pending
+                | crate::orchestrator::TaskStatus::Skipped => {
+                    task_attempts.first().map(|attempt| attempt.attempt)
+                }
+            };
+            let selected_attempt =
+                current_attempt.or_else(|| task_attempts.first().map(|attempt| attempt.attempt));
+            let input_artifacts = selected_attempt
+                .and_then(|attempt| inputs_by_attempt.get(&(task_id.clone(), attempt)).cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|input| {
+                    let source = artifacts_by_id.get(&input.artifact_id);
+                    OrchArtifactRefView {
+                        artifact_id: input.artifact_id,
+                        task: input.producer_task_id,
+                        attempt: input.producer_attempt,
+                        kind: source
+                            .map(|artifact| artifact.kind.clone())
+                            .unwrap_or_else(|| "task_output".to_string()),
+                        label: source
+                            .map(|artifact| artifact.label.clone())
+                            .unwrap_or_else(|| "task artifact".to_string()),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let artifact_views = output_artifacts
+                .iter()
+                .cloned()
+                .map(|artifact| OrchArtifactView {
+                    artifact_id: artifact.artifact_id,
+                    task: artifact.producer_task_id,
+                    attempt: artifact.producer_attempt,
+                    kind: artifact.kind,
+                    label: artifact.label,
+                    mime_type: artifact.mime_type,
+                    preview: artifact.preview,
+                    content: artifact.content_text,
+                    bytes: artifact.bytes,
+                    created_at_ms: artifact.created_at_ms,
+                })
+                .collect::<Vec<_>>();
+            let running_output = deps.orchestrator.running_output_for_task(orch_id, task_id);
             let (pid, error, context) = match status {
-                crate::orchestrator::TaskStatus::Running { pid } => (
+                crate::orchestrator::TaskStatus::Running { pid, .. } => (
                     Some(*pid),
                     None,
                     build_pid_status(deps, *pid).and_then(|response| response.context),
                 ),
-                crate::orchestrator::TaskStatus::Failed { error } => {
+                crate::orchestrator::TaskStatus::Failed { error, .. } => {
                     (None, Some(error.clone()), None)
                 }
                 _ => (None, None, None),
             };
+            let latest_output_preview = if let Some(running_output) = running_output {
+                (!running_output.text.is_empty()).then_some(running_output.text.clone())
+            } else {
+                artifact_views
+                    .first()
+                    .map(|artifact| artifact.preview.clone())
+            };
+            let latest_output_text = if let Some(running_output) = running_output {
+                (!running_output.text.is_empty()).then_some(running_output.text.clone())
+            } else {
+                artifact_views
+                    .first()
+                    .map(|artifact| artifact.content.clone())
+            };
+            let latest_output_truncated = running_output
+                .map(|running_output| running_output.truncated)
+                .unwrap_or_else(|| {
+                    task_attempts
+                        .first()
+                        .map(|attempt| attempt.truncated)
+                        .unwrap_or(false)
+                });
+            let attempts = task_attempts
+                .into_iter()
+                .map(|attempt| {
+                    let running_preview = running_output
+                        .filter(|running| running.attempt == attempt.attempt)
+                        .map(|running| running.text.clone());
+                    OrchTaskAttemptView {
+                        attempt: attempt.attempt,
+                        status: attempt.status,
+                        session_id: attempt.session_id,
+                        pid: attempt.pid,
+                        error: attempt.error,
+                        output_preview: running_preview
+                            .clone()
+                            .filter(|preview| !preview.is_empty())
+                            .unwrap_or(attempt.output_preview),
+                        output_chars: running_preview
+                            .as_ref()
+                            .map(|preview| preview.len())
+                            .unwrap_or(attempt.output_chars),
+                        truncated: running_output
+                            .filter(|running| running.attempt == attempt.attempt)
+                            .map(|running| running.truncated)
+                            .unwrap_or(attempt.truncated),
+                        started_at_ms: attempt.started_at_ms,
+                        completed_at_ms: attempt.completed_at_ms,
+                        primary_artifact_id: attempt.primary_artifact_id,
+                    }
+                })
+                .collect::<Vec<_>>();
             OrchTaskEntry {
                 task: task_id.clone(),
+                role: task_def.and_then(|task| task.role.clone()),
+                workload: task_def.and_then(|task| task.workload.clone()),
+                backend_class: task_def
+                    .map(|task| {
+                        task.backend_class
+                            .map(|backend_class| backend_class.as_str().to_string())
+                    })
+                    .flatten(),
+                context_strategy: task_def.and_then(|task| task.context_strategy.clone()),
+                deps: task_def.map(|task| task.deps.clone()).unwrap_or_default(),
                 status: status.label().to_string(),
+                current_attempt,
                 pid,
                 error,
                 context,
+                latest_output_preview,
+                latest_output_text,
+                latest_output_truncated,
+                input_artifacts,
+                output_artifacts: artifact_views,
+                attempts,
             }
         })
         .collect();
+
+    let truncations = tasks
+        .iter()
+        .flat_map(|task: &OrchTaskEntry| task.attempts.iter())
+        .filter(|attempt| attempt.truncated)
+        .count();
+    let output_chars_stored = tasks
+        .iter()
+        .map(|task| {
+            task.output_artifacts
+                .iter()
+                .map(|artifact| artifact.bytes)
+                .sum::<usize>()
+        })
+        .sum::<usize>()
+        + tasks
+            .iter()
+            .filter_map(|task| {
+                if task.status == "running" {
+                    task.latest_output_text.as_ref().map(|text| text.len())
+                } else {
+                    None
+                }
+            })
+            .sum::<usize>();
 
     Some(OrchStatusResponse {
         orchestration_id: orch_id,
@@ -366,8 +555,8 @@ pub fn build_orchestration_status(
         finished,
         elapsed_secs: elapsed,
         policy: format!("{:?}", orch.failure_policy),
-        truncations: orch.truncated_outputs,
-        output_chars_stored: orch.output_chars_stored,
+        truncations,
+        output_chars_stored,
         tasks,
     })
 }
@@ -396,6 +585,7 @@ fn build_pid_status_or_placeholder(
         session_id: deps.session_registry.session_id_for_pid_or_fallback(pid),
         pid,
         owner_id: 0,
+        tool_caller: String::new(),
         orchestration_id: None,
         orchestration_task_id: None,
         state: "InFlight".to_string(),
@@ -417,6 +607,12 @@ fn build_pid_status_or_placeholder(
         backend_class: None,
         backend_capabilities: None,
         session_accounting: None,
+        permissions: ProcessPermissionsView {
+            trust_scope: "unknown".to_string(),
+            actions_allowed: false,
+            allowed_tools: Vec::new(),
+            path_scopes: Vec::new(),
+        },
         context: None,
     })
 }
@@ -444,10 +640,13 @@ fn build_pid_status_response_checked(
                 session_id,
                 pid,
                 owner_id: process.owner_id,
-                orchestration_id: orchestration_binding.as_ref().map(|(orch_id, _)| *orch_id),
+                tool_caller: process.tool_caller.as_str().to_string(),
+                orchestration_id: orchestration_binding
+                    .as_ref()
+                    .map(|(orch_id, _, _)| *orch_id),
                 orchestration_task_id: orchestration_binding
                     .as_ref()
-                    .map(|(_, task_id)| task_id.clone()),
+                    .map(|(_, task_id, _)| task_id.clone()),
                 state: format!("{:?}", process.state),
                 tokens: process.tokens.len(),
                 index_pos: process.index_pos,
@@ -481,6 +680,7 @@ fn build_pid_status_response_checked(
                 backend_class,
                 backend_capabilities,
                 session_accounting,
+                permissions: map_permissions_view(&process.permission_policy),
                 context: Some(map_context_snapshot(process.context_status_snapshot())),
             });
         }
@@ -510,17 +710,20 @@ fn checked_out_pid_status_response(
     session_id: String,
     pid: u64,
     sched: Option<&ProcessSchedulerSnapshot>,
-    orchestration_binding: Option<(u64, String)>,
+    orchestration_binding: Option<(u64, String, u32)>,
     metadata: &CheckedOutProcessMetadata,
 ) -> PidStatusResponse {
     PidStatusResponse {
         session_id,
         pid,
         owner_id: metadata.owner_id,
-        orchestration_id: orchestration_binding.as_ref().map(|(orch_id, _)| *orch_id),
+        tool_caller: metadata.tool_caller.as_str().to_string(),
+        orchestration_id: orchestration_binding
+            .as_ref()
+            .map(|(orch_id, _, _)| *orch_id),
         orchestration_task_id: orchestration_binding
             .as_ref()
-            .map(|(_, task_id)| task_id.clone()),
+            .map(|(_, task_id, _)| task_id.clone()),
         state: metadata.state.clone(),
         tokens: metadata.tokens,
         index_pos: metadata.index_pos,
@@ -542,6 +745,7 @@ fn checked_out_pid_status_response(
         backend_class: metadata.backend_class.clone(),
         backend_capabilities: map_backend_capabilities(metadata.backend_capabilities),
         session_accounting: None,
+        permissions: map_permissions_view(&metadata.permission_policy),
         context: Some(map_context_snapshot(metadata.context.clone())),
     }
 }
@@ -556,6 +760,7 @@ fn restored_pid_status_response(
         session_id,
         pid,
         owner_id: metadata.owner_id,
+        tool_caller: metadata.tool_caller.as_str().to_string(),
         orchestration_id: None,
         orchestration_task_id: None,
         state: metadata.state.clone(),
@@ -579,6 +784,7 @@ fn restored_pid_status_response(
         backend_class: metadata.backend_class.clone(),
         backend_capabilities: map_backend_capabilities(metadata.backend_capabilities),
         session_accounting: None,
+        permissions: map_permissions_view(&metadata.permission_policy),
         context: Some(map_context_snapshot(
             crate::process::ContextStatusSnapshot::from_parts(
                 &metadata.context_policy,
@@ -608,6 +814,17 @@ fn map_backend_capabilities(
     capabilities: Option<BackendCapabilities>,
 ) -> Option<BackendCapabilitiesView> {
     capabilities.map(Into::into)
+}
+
+fn map_permissions_view(
+    policy: &crate::tools::invocation::ProcessPermissionPolicy,
+) -> ProcessPermissionsView {
+    ProcessPermissionsView {
+        trust_scope: policy.trust_scope.as_str().to_string(),
+        actions_allowed: policy.actions_allowed,
+        allowed_tools: policy.allowed_tools.clone(),
+        path_scopes: policy.path_scopes.clone(),
+    }
 }
 
 fn map_context_snapshot(

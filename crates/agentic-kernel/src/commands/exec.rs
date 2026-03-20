@@ -4,7 +4,7 @@ use crate::protocol;
 use crate::scheduler::ProcessPriority;
 use crate::services::model_runtime::{activate_model_target, ModelActivationError};
 use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 use agentic_control_models::{ExecStartPayload, KernelEvent};
 use agentic_protocol::ControlErrorCode;
 
@@ -147,6 +147,18 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
     });
 
     if let Some(runtime_id) = runtime_id {
+        let permission_policy = match ProcessPermissionPolicy::interactive_chat(tool_registry) {
+            Ok(policy) => policy,
+            Err(err) => {
+                return Some(protocol::response_protocol_err_typed(
+                    client,
+                    request_id,
+                    ControlErrorCode::SpawnFailed,
+                    protocol::schema::ERROR,
+                    &err,
+                ));
+            }
+        };
         let pid_floor = runtime_registry.next_pid_floor();
         let spawn_result = {
             let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
@@ -171,6 +183,7 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                     system_prompt: Some(system_prompt.clone()),
                     owner_id: client_id,
                     tool_caller: ToolCaller::AgentText,
+                    permission_policy: Some(permission_policy.clone()),
                     workload,
                     required_backend_class: None,
                     priority: ProcessPriority::Normal,

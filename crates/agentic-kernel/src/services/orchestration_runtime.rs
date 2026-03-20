@@ -1,4 +1,4 @@
-use agentic_control_models::KernelEvent;
+use agentic_control_models::{KernelEvent, RetryTaskResult};
 use thiserror::Error;
 
 use crate::errors::OrchestratorError;
@@ -11,9 +11,9 @@ use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::services::model_runtime::activate_model_target;
 use crate::session::SessionRegistry;
-use crate::storage::StorageService;
+use crate::storage::{current_timestamp_ms, StorageService, WorkflowArtifactInputRef};
 use crate::tool_registry::ToolRegistry;
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 
 use super::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
 
@@ -30,6 +30,15 @@ pub enum OrchestrationStartError {
 
     #[error("{0}")]
     InvalidGraph(#[from] OrchestratorError),
+
+    #[error("{0}")]
+    RoutingFailed(String),
+}
+
+#[derive(Debug, Error)]
+pub enum OrchestrationRetryError {
+    #[error("{0}")]
+    InvalidTask(#[from] OrchestratorError),
 
     #[error("{0}")]
     RoutingFailed(String),
@@ -52,75 +61,24 @@ pub fn start_orchestration(
 ) -> Result<OrchestrationStartResult, OrchestrationStartError> {
     let total_tasks = graph.tasks.len();
     let (orch_id, spawn_requests) = orchestrator.register(graph, owner_id)?;
-    let system_prompt =
-        crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentSupervisor);
-
-    let mut spawned = 0usize;
-    for req in spawn_requests {
-        let runtime_id = resolve_runtime_for_spawn_request(
-            runtime_registry,
-            resource_governor,
-            storage,
-            model_catalog,
-            session_registry,
-            &req,
-        )?;
-        let pid_floor = runtime_registry.next_pid_floor();
-        let spawn_result = {
-            let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
-                return Err(OrchestrationStartError::NoModelLoaded);
-            };
-            spawn_managed_process_with_session(
-                &runtime_id,
-                pid_floor,
-                engine,
-                memory,
-                scheduler,
-                session_registry,
-                storage,
-                ManagedProcessRequest {
-                    prompt: req.prompt.clone(),
-                    system_prompt: Some(system_prompt.clone()),
-                    owner_id: req.owner_id,
-                    tool_caller: ToolCaller::AgentSupervisor,
-                    workload: req.workload,
-                    required_backend_class: req.required_backend_class,
-                    priority: ProcessPriority::Normal,
-                    lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
-                    context_policy: Some(req.context_policy.clone()),
-                },
-            )
-        };
-        match spawn_result {
-            Ok(spawned_process) => {
-                if let Err(err) =
-                    runtime_registry.register_pid(storage, &runtime_id, spawned_process.pid)
-                {
-                    tracing::warn!(
-                        pid = spawned_process.pid,
-                        runtime_id,
-                        %err,
-                        "ORCHESTRATION: failed to register pid in runtime registry"
-                    );
-                }
-                orchestrator.register_pid(spawned_process.pid, orch_id, &req.task_id);
-                pending_events.push(KernelEvent::SessionStarted {
-                    session_id: spawned_process.session_id.clone(),
-                    pid: spawned_process.pid,
-                    workload: format!("{:?}", req.workload).to_lowercase(),
-                    prompt: req.prompt.clone(),
-                });
-                pending_events.push(KernelEvent::WorkspaceChanged {
-                    pid: spawned_process.pid,
-                    reason: "orchestrate_started".to_string(),
-                });
-                spawned += 1;
-            }
-            Err(err) => {
-                orchestrator.mark_spawn_failed(orch_id, &req.task_id, &err);
-            }
-        }
-    }
+    let spawned = spawn_workflow_requests(
+        runtime_registry,
+        resource_governor,
+        memory,
+        model_catalog,
+        scheduler,
+        orchestrator,
+        session_registry,
+        storage,
+        pending_events,
+        tool_registry,
+        spawn_requests,
+        "orchestrate_started",
+    )
+    .map_err(|err| match err.as_str() {
+        "no_model_loaded" => OrchestrationStartError::NoModelLoaded,
+        _ => OrchestrationStartError::RoutingFailed(err),
+    })?;
 
     pending_events.push(KernelEvent::LobbyChanged {
         reason: "orchestrate_started".to_string(),
@@ -129,6 +87,56 @@ pub fn start_orchestration(
     Ok(OrchestrationStartResult {
         orchestration_id: orch_id,
         total_tasks,
+        spawned,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn retry_orchestration_task(
+    runtime_registry: &mut RuntimeRegistry,
+    resource_governor: &mut ResourceGovernor,
+    memory: &mut NeuralMemory,
+    model_catalog: &mut ModelCatalog,
+    scheduler: &mut ProcessScheduler,
+    orchestrator: &mut Orchestrator,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
+    pending_events: &mut Vec<KernelEvent>,
+    tool_registry: &ToolRegistry,
+    orch_id: u64,
+    task_id: &str,
+) -> Result<RetryTaskResult, OrchestrationRetryError> {
+    let plan = orchestrator.retry_task(orch_id, task_id)?;
+    let (spawn_requests, kill_pids) = orchestrator.advance_one(orch_id);
+    if !kill_pids.is_empty() {
+        return Err(OrchestrationRetryError::RoutingFailed(
+            "retry produced unexpected running-task kills".to_string(),
+        ));
+    }
+    let spawned = spawn_workflow_requests(
+        runtime_registry,
+        resource_governor,
+        memory,
+        model_catalog,
+        scheduler,
+        orchestrator,
+        session_registry,
+        storage,
+        pending_events,
+        tool_registry,
+        spawn_requests,
+        "orchestrator_retry",
+    )
+    .map_err(OrchestrationRetryError::RoutingFailed)?;
+
+    pending_events.push(KernelEvent::LobbyChanged {
+        reason: "orchestrator_retry".to_string(),
+    });
+
+    Ok(RetryTaskResult {
+        orchestration_id: orch_id,
+        task: task_id.to_string(),
+        reset_tasks: plan.reset_tasks,
         spawned,
     })
 }
@@ -217,4 +225,136 @@ pub(crate) fn resolve_runtime_for_spawn_request(
         .map_err(|err| OrchestrationStartError::RoutingFailed(err.message().to_string())),
         Err(_) => Err(OrchestrationStartError::NoModelLoaded),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_workflow_requests(
+    runtime_registry: &mut RuntimeRegistry,
+    resource_governor: &mut ResourceGovernor,
+    memory: &mut NeuralMemory,
+    model_catalog: &mut ModelCatalog,
+    scheduler: &mut ProcessScheduler,
+    orchestrator: &mut Orchestrator,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
+    pending_events: &mut Vec<KernelEvent>,
+    tool_registry: &ToolRegistry,
+    spawn_requests: Vec<crate::orchestrator::SpawnRequest>,
+    event_reason: &str,
+) -> Result<usize, String> {
+    let system_prompt =
+        crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentSupervisor);
+    let mut spawned = 0usize;
+
+    for req in spawn_requests {
+        let permission_policy = ProcessPermissionPolicy::workflow_supervisor(
+            tool_registry,
+            Some(&req.permission_overrides),
+        )
+        .map_err(|err| err.to_string())?;
+        let runtime_id = resolve_runtime_for_spawn_request(
+            runtime_registry,
+            resource_governor,
+            storage,
+            model_catalog,
+            session_registry,
+            &req,
+        )
+        .map_err(|err| match err {
+            OrchestrationStartError::NoModelLoaded => "no_model_loaded".to_string(),
+            other => other.to_string(),
+        })?;
+        let pid_floor = runtime_registry.next_pid_floor();
+        let spawn_result = {
+            let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
+                return Err("no_model_loaded".to_string());
+            };
+            spawn_managed_process_with_session(
+                &runtime_id,
+                pid_floor,
+                engine,
+                memory,
+                scheduler,
+                session_registry,
+                storage,
+                ManagedProcessRequest {
+                    prompt: req.prompt.clone(),
+                    system_prompt: Some(system_prompt.clone()),
+                    owner_id: req.owner_id,
+                    tool_caller: ToolCaller::AgentSupervisor,
+                    permission_policy: Some(permission_policy),
+                    workload: req.workload,
+                    required_backend_class: req.required_backend_class,
+                    priority: ProcessPriority::Normal,
+                    lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+                    context_policy: Some(req.context_policy.clone()),
+                },
+            )
+        };
+
+        match spawn_result {
+            Ok(spawned_process) => {
+                if let Err(err) =
+                    runtime_registry.register_pid(storage, &runtime_id, spawned_process.pid)
+                {
+                    tracing::warn!(
+                        pid = spawned_process.pid,
+                        runtime_id,
+                        %err,
+                        "ORCHESTRATION: failed to register pid in runtime registry"
+                    );
+                }
+                storage
+                    .begin_workflow_task_attempt(
+                        req.orch_id,
+                        &req.task_id,
+                        req.attempt,
+                        Some(&spawned_process.session_id),
+                        Some(spawned_process.pid),
+                        current_timestamp_ms(),
+                        &req.input_artifacts
+                            .iter()
+                            .map(|artifact| WorkflowArtifactInputRef {
+                                artifact_id: artifact.artifact_id.clone(),
+                                producer_task_id: artifact.producer_task_id.clone(),
+                                producer_attempt: artifact.producer_attempt,
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .map_err(|err| err.to_string())?;
+                orchestrator.register_pid(
+                    spawned_process.pid,
+                    req.orch_id,
+                    &req.task_id,
+                    req.attempt,
+                );
+                pending_events.push(KernelEvent::SessionStarted {
+                    session_id: spawned_process.session_id.clone(),
+                    pid: spawned_process.pid,
+                    workload: format!("{:?}", req.workload).to_lowercase(),
+                    prompt: req.prompt.clone(),
+                });
+                pending_events.push(KernelEvent::WorkspaceChanged {
+                    pid: spawned_process.pid,
+                    reason: event_reason.to_string(),
+                });
+                spawned += 1;
+            }
+            Err(err) => {
+                storage
+                    .record_workflow_task_spawn_failure(
+                        req.orch_id,
+                        &req.task_id,
+                        req.attempt,
+                        &err,
+                        current_timestamp_ms(),
+                    )
+                    .map_err(|storage_err| storage_err.to_string())?;
+                let _ =
+                    orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, req.attempt, &err);
+            }
+        }
+    }
+
+    Ok(spawned)
 }

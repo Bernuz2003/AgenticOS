@@ -17,9 +17,11 @@ use crate::services::process_runtime::{
     kill_managed_process_with_session, spawn_managed_process_with_session, ManagedProcessRequest,
 };
 use crate::session::SessionRegistry;
-use crate::storage::StorageService;
+use crate::storage::{
+    current_timestamp_ms, StorageService, StoredWorkflowArtifact, WorkflowArtifactInputRef,
+};
 use crate::tool_registry::ToolRegistry;
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 use crate::transport::Client;
 use crate::{audit, audit::AuditContext};
 use crate::{protocol, scheduler::CheckedOutProcessMetadata};
@@ -40,8 +42,31 @@ pub(super) fn handle_finished_processes(
     let mut finished_count = 0usize;
     for pid in finished_pids {
         finished_count = finished_count.saturating_add(1);
-        if orchestrator.is_orchestrated(pid) {
-            orchestrator.mark_completed(pid);
+        if let Some(finalized) = orchestrator.mark_completed(pid) {
+            match storage.finalize_workflow_task_attempt(
+                finalized.orch_id,
+                &finalized.task_id,
+                finalized.attempt,
+                &finalized.status,
+                finalized.error.as_deref(),
+                &finalized.output_text,
+                finalized.truncated,
+                current_timestamp_ms(),
+            ) {
+                Ok(Some(artifact)) => orchestrator.record_completed_artifact(
+                    finalized.orch_id,
+                    &finalized.task_id,
+                    map_stored_artifact(artifact),
+                ),
+                Ok(None) => {}
+                Err(err) => tracing::warn!(
+                    orch_id = finalized.orch_id,
+                    task_id = %finalized.task_id,
+                    attempt = finalized.attempt,
+                    %err,
+                    "ORCHESTRATOR: failed to persist completed task output"
+                ),
+            }
         }
 
         let owner_id = runtime_registry
@@ -225,6 +250,37 @@ pub(super) fn advance_orchestrator(
     }
 
     for req in spawn_requests {
+        let permission_policy = match ProcessPermissionPolicy::workflow_supervisor(
+            tool_registry,
+            Some(&req.permission_overrides),
+        ) {
+            Ok(policy) => policy,
+            Err(err) => {
+                let recorded_at_ms = current_timestamp_ms();
+                if let Err(storage_err) = storage.record_workflow_task_spawn_failure(
+                    req.orch_id,
+                    &req.task_id,
+                    req.attempt,
+                    &err,
+                    recorded_at_ms,
+                ) {
+                    tracing::warn!(
+                        orch_id = req.orch_id,
+                        task_id = %req.task_id,
+                        attempt = req.attempt,
+                        %storage_err,
+                        "ORCHESTRATOR: failed to persist task permission failure"
+                    );
+                }
+                let _ =
+                    orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, req.attempt, &err);
+                pending_events.push(KernelEvent::LobbyChanged {
+                    reason: "orchestrator_spawn_failed".to_string(),
+                });
+                tracing::error!(task_id = %req.task_id, %err, "ORCHESTRATOR: invalid task permissions");
+                continue;
+            }
+        };
         let runtime_id = match resolve_runtime_for_spawn_request(
             runtime_registry,
             resource_governor,
@@ -235,7 +291,24 @@ pub(super) fn advance_orchestrator(
         ) {
             Ok(runtime_id) => runtime_id,
             Err(err) => {
-                orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, &err.to_string());
+                let error = err.to_string();
+                if let Err(storage_err) = storage.record_workflow_task_spawn_failure(
+                    req.orch_id,
+                    &req.task_id,
+                    req.attempt,
+                    &error,
+                    current_timestamp_ms(),
+                ) {
+                    tracing::warn!(
+                        orch_id = req.orch_id,
+                        task_id = %req.task_id,
+                        attempt = req.attempt,
+                        %storage_err,
+                        "ORCHESTRATOR: failed to persist routing failure"
+                    );
+                }
+                let _ =
+                    orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, req.attempt, &error);
                 pending_events.push(KernelEvent::LobbyChanged {
                     reason: "orchestrator_spawn_failed".to_string(),
                 });
@@ -247,11 +320,24 @@ pub(super) fn advance_orchestrator(
         let pid_floor = runtime_registry.next_pid_floor();
         let spawn_result = {
             let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
-                orchestrator.mark_spawn_failed(
+                let error = "resolved runtime has no loaded engine";
+                if let Err(storage_err) = storage.record_workflow_task_spawn_failure(
                     req.orch_id,
                     &req.task_id,
-                    "resolved runtime has no loaded engine",
-                );
+                    req.attempt,
+                    error,
+                    current_timestamp_ms(),
+                ) {
+                    tracing::warn!(
+                        orch_id = req.orch_id,
+                        task_id = %req.task_id,
+                        attempt = req.attempt,
+                        %storage_err,
+                        "ORCHESTRATOR: failed to persist missing-engine failure"
+                    );
+                }
+                let _ =
+                    orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, req.attempt, error);
                 continue;
             };
             spawn_managed_process_with_session(
@@ -267,6 +353,7 @@ pub(super) fn advance_orchestrator(
                     system_prompt: Some(system_prompt.clone()),
                     owner_id: req.owner_id,
                     tool_caller: ToolCaller::AgentSupervisor,
+                    permission_policy: Some(permission_policy),
                     workload: req.workload,
                     required_backend_class: req.required_backend_class,
                     priority: ProcessPriority::Normal,
@@ -287,7 +374,31 @@ pub(super) fn advance_orchestrator(
                         "ORCHESTRATOR: failed to register spawned pid"
                     );
                 }
-                orchestrator.register_pid(pid, req.orch_id, &req.task_id);
+                if let Err(err) = storage.begin_workflow_task_attempt(
+                    req.orch_id,
+                    &req.task_id,
+                    req.attempt,
+                    Some(&spawned_process.session_id),
+                    Some(pid),
+                    current_timestamp_ms(),
+                    &req.input_artifacts
+                        .iter()
+                        .map(|artifact| WorkflowArtifactInputRef {
+                            artifact_id: artifact.artifact_id.clone(),
+                            producer_task_id: artifact.producer_task_id.clone(),
+                            producer_attempt: artifact.producer_attempt,
+                        })
+                        .collect::<Vec<_>>(),
+                ) {
+                    tracing::warn!(
+                        orch_id = req.orch_id,
+                        task_id = %req.task_id,
+                        attempt = req.attempt,
+                        %err,
+                        "ORCHESTRATOR: failed to persist started task attempt"
+                    );
+                }
+                orchestrator.register_pid(pid, req.orch_id, &req.task_id, req.attempt);
                 pending_events.push(KernelEvent::SessionStarted {
                     session_id: spawned_process.session_id.clone(),
                     pid,
@@ -309,13 +420,40 @@ pub(super) fn advance_orchestrator(
                 );
             }
             Err(e) => {
-                orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, &e.to_string());
+                let error = e.to_string();
+                if let Err(storage_err) = storage.record_workflow_task_spawn_failure(
+                    req.orch_id,
+                    &req.task_id,
+                    req.attempt,
+                    &error,
+                    current_timestamp_ms(),
+                ) {
+                    tracing::warn!(
+                        orch_id = req.orch_id,
+                        task_id = %req.task_id,
+                        attempt = req.attempt,
+                        %storage_err,
+                        "ORCHESTRATOR: failed to persist spawn failure"
+                    );
+                }
+                let _ =
+                    orchestrator.mark_spawn_failed(req.orch_id, &req.task_id, req.attempt, &error);
                 pending_events.push(KernelEvent::LobbyChanged {
                     reason: "orchestrator_spawn_failed".to_string(),
                 });
                 tracing::error!(task_id = %req.task_id, %e, "ORCHESTRATOR: spawn failed");
             }
         }
+    }
+}
+
+fn map_stored_artifact(artifact: StoredWorkflowArtifact) -> crate::orchestrator::TaskArtifact {
+    crate::orchestrator::TaskArtifact {
+        artifact_id: artifact.artifact_id,
+        producer_task_id: artifact.producer_task_id,
+        producer_attempt: artifact.producer_attempt,
+        mime_type: artifact.mime_type,
+        content_text: artifact.content_text,
     }
 }
 
@@ -366,6 +504,8 @@ pub(super) fn checkout_active_processes(
                 pid,
                 CheckedOutProcessMetadata {
                     owner_id: process.owner_id,
+                    tool_caller: process.tool_caller.clone(),
+                    permission_policy: process.permission_policy.clone(),
                     state: if process.model.backend_class().as_str() == "remote_stateless" {
                         "AwaitingRemoteResponse".to_string()
                     } else {

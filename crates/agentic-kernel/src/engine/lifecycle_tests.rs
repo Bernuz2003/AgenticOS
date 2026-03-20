@@ -12,7 +12,7 @@ use crate::process::{
 };
 use crate::prompting::GenerationConfig;
 use crate::prompting::PromptFamily;
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -113,6 +113,12 @@ fn test_engine() -> (LLMEngine, SavedSlots, SavedSlots, FreedSlots) {
         1,
         7,
         ToolCaller::AgentText,
+        ProcessPermissionPolicy {
+            trust_scope: ProcessTrustScope::InteractiveChat,
+            actions_allowed: false,
+            allowed_tools: Vec::new(),
+            path_scopes: vec![".".to_string()],
+        },
         ProcessLifecyclePolicy::Interactive,
         process_model,
         tokenizer.clone(),

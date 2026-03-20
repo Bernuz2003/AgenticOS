@@ -1,26 +1,43 @@
-use std::collections::HashMap;
-
-use super::TaskNodeDef;
+use super::{TaskInputArtifact, TaskNodeDef};
 
 const TRUNCATION_MARKER: &str = "\n[TRUNCATED]\n";
 
-pub(crate) fn build_task_prompt(task: &TaskNodeDef, outputs: &HashMap<String, String>) -> String {
+pub(crate) fn build_task_prompt(
+    task: &TaskNodeDef,
+    input_artifacts: &[TaskInputArtifact],
+) -> String {
+    let base_prompt = match task
+        .role
+        .as_deref()
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+    {
+        Some(role) => format!("[Task role]\n{}\n\n[Task]\n{}", role, task.prompt),
+        None => task.prompt.clone(),
+    };
     let mut context_parts = Vec::new();
-    for dep in &task.deps {
-        if let Some(output) = outputs.get(dep) {
-            if !output.is_empty() {
-                context_parts.push(format!("[Output from task \"{}\"]:\n{}", dep, output));
-            }
+    for artifact in input_artifacts {
+        if artifact.content_text.trim().is_empty() {
+            continue;
         }
+
+        context_parts.push(format!(
+            "[Artifact from task \"{}\" attempt {} | id={} | type={}]:\n{}",
+            artifact.producer_task_id,
+            artifact.producer_attempt,
+            artifact.artifact_id,
+            artifact.mime_type,
+            artifact.content_text
+        ));
     }
 
     if context_parts.is_empty() {
-        task.prompt.clone()
+        base_prompt
     } else {
         format!(
             "{}\n\n[Your task]:\n{}",
             context_parts.join("\n\n"),
-            task.prompt,
+            base_prompt,
         )
     }
 }

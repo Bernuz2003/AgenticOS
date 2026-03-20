@@ -9,7 +9,9 @@ use crate::tool_registry::ToolRegistry;
 use crate::tools::executor::{
     build_structured_invocation, execute_structured_invocation, execute_text_invocation,
 };
-use crate::tools::invocation::{ToolCaller, ToolContext, ToolInvocationTransport};
+use crate::tools::invocation::{
+    ProcessPermissionPolicy, ProcessTrustScope, ToolCaller, ToolContext, ToolInvocationTransport,
+};
 
 struct WorkspaceFixture {
     absolute: PathBuf,
@@ -44,8 +46,36 @@ fn text_context() -> ToolContext {
         pid: Some(1),
         session_id: Some("workspace-tools".to_string()),
         caller: ToolCaller::AgentText,
+        permissions: ProcessPermissionPolicy {
+            trust_scope: ProcessTrustScope::InteractiveChat,
+            actions_allowed: false,
+            allowed_tools: vec![
+                "path_info".to_string(),
+                "find_files".to_string(),
+                "search_text".to_string(),
+                "read_file_range".to_string(),
+                "mkdir".to_string(),
+                "read_file".to_string(),
+                "write_file".to_string(),
+                "list_files".to_string(),
+                "calc".to_string(),
+            ],
+            path_scopes: vec![".".to_string()],
+        },
         transport: ToolInvocationTransport::Text,
         call_id: None,
+    }
+}
+
+fn scoped_text_context(scope: String) -> ToolContext {
+    ToolContext {
+        permissions: ProcessPermissionPolicy {
+            trust_scope: ProcessTrustScope::InteractiveChat,
+            actions_allowed: false,
+            allowed_tools: vec!["read_file".to_string()],
+            path_scopes: vec![scope],
+        },
+        ..text_context()
     }
 }
 
@@ -274,4 +304,33 @@ fn mkdir_creates_directory_and_is_idempotent() {
     .expect("mkdir second");
 
     assert_eq!(second.result.output["created"], json!(false));
+}
+
+#[test]
+fn read_file_rejects_paths_outside_process_scope() {
+    let inside = WorkspaceFixture::new("read_scope_inside");
+    let outside = WorkspaceFixture::new("read_scope_outside");
+    fs::write(inside.absolute.join("allowed.txt"), "inside").expect("write inside");
+    fs::write(outside.absolute.join("blocked.txt"), "outside").expect("write outside");
+
+    let registry = ToolRegistry::with_builtins();
+    let err = execute_structured_invocation(
+        build_structured_invocation(
+            "read_file",
+            json!({ "path": outside.relative_path("blocked.txt") }),
+            None,
+        )
+        .expect("structured invocation"),
+        &ToolContext {
+            transport: ToolInvocationTransport::Structured,
+            ..scoped_text_context(inside.relative.clone())
+        },
+        &registry,
+    )
+    .expect_err("scope enforcement");
+
+    assert!(matches!(
+        err,
+        crate::tools::error::ToolError::ExecutionFailed(_, _)
+    ));
 }

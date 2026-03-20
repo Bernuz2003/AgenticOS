@@ -11,6 +11,7 @@ import {
   type ResourceGovernorStatus,
   type RuntimeInstance,
   type RuntimeLoadQueueEntry,
+  type ScheduledJob,
 } from "../lib/api";
 
 export type SessionStatus = "idle" | "running" | "swapped";
@@ -67,6 +68,7 @@ interface SessionsState {
   resourceGovernor: ResourceGovernorStatus | null;
   runtimeLoadQueue: RuntimeLoadQueueEntry[];
   globalAuditEvents: AuditEvent[];
+  scheduledJobs: ScheduledJob[];
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -106,6 +108,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
   resourceGovernor: null,
   runtimeLoadQueue: [],
   globalAuditEvents: [],
+  scheduledJobs: [],
   loading: false,
   error: null,
   applySnapshot: (snapshot) => {
@@ -127,6 +130,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
       resourceGovernor: snapshot.resourceGovernor,
       runtimeLoadQueue: snapshot.runtimeLoadQueue,
       globalAuditEvents: snapshot.globalAuditEvents,
+      scheduledJobs: snapshot.scheduledJobs,
       orchestrations: snapshot.orchestrations,
       error: snapshot.error,
       loading: false,
@@ -202,6 +206,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
         resourceGovernor: null,
         runtimeLoadQueue: [],
         globalAuditEvents: [],
+        scheduledJobs: [],
         orchestrations: [],
         sessions: [],
         error: error instanceof Error ? error.message : "Failed to fetch lobby snapshot",

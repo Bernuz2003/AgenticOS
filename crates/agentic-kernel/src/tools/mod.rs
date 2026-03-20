@@ -58,6 +58,7 @@ pub fn handle_syscall(
     command_block: &str,
     pid: u64,
     caller: invocation::ToolCaller,
+    permissions: invocation::ProcessPermissionPolicy,
     call_id: Option<String>,
     rate_map: &mut SyscallRateMap,
     registry: &ToolRegistry,
@@ -67,6 +68,7 @@ pub fn handle_syscall(
         pid: Some(pid),
         session_id: None,
         caller,
+        permissions,
         transport: invocation::ToolInvocationTransport::Text,
         call_id,
     };

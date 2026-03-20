@@ -2,7 +2,8 @@ import {
   LayoutDashboard,
   MessageSquare,
   Activity,
-  Server,
+  ServerCog,
+  Waypoints,
 } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 
@@ -11,8 +12,9 @@ export function Sidebar() {
 
   const navItems = [
     { name: "Dashboard", path: "/", icon: LayoutDashboard },
-    { name: "Sessions", path: "/sessions", icon: MessageSquare },
-    { name: "Resources", path: "/resources", icon: Server },
+    { name: "Chats", path: "/sessions", icon: MessageSquare },
+    { name: "Workflows", path: "/workflows", icon: Waypoints },
+    { name: "Control Center", path: "/control-center", icon: ServerCog },
   ];
 
   return (

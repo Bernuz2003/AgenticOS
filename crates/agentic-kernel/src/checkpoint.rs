@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::process::{ContextPolicy, ContextState};
+use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 
 fn current_family_snapshot(
     engine_state: Option<&crate::engine::LLMEngine>,
@@ -57,6 +58,10 @@ pub struct KernelSnapshot {
 pub struct ProcessSnapshot {
     pub pid: u64,
     pub owner_id: usize,
+    #[serde(default = "default_tool_caller")]
+    pub tool_caller: ToolCaller,
+    #[serde(default = "default_permission_policy")]
+    pub permission_policy: ProcessPermissionPolicy,
     pub state: String,
     pub token_count: usize,
     pub max_tokens: usize,
@@ -68,6 +73,19 @@ pub struct ProcessSnapshot {
 
 fn default_context_policy() -> ContextPolicy {
     ContextPolicy::from_kernel_defaults()
+}
+
+fn default_tool_caller() -> ToolCaller {
+    ToolCaller::AgentText
+}
+
+fn default_permission_policy() -> ProcessPermissionPolicy {
+    ProcessPermissionPolicy {
+        trust_scope: ProcessTrustScope::InteractiveChat,
+        actions_allowed: false,
+        allowed_tools: Vec::new(),
+        path_scopes: vec![".".to_string()],
+    }
 }
 
 /// Scheduler state for all registered PIDs.
@@ -236,6 +254,8 @@ pub fn build_kernel_snapshot(
                 ProcessSnapshot {
                     pid: *pid,
                     owner_id: process.owner_id,
+                    tool_caller: process.tool_caller.clone(),
+                    permission_policy: process.permission_policy.clone(),
                     state: format!("{:?}", process.state),
                     token_count: process.tokens.len(),
                     max_tokens: process.max_tokens,
@@ -255,6 +275,8 @@ pub fn build_kernel_snapshot(
                         .map(|metadata| ProcessSnapshot {
                             pid,
                             owner_id: metadata.owner_id,
+                            tool_caller: metadata.tool_caller.clone(),
+                            permission_policy: metadata.permission_policy.clone(),
                             state: metadata.state.clone(),
                             token_count: metadata.token_count,
                             max_tokens: metadata.max_tokens,
@@ -282,6 +304,8 @@ pub fn build_kernel_snapshot(
                         .map(|metadata| ProcessSnapshot {
                             pid,
                             owner_id: metadata.owner_id,
+                            tool_caller: metadata.tool_caller.clone(),
+                            permission_policy: metadata.permission_policy.clone(),
                             state: metadata.state.clone(),
                             token_count: metadata.token_count,
                             max_tokens: metadata.max_tokens,

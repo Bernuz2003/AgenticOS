@@ -9,12 +9,13 @@ pub(crate) fn run_boot_recovery(storage: &mut StorageService) -> io::Result<Boot
         storage,
         audit::KERNEL_BOOT_RECOVERED,
         format!(
-            "sessions={} runtimes={} reset_sessions={} interrupted_runs={} interrupted_turns={} logical_resume={} strong_restore_candidates={} pending_queue={}",
+            "sessions={} runtimes={} reset_sessions={} interrupted_runs={} interrupted_turns={} interrupted_scheduler_runs={} logical_resume={} strong_restore_candidates={} pending_queue={}",
             report.persisted_sessions,
             report.known_runtimes,
             report.stale_active_sessions_reset,
             report.interrupted_process_runs,
             report.interrupted_turns,
+            report.interrupted_scheduler_job_runs,
             report.logical_resume_sessions,
             report.strong_restore_candidate_sessions,
             report.pending_runtime_queue_entries

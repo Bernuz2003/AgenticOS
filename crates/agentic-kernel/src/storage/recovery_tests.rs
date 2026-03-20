@@ -66,6 +66,7 @@ fn boot_recovery_interrupts_open_runs_and_turns() {
             stale_active_sessions_reset: 1,
             interrupted_process_runs: 1,
             interrupted_turns: 1,
+            interrupted_scheduler_job_runs: 0,
             logical_resume_sessions: 0,
             strong_restore_candidate_sessions: 1,
             pending_runtime_queue_entries: 0,

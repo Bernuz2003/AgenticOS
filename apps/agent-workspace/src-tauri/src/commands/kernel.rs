@@ -1,6 +1,6 @@
 use agentic_control_models::{
-    LoadModelResult, ModelCatalogSnapshot, OrchestrateResult, SelectModelResult, SendInputResult,
-    TurnControlResult,
+    LoadModelResult, ModelCatalogSnapshot, OrchStatusResponse, OrchestrateResult, RetryTaskResult,
+    ScheduleJobResult, SelectModelResult, SendInputResult, TurnControlResult,
 };
 use tauri::{async_runtime, State};
 
@@ -130,6 +130,56 @@ pub async fn orchestrate(
             .lock()
             .map_err(|_| "Bridge state lock poisoned".to_string())?;
         bridge.orchestrate(&payload).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn schedule_workflow_job(
+    payload: String,
+    state: State<'_, AppState>,
+) -> Result<ScheduleJobResult, String> {
+    let bridge = state.bridge.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        bridge.schedule_job(&payload).map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn fetch_orchestration_status(
+    orchestration_id: u64,
+    state: State<'_, AppState>,
+) -> Result<OrchStatusResponse, String> {
+    let bridge = state.bridge.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        bridge
+            .fetch_orchestration_status(orchestration_id)
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn retry_workflow_task(
+    orchestration_id: u64,
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<RetryTaskResult, String> {
+    let bridge = state.bridge.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        bridge
+            .retry_task(orchestration_id, &task_id)
+            .map_err(|err| err.to_string())
     })
     .await
 }

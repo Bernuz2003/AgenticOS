@@ -1,4 +1,5 @@
 use super::*;
+use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 
 fn make_test_snapshot() -> KernelSnapshot {
     KernelSnapshot {
@@ -16,6 +17,8 @@ fn make_test_snapshot() -> KernelSnapshot {
             ProcessSnapshot {
                 pid: 1,
                 owner_id: 10,
+                tool_caller: ToolCaller::AgentText,
+                permission_policy: test_permissions(),
                 state: "Running".to_string(),
                 token_count: 128,
                 max_tokens: 256,
@@ -25,6 +28,8 @@ fn make_test_snapshot() -> KernelSnapshot {
             ProcessSnapshot {
                 pid: 2,
                 owner_id: 11,
+                tool_caller: ToolCaller::AgentText,
+                permission_policy: test_permissions(),
                 state: "Paused".to_string(),
                 token_count: 64,
                 max_tokens: 512,
@@ -126,6 +131,15 @@ fn load_corrupt_checkpoint_returns_error() {
     assert!(err.contains("corrupt"));
 
     let _ = fs::remove_dir_all(dir);
+}
+
+fn test_permissions() -> ProcessPermissionPolicy {
+    ProcessPermissionPolicy {
+        trust_scope: ProcessTrustScope::InteractiveChat,
+        actions_allowed: false,
+        allowed_tools: Vec::new(),
+        path_scopes: vec![".".to_string()],
+    }
 }
 
 #[test]

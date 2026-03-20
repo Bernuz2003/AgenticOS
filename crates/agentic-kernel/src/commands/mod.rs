@@ -26,6 +26,7 @@ use crate::protocol::OpCode;
 use crate::resource_governor::ResourceGovernor;
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
+use crate::services::job_scheduler::JobScheduler;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
@@ -46,6 +47,7 @@ pub fn execute_command(
     resource_governor: &mut ResourceGovernor,
     model_catalog: &mut ModelCatalog,
     scheduler: &mut ProcessScheduler,
+    job_scheduler: &mut JobScheduler,
     orchestrator: &mut Orchestrator,
     tool_registry: &mut ToolRegistry,
     session_registry: &mut SessionRegistry,
@@ -126,6 +128,7 @@ pub fn execute_command(
         resource_governor,
         model_catalog,
         scheduler,
+        job_scheduler,
         orchestrator,
         tool_registry,
         session_registry,
@@ -155,6 +158,15 @@ pub fn execute_command(
             }
         }
         OpCode::ResumeSession => process_cmd::handle_resume_session(ctx.process_view(), &payload),
+        OpCode::ScheduleJob => {
+            if let Some(r) =
+                orchestration_cmd::handle_schedule_job(ctx.orchestration_view(), &payload)
+            {
+                r
+            } else {
+                return;
+            }
+        }
         OpCode::SendInput => process_cmd::handle_send_input(ctx.process_view(), &payload),
         OpCode::ContinueOutput => process_cmd::handle_continue_output(ctx.process_view(), &payload),
         OpCode::StopOutput => process_cmd::handle_stop_output(ctx.process_view(), &payload),
@@ -173,6 +185,15 @@ pub fn execute_command(
         OpCode::Orchestrate => {
             if let Some(r) =
                 orchestration_cmd::handle_orchestrate(ctx.orchestration_view(), &payload)
+            {
+                r
+            } else {
+                return;
+            }
+        }
+        OpCode::RetryTask => {
+            if let Some(r) =
+                orchestration_cmd::handle_retry_task(ctx.orchestration_view(), &payload)
             {
                 r
             } else {

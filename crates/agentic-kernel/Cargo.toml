@@ -28,5 +28,6 @@ getrandom = "0.2"
 ureq = { version = "2.12", features = ["json"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 jsonschema = "0.18"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]

@@ -9,7 +9,7 @@ use crate::backend::{
 };
 use crate::memory::ContextSlotId;
 use crate::prompting::GenerationConfig;
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -93,6 +93,12 @@ fn test_process(policy: ContextPolicy) -> (AgentProcess, Arc<Mutex<Vec<ContextSl
         1,
         7,
         ToolCaller::AgentText,
+        ProcessPermissionPolicy {
+            trust_scope: ProcessTrustScope::InteractiveChat,
+            actions_allowed: false,
+            allowed_tools: Vec::new(),
+            path_scopes: vec![".".to_string()],
+        },
         ProcessLifecyclePolicy::Interactive,
         model,
         tokenizer,

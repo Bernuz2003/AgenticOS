@@ -12,7 +12,7 @@ use crate::prompting::{
     format_initial_prompt_with_metadata, format_interprocess_user_message_with_metadata,
     format_system_injection_with_metadata, format_user_message_with_metadata, GenerationConfig,
 };
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 
 use super::tokenizer::{
     build_remote_fallback_tokenizer, resolve_special_tokens, resolve_tokenizer_path,
@@ -116,6 +116,7 @@ impl LLMEngine {
         _max_tokens: usize,
         owner_id: usize,
         tool_caller: ToolCaller,
+        permission_policy: ProcessPermissionPolicy,
         lifecycle_policy: ProcessLifecyclePolicy,
         context_policy: ContextPolicy,
     ) -> Result<u64> {
@@ -175,6 +176,7 @@ impl LLMEngine {
             pid,
             owner_id,
             tool_caller,
+            permission_policy,
             lifecycle_policy,
             model_clone,
             self.tokenizer.clone(),
@@ -196,6 +198,7 @@ impl LLMEngine {
         rendered_prompt: &str,
         owner_id: usize,
         tool_caller: ToolCaller,
+        permission_policy: ProcessPermissionPolicy,
         lifecycle_policy: ProcessLifecyclePolicy,
         context_policy: ContextPolicy,
     ) -> Result<u64> {
@@ -249,6 +252,7 @@ impl LLMEngine {
             pid,
             owner_id,
             tool_caller,
+            permission_policy,
             lifecycle_policy,
             model_clone,
             self.tokenizer.clone(),

@@ -22,6 +22,8 @@ use crate::runtime::run_engine_tick;
 use crate::runtime::syscalls::{SyscallCmd, SyscallCompletion};
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
+use crate::services::job_scheduler::{JobScheduler, SCHEDULER_SYSTEM_OWNER_ID};
+use crate::services::orchestration_runtime::{start_orchestration, OrchestrationStartError};
 use crate::services::process_runtime::kill_managed_process_with_session;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
@@ -77,6 +79,7 @@ pub(crate) struct Kernel {
     pub(crate) shutdown_requested: Arc<AtomicBool>,
     pub(crate) model_catalog: ModelCatalog,
     pub(crate) scheduler: ProcessScheduler,
+    pub(crate) job_scheduler: JobScheduler,
     pub(crate) orchestrator: Orchestrator,
     pub(crate) remote_deadline_timeout: Duration,
     pub(crate) syscall_deadline_timeout: Duration,
@@ -182,6 +185,7 @@ impl Kernel {
                 &mut self.pending_events,
                 &self.tool_registry,
             );
+            self.reconcile_scheduled_job_runs();
 
             let wake_reason = classify_wake_reason(
                 had_network_events,
@@ -229,12 +233,13 @@ impl Kernel {
     /// - Manutenzione e backoff programmato.
     fn next_deadline(&self, now: Instant) -> Option<NextDeadline> {
         let mut candidates = Vec::new();
+        let now_ms = crate::storage::current_timestamp_ms();
 
         if self.checkpoint_interval_secs > 0 {
             candidates.push(DeadlineCandidate {
                 reason: DeadlineReason::Checkpoint,
                 at: self.last_checkpoint + Duration::from_secs(self.checkpoint_interval_secs),
-                subject_pid: None,
+                subject_id: None,
             });
         }
 
@@ -254,7 +259,7 @@ impl Kernel {
             candidates.push(DeadlineCandidate {
                 reason: DeadlineReason::RemoteTimeout,
                 at: checked_out.checked_out_at + timeout,
-                subject_pid: Some(pid),
+                subject_id: Some(pid),
             });
         }
 
@@ -262,7 +267,23 @@ impl Kernel {
             candidates.push(DeadlineCandidate {
                 reason: DeadlineReason::SyscallTimeout,
                 at: *started_at + self.syscall_deadline_timeout,
-                subject_pid: Some(*pid),
+                subject_id: Some(*pid),
+            });
+        }
+
+        if let Some(next_run_at_ms) = self.job_scheduler.next_due_at_ms() {
+            candidates.push(DeadlineCandidate {
+                reason: DeadlineReason::ScheduledJob,
+                at: instant_for_timestamp(now, now_ms, next_run_at_ms),
+                subject_id: None,
+            });
+        }
+
+        if let Some((_, timeout_at_ms)) = self.job_scheduler.next_timeout_at_ms() {
+            candidates.push(DeadlineCandidate {
+                reason: DeadlineReason::ScheduledJobTimeout,
+                at: instant_for_timestamp(now, now_ms, timeout_at_ms),
+                subject_id: None,
             });
         }
 
@@ -292,7 +313,7 @@ impl Kernel {
                 );
             }
             DeadlineReason::RemoteTimeout => {
-                if let Some(pid) = deadline.subject_pid {
+                if let Some(pid) = deadline.subject_id {
                     self.remote_timeout_reported.insert(pid);
                     tracing::warn!(
                         pid,
@@ -301,10 +322,198 @@ impl Kernel {
                 }
             }
             DeadlineReason::SyscallTimeout => {
-                if let Some(pid) = deadline.subject_pid {
+                if let Some(pid) = deadline.subject_id {
                     self.enforce_syscall_timeout(pid);
                 }
             }
+            DeadlineReason::ScheduledJob => self.dispatch_due_scheduled_jobs(),
+            DeadlineReason::ScheduledJobTimeout => self.enforce_scheduled_job_timeouts(),
+        }
+    }
+
+    fn dispatch_due_scheduled_jobs(&mut self) {
+        let due_job_ids = self
+            .job_scheduler
+            .due_job_ids(crate::storage::current_timestamp_ms());
+        for job_id in due_job_ids {
+            let plan = match self.job_scheduler.dispatch_plan(job_id) {
+                Ok(plan) => plan,
+                Err(err) => {
+                    tracing::warn!(job_id, %err, "SCHEDULER: failed to build dispatch plan");
+                    continue;
+                }
+            };
+
+            match start_orchestration(
+                &mut self.runtime_registry,
+                &mut self.resource_governor,
+                &mut self.memory,
+                &mut self.model_catalog,
+                &mut self.scheduler,
+                &mut self.orchestrator,
+                &mut self.session_registry,
+                &mut self.storage,
+                &mut self.pending_events,
+                &self.tool_registry,
+                SCHEDULER_SYSTEM_OWNER_ID,
+                plan.workflow,
+            ) {
+                Ok(started) => {
+                    for _ in 0..started.spawned {
+                        self.metrics.inc_exec_started();
+                    }
+                    if let Err(err) = self.job_scheduler.mark_started(
+                        &mut self.storage,
+                        plan.job_id,
+                        plan.trigger_at_ms,
+                        plan.attempt,
+                        started.orchestration_id,
+                    ) {
+                        tracing::error!(
+                            job_id = plan.job_id,
+                            orchestration_id = started.orchestration_id,
+                            %err,
+                            "SCHEDULER: failed to persist running job state"
+                        );
+                    }
+                    self.pending_events
+                        .push(agentic_control_models::KernelEvent::LobbyChanged {
+                            reason: "scheduled_job_started".to_string(),
+                        });
+                }
+                Err(err) => {
+                    let detail = match err {
+                        OrchestrationStartError::NoModelLoaded => "no_model_loaded".to_string(),
+                        OrchestrationStartError::InvalidGraph(inner) => inner.to_string(),
+                        OrchestrationStartError::RoutingFailed(inner) => inner,
+                    };
+                    if let Err(persist_err) = self.job_scheduler.mark_dispatch_failed(
+                        &mut self.storage,
+                        plan.job_id,
+                        plan.trigger_at_ms,
+                        plan.attempt,
+                        &detail,
+                    ) {
+                        tracing::error!(
+                            job_id = plan.job_id,
+                            %persist_err,
+                            "SCHEDULER: failed to persist dispatch failure"
+                        );
+                    }
+                    self.pending_events
+                        .push(agentic_control_models::KernelEvent::LobbyChanged {
+                            reason: "scheduled_job_failed".to_string(),
+                        });
+                }
+            }
+        }
+    }
+
+    fn reconcile_scheduled_job_runs(&mut self) {
+        let orch_ids = self.job_scheduler.orchestration_ids();
+        for orch_id in orch_ids {
+            let Some(orchestration) = self.orchestrator.get(orch_id) else {
+                continue;
+            };
+            if !orchestration.is_finished() {
+                continue;
+            }
+            let (_, _, _, failed, _) = orchestration.counts();
+            let result = if failed > 0 {
+                self.job_scheduler.complete_orchestration(
+                    &mut self.storage,
+                    orch_id,
+                    "failed",
+                    Some("workflow_failed"),
+                )
+            } else {
+                self.job_scheduler.complete_orchestration(
+                    &mut self.storage,
+                    orch_id,
+                    "completed",
+                    None,
+                )
+            };
+            if let Err(err) = result {
+                tracing::error!(orch_id, %err, "SCHEDULER: failed to finalize job run");
+                continue;
+            }
+            self.pending_events
+                .push(agentic_control_models::KernelEvent::LobbyChanged {
+                    reason: "scheduled_job_completed".to_string(),
+                });
+        }
+    }
+
+    fn enforce_scheduled_job_timeouts(&mut self) {
+        let timed_out_job_ids = self
+            .job_scheduler
+            .timeout_job_ids(crate::storage::current_timestamp_ms());
+
+        for job_id in timed_out_job_ids {
+            let orchestration_id =
+                match self.job_scheduler.mark_timed_out(&mut self.storage, job_id) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        tracing::error!(job_id, %err, "SCHEDULER: failed to mark timeout");
+                        continue;
+                    }
+                };
+
+            if let Some(orch_id) = orchestration_id {
+                let running_pids = self
+                    .orchestrator
+                    .get(orch_id)
+                    .map(|orch| orch.running_pids())
+                    .unwrap_or_default();
+                for pid in running_pids {
+                    let Some(runtime_id) = self
+                        .runtime_registry
+                        .runtime_id_for_pid(pid)
+                        .map(ToString::to_string)
+                    else {
+                        continue;
+                    };
+                    let Some(engine) = self.runtime_registry.engine_mut(&runtime_id) else {
+                        continue;
+                    };
+                    kill_managed_process_with_session(
+                        engine,
+                        &mut self.memory,
+                        &mut self.scheduler,
+                        &mut self.session_registry,
+                        &mut self.storage,
+                        pid,
+                        "scheduled_job_timeout",
+                    );
+                    if let Err(err) = self.runtime_registry.release_pid(&mut self.storage, pid) {
+                        tracing::warn!(
+                            pid,
+                            %err,
+                            "SCHEDULER: failed to release pid after job timeout"
+                        );
+                    }
+                    self.pending_events.push(
+                        agentic_control_models::KernelEvent::SessionFinished {
+                            pid,
+                            tokens_generated: None,
+                            elapsed_secs: None,
+                            reason: "scheduled_job_timeout".to_string(),
+                        },
+                    );
+                    self.pending_events.push(
+                        agentic_control_models::KernelEvent::WorkspaceChanged {
+                            pid,
+                            reason: "scheduled_job_timeout".to_string(),
+                        },
+                    );
+                }
+            }
+
+            self.pending_events
+                .push(agentic_control_models::KernelEvent::LobbyChanged {
+                    reason: "scheduled_job_timeout".to_string(),
+                });
         }
     }
 
@@ -411,6 +620,14 @@ fn classify_wake_reason(
     LoopWakeReason::SpuriousWake
 }
 
+fn instant_for_timestamp(now: Instant, now_ms: i64, target_ms: i64) -> Instant {
+    if target_ms <= now_ms {
+        return now;
+    }
+
+    now + Duration::from_millis(target_ms.saturating_sub(now_ms) as u64)
+}
+
 fn refresh_syscall_wait_tracking(
     runtime_registry: &RuntimeRegistry,
     syscall_wait_since: &mut HashMap<u64, Instant>,
@@ -499,6 +716,7 @@ fn handle_client_event(
                 &mut kernel.resource_governor,
                 &mut kernel.model_catalog,
                 &mut kernel.scheduler,
+                &mut kernel.job_scheduler,
                 &mut kernel.orchestrator,
                 &mut kernel.session_registry,
                 &mut kernel.storage,

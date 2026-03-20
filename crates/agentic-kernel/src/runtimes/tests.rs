@@ -12,7 +12,7 @@ use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -73,6 +73,7 @@ fn parallel_sessions_can_bind_to_different_runtime_backends() {
                 system_prompt: None,
                 owner_id: 10,
                 tool_caller: ToolCaller::AgentText,
+                permission_policy: Some(test_permissions()),
                 workload: WorkloadClass::Fast,
                 required_backend_class: Some(BackendClass::RemoteStateless),
                 priority: ProcessPriority::Normal,
@@ -104,6 +105,7 @@ fn parallel_sessions_can_bind_to_different_runtime_backends() {
                 system_prompt: None,
                 owner_id: 11,
                 tool_caller: ToolCaller::AgentText,
+                permission_policy: Some(test_permissions()),
                 workload: WorkloadClass::General,
                 required_backend_class: Some(BackendClass::ResidentLocal),
                 priority: ProcessPriority::Normal,
@@ -189,6 +191,7 @@ fn session_title_uses_user_prompt_not_system_prompt() {
                 system_prompt: Some("Tool syntax: TOOL:<name> <json-object>.".to_string()),
                 owner_id: 10,
                 tool_caller: ToolCaller::AgentText,
+                permission_policy: Some(test_permissions()),
                 workload: WorkloadClass::Fast,
                 required_backend_class: Some(BackendClass::RemoteStateless),
                 priority: ProcessPriority::Normal,
@@ -295,4 +298,13 @@ fn make_temp_dir(prefix: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), unique));
     fs::create_dir_all(&dir).expect("create temp dir");
     dir
+}
+
+fn test_permissions() -> ProcessPermissionPolicy {
+    ProcessPermissionPolicy {
+        trust_scope: ProcessTrustScope::InteractiveChat,
+        actions_allowed: false,
+        allowed_tools: Vec::new(),
+        path_scopes: vec![".".to_string()],
+    }
 }

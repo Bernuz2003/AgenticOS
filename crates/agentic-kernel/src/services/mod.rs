@@ -1,3 +1,4 @@
+pub mod job_scheduler;
 pub mod model_runtime;
 pub mod orchestration_runtime;
 pub mod process_control;

@@ -18,7 +18,7 @@ use super::api::{Tool, ToolResult};
 use super::builtins::HostBuiltinRegistration;
 use super::error::ToolError;
 use super::invocation::{ToolContext, ToolInvocation};
-use super::path_guard::{resolve_safe_path, workspace_root};
+use super::path_guard::{resolve_safe_path, resolve_safe_path_for_context, workspace_root};
 use super::policy::{
     enforce_remote_http_policy, remote_http_max_request_bytes, remote_http_max_response_bytes,
     syscall_config, SandboxMode,
@@ -308,6 +308,7 @@ pub(crate) fn python_host_builtin_registration() -> HostBuiltinRegistration {
                 }),
                 allowed_callers: vec![
                     super::invocation::ToolCaller::AgentText,
+                    super::invocation::ToolCaller::AgentSupervisor,
                     super::invocation::ToolCaller::Programmatic,
                 ],
                 backend_kind: ToolBackendKind::Host,
@@ -334,7 +335,7 @@ impl Tool for BuiltinWriteFileTool {
     fn execute(
         &self,
         invocation: &ToolInvocation,
-        _context: &ToolContext,
+        context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let filename = invocation
             .input
@@ -353,7 +354,7 @@ impl Tool for BuiltinWriteFileTool {
             ));
         }
 
-        let path = resolve_safe_path(filename)
+        let path = resolve_safe_path_for_context(filename, context)
             .map_err(|e| ToolError::ExecutionFailed(self.name().into(), e.to_string()))?;
 
         if let Some(parent) = path.parent() {
@@ -417,6 +418,7 @@ pub(crate) fn write_file_host_builtin_registration() -> HostBuiltinRegistration 
                 }),
                 allowed_callers: vec![
                     super::invocation::ToolCaller::AgentText,
+                    super::invocation::ToolCaller::AgentSupervisor,
                     super::invocation::ToolCaller::Programmatic,
                 ],
                 backend_kind: ToolBackendKind::Host,
@@ -449,9 +451,9 @@ struct ReadFileOutput {
     name = "read_file",
     description = "Read a UTF-8 text file inside the workspace root.",
     capabilities = ["fs", "read"],
-    allowed_callers = [AgentText, Programmatic]
+    allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
-fn read_file(input: ReadFileInput, _ctx: &ToolContext) -> Result<ReadFileOutput, ToolError> {
+fn read_file(input: ReadFileInput, ctx: &ToolContext) -> Result<ReadFileOutput, ToolError> {
     if input.path.trim().is_empty() {
         return Err(ToolError::InvalidInput(
             "read_file".into(),
@@ -459,7 +461,7 @@ fn read_file(input: ReadFileInput, _ctx: &ToolContext) -> Result<ReadFileOutput,
         ));
     }
 
-    let path = resolve_safe_path(&input.path)
+    let path = resolve_safe_path_for_context(&input.path, ctx)
         .map_err(|err| ToolError::ExecutionFailed("read_file".into(), err.to_string()))?;
 
     let meta = fs::metadata(&path).map_err(|err| {
@@ -496,18 +498,26 @@ struct ListFilesOutput {
     name = "list_files",
     description = "List files in the workspace root.",
     capabilities = ["fs", "list"],
-    allowed_callers = [AgentText, Programmatic]
+    allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
-fn list_files(_input: ListFilesInput, _ctx: &ToolContext) -> Result<ListFilesOutput, ToolError> {
-    let root = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
-    let entries = fs::read_dir(root).map_err(|err| {
-        ToolError::ExecutionFailed("list_files".into(), format!("LS failed: {err}"))
-    })?;
+fn list_files(_input: ListFilesInput, ctx: &ToolContext) -> Result<ListFilesOutput, ToolError> {
+    let roots = resolve_list_roots(ctx)?;
+    let mut files = Vec::new();
+    for root in roots {
+        if root.is_file() {
+            files.push(to_workspace_relative_string("list_files", &root)?);
+            continue;
+        }
+        let entries = fs::read_dir(&root).map_err(|err| {
+            ToolError::ExecutionFailed("list_files".into(), format!("LS failed: {err}"))
+        })?;
 
-    let files: Vec<String> = entries
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
+        for entry in entries.flatten() {
+            files.push(to_workspace_relative_string("list_files", &entry.path())?);
+        }
+    }
+    files.sort();
+    files.dedup();
 
     let output = if files.is_empty() {
         "Workspace is empty.".to_string()
@@ -519,6 +529,41 @@ fn list_files(_input: ListFilesInput, _ctx: &ToolContext) -> Result<ListFilesOut
         output,
         entries: files,
     })
+}
+
+fn resolve_list_roots(ctx: &ToolContext) -> Result<Vec<std::path::PathBuf>, ToolError> {
+    let workspace = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
+    if ctx.permissions.path_scopes.is_empty() {
+        return Err(ToolError::PolicyDenied(
+            "list_files".into(),
+            "no path scopes are available for this process".into(),
+        ));
+    }
+
+    let mut roots = Vec::new();
+    for scope in &ctx.permissions.path_scopes {
+        let root = if scope == "." {
+            workspace.clone()
+        } else {
+            resolve_safe_path(scope)
+                .map_err(|err| ToolError::ExecutionFailed("list_files".into(), err))?
+        };
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    Ok(roots)
+}
+
+fn to_workspace_relative_string(tool_name: &str, path: &Path) -> Result<String, ToolError> {
+    let root = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
+    let relative = path.strip_prefix(&root).map_err(|_| {
+        ToolError::ExecutionFailed(
+            tool_name.into(),
+            format!("Path '{}' escaped the workspace root.", path.display()),
+        )
+    })?;
+    Ok(relative.to_string_lossy().replace('\\', "/"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -536,7 +581,7 @@ struct CalcOutput {
     name = "calc",
     description = "Evaluate a numeric expression through the Python sandbox.",
     capabilities = ["math", "python"],
-    allowed_callers = [AgentText, Programmatic]
+    allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
 fn calc(input: CalcInput, ctx: &ToolContext) -> Result<CalcOutput, ToolError> {
     if input.expression.trim().is_empty() {

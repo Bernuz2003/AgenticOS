@@ -10,7 +10,7 @@ use crate::services::process_runtime::{
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
-use crate::tools::invocation::ToolCaller;
+use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 use crate::tools::{handle_syscall, SysCallOutcome, SyscallRateMap};
 use crate::{audit, audit::AuditContext};
 use agentic_control_models::KernelEvent;
@@ -29,6 +29,7 @@ pub(crate) enum SyscallCmd {
         tool_call_id: String,
         content: String,
         caller: ToolCaller,
+        permissions: ProcessPermissionPolicy,
         registry: ToolRegistry,
     },
     Shutdown,
@@ -73,6 +74,7 @@ pub(crate) fn spawn_syscall_worker(
                         tool_call_id,
                         content,
                         caller,
+                        permissions,
                         registry,
                     } => {
                         let command = content.clone();
@@ -81,6 +83,7 @@ pub(crate) fn spawn_syscall_worker(
                                 &content,
                                 pid,
                                 caller.clone(),
+                                permissions,
                                 Some(tool_call_id.clone()),
                                 &mut guard,
                                 &registry,
@@ -207,6 +210,16 @@ pub(super) fn dispatch_process_syscall(
         .get(&pid)
         .map(|process| process.tool_caller.clone())
         .unwrap_or(ToolCaller::AgentText);
+    let permissions = engine
+        .processes
+        .get(&pid)
+        .map(|process| process.permission_policy.clone())
+        .unwrap_or_else(|| ProcessPermissionPolicy {
+            trust_scope: crate::tools::invocation::ProcessTrustScope::InteractiveChat,
+            actions_allowed: false,
+            allowed_tools: Vec::new(),
+            path_scopes: vec![".".to_string()],
+        });
 
     let quota_exceeded = scheduler.record_syscall(pid);
     if quota_exceeded {
@@ -224,7 +237,22 @@ pub(super) fn dispatch_process_syscall(
     }
 
     if content.starts_with("ACTION:") {
-        if !caller.can_orchestrate_actions() {
+        if !caller.can_orchestrate_actions() || !permissions.actions_allowed {
+            audit::record(
+                storage,
+                audit::ACTION_DENIED,
+                format!(
+                    "command={} caller={} trust_scope={} reason=policy_actions_disabled",
+                    content,
+                    caller.as_str(),
+                    permissions.trust_scope
+                ),
+                AuditContext::for_process(
+                    session_registry.session_id_for_pid(pid),
+                    pid,
+                    Some(runtime_id),
+                ),
+            );
             let _ = engine.inject_context(
                 pid,
                 &engine.format_system_message(
@@ -235,20 +263,53 @@ pub(super) fn dispatch_process_syscall(
         }
 
         match actions::parse_text_invocation(content) {
-            Ok(invocation) => dispatch_action_invocation(
-                runtime_id,
-                pid_floor,
-                engine,
-                memory,
-                scheduler,
-                pid,
-                invocation,
-                session_registry,
-                storage,
-                pending_events,
-                tool_registry,
-            ),
+            Ok(invocation) => {
+                audit::record(
+                    storage,
+                    audit::ACTION_DISPATCHED,
+                    format!(
+                        "command={} caller={} trust_scope={}",
+                        content,
+                        caller.as_str(),
+                        permissions.trust_scope
+                    ),
+                    AuditContext::for_process(
+                        session_registry.session_id_for_pid(pid),
+                        pid,
+                        Some(runtime_id),
+                    ),
+                );
+                dispatch_action_invocation(
+                    runtime_id,
+                    pid_floor,
+                    engine,
+                    memory,
+                    scheduler,
+                    pid,
+                    invocation,
+                    session_registry,
+                    storage,
+                    pending_events,
+                    tool_registry,
+                )
+            }
             Err(err) => {
+                audit::record(
+                    storage,
+                    audit::ACTION_DENIED,
+                    format!(
+                        "command={} caller={} trust_scope={} reason=parse_error detail={}",
+                        content,
+                        caller.as_str(),
+                        permissions.trust_scope,
+                        err
+                    ),
+                    AuditContext::for_process(
+                        session_registry.session_id_for_pid(pid),
+                        pid,
+                        Some(runtime_id),
+                    ),
+                );
                 let _ = engine.inject_context(
                     pid,
                     &engine.format_system_message(&format!("ACTION Error: {}", err)),
@@ -296,6 +357,7 @@ pub(super) fn dispatch_process_syscall(
             tool_call_id: tool_call_id.clone(),
             content: content.to_string(),
             caller,
+            permissions,
             registry: tool_registry.clone(),
         });
         match queued {
@@ -346,6 +408,16 @@ fn dispatch_action_invocation(
                 .get("prompt")
                 .and_then(|value| value.as_str())
             else {
+                audit::record(
+                    storage,
+                    audit::ACTION_DENIED,
+                    "action=spawn reason=missing_prompt",
+                    AuditContext::for_process(
+                        session_registry.session_id_for_pid(pid),
+                        pid,
+                        Some(runtime_id),
+                    ),
+                );
                 let _ = engine.inject_context(
                     pid,
                     &engine.format_system_message(
@@ -371,6 +443,16 @@ fn dispatch_action_invocation(
         ActionName::Send => {
             let Some(target_pid) = invocation.input.get("pid").and_then(|value| value.as_u64())
             else {
+                audit::record(
+                    storage,
+                    audit::ACTION_DENIED,
+                    "action=send reason=missing_pid",
+                    AuditContext::for_process(
+                        session_registry.session_id_for_pid(pid),
+                        pid,
+                        Some(runtime_id),
+                    ),
+                );
                 let _ = engine.inject_context(
                     pid,
                     &engine.format_system_message(
@@ -384,6 +466,16 @@ fn dispatch_action_invocation(
                 .get("message")
                 .and_then(|value| value.as_str())
             else {
+                audit::record(
+                    storage,
+                    audit::ACTION_DENIED,
+                    "action=send reason=missing_message",
+                    AuditContext::for_process(
+                        session_registry.session_id_for_pid(pid),
+                        pid,
+                        Some(runtime_id),
+                    ),
+                );
                 let _ = engine.inject_context(
                     pid,
                     &engine.format_system_message(
@@ -392,7 +484,15 @@ fn dispatch_action_invocation(
                 );
                 return SyscallDispatchOutcome::None;
             };
-            dispatch_send_action(engine, pid, target_pid, message);
+            dispatch_send_action(
+                runtime_id,
+                engine,
+                pid,
+                target_pid,
+                message,
+                session_registry,
+                storage,
+            );
             SyscallDispatchOutcome::None
         }
     }
@@ -414,6 +514,16 @@ fn dispatch_spawn_action(
 ) -> SyscallDispatchOutcome {
     let prompt = prompt.trim();
     if prompt.is_empty() {
+        audit::record(
+            storage,
+            audit::ACTION_DENIED,
+            "action=spawn reason=empty_prompt",
+            AuditContext::for_process(
+                session_registry.session_id_for_pid(pid),
+                pid,
+                Some(runtime_id),
+            ),
+        );
         let _ = engine.inject_context(
             pid,
             &engine
@@ -436,8 +546,25 @@ fn dispatch_spawn_action(
         .processes
         .get(&pid)
         .map(|process| process.context_policy.clone());
+    let child_permission_policy = engine
+        .processes
+        .get(&pid)
+        .map(|process| process.permission_policy.derive_chat_child())
+        .or_else(|| {
+            crate::tools::invocation::ProcessPermissionPolicy::interactive_chat(tool_registry).ok()
+        });
 
     if runtime_id.is_empty() {
+        audit::record(
+            storage,
+            audit::ACTION_DENIED,
+            "action=spawn reason=missing_runtime_binding",
+            AuditContext::for_process(
+                session_registry.session_id_for_pid(pid),
+                pid,
+                Some(runtime_id),
+            ),
+        );
         let _ = engine.inject_context(
             pid,
             &engine.format_system_message("ERROR: Runtime binding not found for SPAWN syscall."),
@@ -461,6 +588,7 @@ fn dispatch_spawn_action(
             )),
             owner_id,
             tool_caller: ToolCaller::AgentText,
+            permission_policy: child_permission_policy,
             workload,
             required_backend_class: None,
             priority,
@@ -469,6 +597,19 @@ fn dispatch_spawn_action(
         },
     ) {
         Ok(new_pid) => {
+            audit::record(
+                storage,
+                audit::ACTION_COMPLETED,
+                format!(
+                    "action=spawn child_pid={} workload={:?}",
+                    new_pid.pid, workload
+                ),
+                AuditContext::for_process(
+                    session_registry.session_id_for_pid(pid),
+                    pid,
+                    Some(runtime_id),
+                ),
+            );
             pending_events.push(KernelEvent::SessionStarted {
                 session_id: new_pid.session_id.clone(),
                 pid: new_pid.pid,
@@ -488,6 +629,16 @@ fn dispatch_spawn_action(
             SyscallDispatchOutcome::Spawned(new_pid.pid)
         }
         Err(e) => {
+            audit::record(
+                storage,
+                audit::ACTION_DENIED,
+                format!("action=spawn reason=spawn_failed detail={}", e),
+                AuditContext::for_process(
+                    session_registry.session_id_for_pid(pid),
+                    pid,
+                    Some(runtime_id),
+                ),
+            );
             let _ =
                 engine.inject_context(pid, &engine.format_system_message(&format!("ERROR: {}", e)));
             SyscallDispatchOutcome::None
@@ -627,9 +778,27 @@ pub(super) fn drain_syscall_results(
     processed_results
 }
 
-fn dispatch_send_action(engine: &mut LLMEngine, pid: u64, target_pid: u64, message: &str) {
+fn dispatch_send_action(
+    runtime_id: &str,
+    engine: &mut LLMEngine,
+    pid: u64,
+    target_pid: u64,
+    message: &str,
+    session_registry: &SessionRegistry,
+    storage: &mut StorageService,
+) {
     let message = message.trim();
     if message.is_empty() {
+        audit::record(
+            storage,
+            audit::ACTION_DENIED,
+            "action=send reason=empty_message",
+            AuditContext::for_process(
+                session_registry.session_id_for_pid(pid),
+                pid,
+                Some(runtime_id),
+            ),
+        );
         let _ = engine.inject_context(
             pid,
             &engine
@@ -641,6 +810,20 @@ fn dispatch_send_action(engine: &mut LLMEngine, pid: u64, target_pid: u64, messa
     let msg_target = engine.format_interprocess_message(pid, message);
     match engine.inject_context(target_pid, &msg_target) {
         Ok(_) => {
+            audit::record(
+                storage,
+                audit::ACTION_COMPLETED,
+                format!(
+                    "action=send target_pid={} chars={}",
+                    target_pid,
+                    message.chars().count()
+                ),
+                AuditContext::for_process(
+                    session_registry.session_id_for_pid(pid),
+                    pid,
+                    Some(runtime_id),
+                ),
+            );
             let _ = engine.inject_context(
                 pid,
                 &engine.format_system_message(
@@ -649,6 +832,19 @@ fn dispatch_send_action(engine: &mut LLMEngine, pid: u64, target_pid: u64, messa
             );
         }
         Err(_) => {
+            audit::record(
+                storage,
+                audit::ACTION_DENIED,
+                format!(
+                    "action=send reason=target_not_found target_pid={}",
+                    target_pid
+                ),
+                AuditContext::for_process(
+                    session_registry.session_id_for_pid(pid),
+                    pid,
+                    Some(runtime_id),
+                ),
+            );
             let _ = engine.inject_context(
                 pid,
                 &engine

@@ -126,6 +126,21 @@ pub struct OrchestrateResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryTaskResult {
+    pub orchestration_id: u64,
+    pub task: String,
+    pub reset_tasks: Vec<String>,
+    pub spawned: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleJobResult {
+    pub job_id: u64,
+    pub next_run_at_ms: Option<i64>,
+    pub trigger_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub uptime_secs: u64,
     pub total_commands: u64,
@@ -138,6 +153,7 @@ pub struct StatusResponse {
     pub generation: Option<GenerationStatus>,
     pub memory: MemoryStatus,
     pub scheduler: SchedulerStatus,
+    pub jobs: JobsStatus,
     pub orchestrations: OrchestrationsStatus,
     pub processes: ProcessesStatus,
 }
@@ -200,6 +216,62 @@ pub struct SchedulerStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobsStatus {
+    #[serde(default)]
+    pub scheduled_jobs: Vec<ScheduledJobView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledJobView {
+    pub job_id: u64,
+    pub name: String,
+    pub target_kind: String,
+    pub trigger_kind: String,
+    pub trigger_label: String,
+    pub enabled: bool,
+    pub state: String,
+    #[serde(default)]
+    pub next_run_at_ms: Option<i64>,
+    #[serde(default)]
+    pub current_trigger_at_ms: Option<i64>,
+    pub current_attempt: u32,
+    pub timeout_ms: u64,
+    pub max_retries: u32,
+    pub backoff_ms: u64,
+    #[serde(default)]
+    pub last_run_started_at_ms: Option<i64>,
+    #[serde(default)]
+    pub last_run_completed_at_ms: Option<i64>,
+    #[serde(default)]
+    pub last_run_status: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    pub consecutive_failures: u32,
+    #[serde(default)]
+    pub active_orchestration_id: Option<u64>,
+    #[serde(default)]
+    pub recent_runs: Vec<ScheduledJobRunView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledJobRunView {
+    pub run_id: u64,
+    pub trigger_at_ms: i64,
+    pub attempt: u32,
+    pub status: String,
+    #[serde(default)]
+    pub started_at_ms: Option<i64>,
+    #[serde(default)]
+    pub completed_at_ms: Option<i64>,
+    #[serde(default)]
+    pub orchestration_id: Option<u64>,
+    #[serde(default)]
+    pub deadline_at_ms: Option<i64>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessesStatus {
     pub active_pids: Vec<u64>,
     pub parked_pids: Vec<u64>,
@@ -231,6 +303,7 @@ pub struct PidStatusResponse {
     pub session_id: String,
     pub pid: u64,
     pub owner_id: usize,
+    pub tool_caller: String,
     pub orchestration_id: Option<u64>,
     pub orchestration_task_id: Option<String>,
     pub state: String,
@@ -253,7 +326,16 @@ pub struct PidStatusResponse {
     pub backend_capabilities: Option<BackendCapabilitiesView>,
     #[serde(default)]
     pub session_accounting: Option<BackendTelemetryView>,
+    pub permissions: ProcessPermissionsView,
     pub context: Option<ContextStatusSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessPermissionsView {
+    pub trust_scope: String,
+    pub actions_allowed: bool,
+    pub allowed_tools: Vec<String>,
+    pub path_scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,6 +348,49 @@ pub struct ContextStatusSnapshot {
     pub last_compaction_reason: Option<String>,
     pub last_summary_ts: Option<String>,
     pub context_segments: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchArtifactRefView {
+    pub artifact_id: String,
+    pub task: String,
+    pub attempt: u32,
+    pub kind: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchArtifactView {
+    pub artifact_id: String,
+    pub task: String,
+    pub attempt: u32,
+    pub kind: String,
+    pub label: String,
+    pub mime_type: String,
+    pub preview: String,
+    pub content: String,
+    pub bytes: usize,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchTaskAttemptView {
+    pub attempt: u32,
+    pub status: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub pid: Option<u64>,
+    #[serde(default)]
+    pub error: Option<String>,
+    pub output_preview: String,
+    pub output_chars: usize,
+    pub truncated: bool,
+    pub started_at_ms: i64,
+    #[serde(default)]
+    pub completed_at_ms: Option<i64>,
+    #[serde(default)]
+    pub primary_artifact_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,10 +413,34 @@ pub struct OrchStatusResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchTaskEntry {
     pub task: String,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub workload: Option<String>,
+    #[serde(default)]
+    pub backend_class: Option<String>,
+    #[serde(default)]
+    pub context_strategy: Option<String>,
+    #[serde(default)]
+    pub deps: Vec<String>,
     pub status: String,
+    #[serde(default)]
+    pub current_attempt: Option<u32>,
     pub pid: Option<u64>,
     pub error: Option<String>,
     pub context: Option<ContextStatusSnapshot>,
+    #[serde(default)]
+    pub latest_output_preview: Option<String>,
+    #[serde(default)]
+    pub latest_output_text: Option<String>,
+    #[serde(default)]
+    pub latest_output_truncated: bool,
+    #[serde(default)]
+    pub input_artifacts: Vec<OrchArtifactRefView>,
+    #[serde(default)]
+    pub output_artifacts: Vec<OrchArtifactView>,
+    #[serde(default)]
+    pub attempts: Vec<OrchTaskAttemptView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -39,6 +39,7 @@ dependencies = [
  "agentic-protocol",
  "anyhow",
  "byteorder",
+ "chrono",
  "getrandom 0.2.16",
  "hf-hub",
  "jsonschema",
