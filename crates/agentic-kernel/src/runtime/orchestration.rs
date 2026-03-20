@@ -525,6 +525,7 @@ pub(super) fn checkout_active_processes(
                     backend_class: Some(process.model.backend_class().as_str().to_string()),
                     backend_capabilities: Some(process.model.backend_capabilities()),
                     context: process.context_status_snapshot(),
+                    pending_human_request: process.pending_human_request.clone(),
                 },
             );
             if process.model.backend_class().as_str() == "remote_stateless" {

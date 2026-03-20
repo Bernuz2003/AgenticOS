@@ -87,6 +87,16 @@ pub(crate) const PROCESS_INPUT_RECEIVED: AuditSpec = AuditSpec {
     kind: "input_received",
     title: "Input received",
 };
+pub(crate) const PROCESS_HUMAN_INPUT_REQUESTED: AuditSpec = AuditSpec {
+    category: "process",
+    kind: "human_input_requested",
+    title: "Human input requested",
+};
+pub(crate) const PROCESS_HUMAN_INPUT_RECEIVED: AuditSpec = AuditSpec {
+    category: "process",
+    kind: "human_input_received",
+    title: "Human input received",
+};
 pub(crate) const PROCESS_TURN_COMPLETED: AuditSpec = AuditSpec {
     category: "process",
     kind: "output_turn_completed",

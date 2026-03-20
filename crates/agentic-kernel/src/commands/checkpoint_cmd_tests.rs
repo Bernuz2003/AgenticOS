@@ -63,7 +63,9 @@ fn apply_restore_snapshot_clears_existing_scheduler_state() {
                 last_summary_ts: Some("epoch_123".to_string()),
                 segments: Vec::new(),
                 episodic_segments: Vec::new(),
+                ..ContextState::default()
             },
+            pending_human_request: None,
         }],
         scheduler: SchedulerStateSnapshot {
             entries: vec![SchedulerEntrySnapshot {

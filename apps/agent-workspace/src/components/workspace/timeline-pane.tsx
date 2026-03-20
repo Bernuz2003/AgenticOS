@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, type FormEvent } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Brain, LoaderCircle, Sparkles, TerminalSquare, Wrench, Send, User } from "lucide-react";
-import type { TimelineSnapshot } from "../../lib/api";
+import type { HumanInputRequest, TimelineSnapshot } from "../../lib/api";
 
 interface TimelinePaneProps {
   timeline: TimelineSnapshot | null;
@@ -15,8 +15,11 @@ interface TimelinePaneProps {
   turnActionLoading: boolean;
   turnActionError: string | null;
   canSend: boolean;
+  canSendText: boolean;
+  humanRequest: HumanInputRequest | null;
   onComposerChange: (value: string) => void;
   onComposerSubmit: () => void | Promise<void>;
+  onHumanChoice: (choice: string) => void | Promise<void>;
   onContinueOutput: () => void | Promise<void>;
   onStopOutput: () => void | Promise<void>;
 }
@@ -32,8 +35,11 @@ export function TimelinePane({
   turnActionLoading,
   turnActionError,
   canSend,
+  canSendText,
+  humanRequest,
   onComposerChange,
   onComposerSubmit,
+  onHumanChoice,
   onContinueOutput,
   onStopOutput,
 }: TimelinePaneProps) {
@@ -67,11 +73,20 @@ export function TimelinePane({
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canSend || composerLoading || !composerValue.trim()) {
+    if (!canSendText || composerLoading || !composerValue.trim()) {
       return;
     }
     void onComposerSubmit();
   }
+
+  const humanChoiceLoading = composerLoading || turnActionLoading;
+  const composerPlaceholder = humanRequest
+    ? humanRequest.allowFreeText
+      ? humanRequest.placeholder ?? "Inserisci la risposta umana richiesta..."
+      : "Questo step richiede una scelta esplicita dalle opzioni sopra."
+    : !canSend
+      ? "Il composer si abilita quando il processo entra in WaitingForInput..."
+      : "Invia un messaggio o un prompt all'agente...";
 
   return (
     <section className="flex flex-col h-full bg-slate-50/50">
@@ -100,6 +115,51 @@ export function TimelinePane({
         {hiddenDiagnosticsCount > 0 && (
           <div className="mx-auto max-w-3xl rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-600 shadow-sm">
             {hiddenDiagnosticsCount} eventi tecnici sono stati spostati nel pannello diagnostico per mantenere la chat pulita.
+          </div>
+        )}
+
+        {humanRequest && (
+          <div className="mx-auto max-w-3xl rounded-2xl border border-sky-200 bg-sky-50 px-6 py-5 text-sm text-sky-950 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-widest text-sky-600">
+                  {humanRequest.kind === "approval"
+                    ? "Approval Required"
+                    : "Human Input Requested"}
+                </div>
+                <div className="mt-2 text-base font-semibold text-slate-900">
+                  {humanRequest.question}
+                </div>
+              </div>
+              <div className="rounded-full border border-sky-200 bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-sky-700">
+                Waiting
+              </div>
+            </div>
+            {humanRequest.details && (
+              <div className="mt-3 rounded-xl border border-sky-100 bg-white/70 px-4 py-3 text-sm leading-relaxed text-slate-700">
+                {humanRequest.details}
+              </div>
+            )}
+            {humanRequest.choices.length > 0 && (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {humanRequest.choices.map((choice) => (
+                  <button
+                    key={choice}
+                    type="button"
+                    onClick={() => void onHumanChoice(choice)}
+                    disabled={humanChoiceLoading}
+                    className="rounded-xl border border-sky-200 bg-white px-4 py-2 text-sm font-semibold text-sky-800 transition hover:border-sky-300 hover:bg-sky-100 disabled:opacity-50"
+                  >
+                    {choice}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="mt-4 text-xs text-sky-900/80">
+              {humanRequest.allowFreeText
+                ? "Puoi rispondere con testo libero oppure usare una delle opzioni rapide."
+                : "Questo step e' bloccato su risposta strutturata. Usa una delle opzioni rapide per riprendere il processo."}
+            </div>
           </div>
         )}
 
@@ -274,12 +334,8 @@ export function TimelinePane({
           <textarea
             value={composerValue}
             onChange={(event) => onComposerChange(event.target.value)}
-            placeholder={
-              !canSend 
-                ? "Il composer si abilita quando il processo entra in WaitingForInput..."
-                : "Invia un messaggio o un prompt all'agente..."
-            }
-            disabled={!canSend || composerLoading || turnActionLoading}
+            placeholder={composerPlaceholder}
+            disabled={!canSendText || composerLoading || turnActionLoading}
             className="w-full max-h-60 min-h-[56px] resize-y rounded-2xl border border-slate-300 bg-white px-5 py-4 pr-16 text-[15px] leading-relaxed text-slate-900 shadow-sm outline-none transition-all focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 disabled:bg-slate-50 disabled:text-slate-500"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -290,7 +346,7 @@ export function TimelinePane({
           />
           <button
             type="submit"
-            disabled={!canSend || composerLoading || !composerValue.trim()}
+            disabled={!canSendText || composerLoading || !composerValue.trim()}
             className="absolute right-2 bottom-2 rounded-xl bg-indigo-600 p-3 text-white transition-all hover:bg-indigo-700 hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-50 disabled:bg-slate-300"
             title="Send Message"
           >

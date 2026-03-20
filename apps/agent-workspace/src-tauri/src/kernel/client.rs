@@ -5,9 +5,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agentic_control_models::{
-    ControlMessage, LoadModelResult, ModelCatalogSnapshot, OrchStatusResponse, OrchSummaryResponse,
-    OrchestrateResult, PidStatusResponse, ResumeSessionResult, RetryTaskResult, ScheduleJobResult,
-    SelectModelResult, SendInputResult, StatusResponse, TurnControlResult,
+    ArtifactListRequest, ArtifactListResponse, ControlMessage, LoadModelResult,
+    ModelCatalogSnapshot, OrchStatusResponse, OrchSummaryResponse, OrchestrateResult,
+    OrchestrationListResponse, OrchestrationStatusRequest, PidStatusResponse, ResumeSessionResult,
+    RetryTaskResult, ScheduleJobResult, ScheduledJobListResponse, SelectModelResult,
+    SendInputResult, StatusResponse, TurnControlResult,
 };
 use agentic_protocol::OpCode;
 
@@ -17,7 +19,8 @@ use super::persisted_truth;
 use super::protocol;
 use crate::models::kernel::{
     AgentSessionSummary, LobbyOrchestrationSummary, LobbySnapshot, WorkspaceContextSnapshot,
-    WorkspaceOrchestrationSnapshot, WorkspaceOrchestrationTask, WorkspaceSnapshot,
+    WorkspaceHumanInputRequest, WorkspaceOrchestrationSnapshot, WorkspaceOrchestrationTask,
+    WorkspaceSnapshot,
 };
 
 #[derive(Debug)]
@@ -211,8 +214,10 @@ impl KernelBridge {
         &mut self,
         orch_id: u64,
     ) -> KernelBridgeResult<OrchStatusResponse> {
-        let payload = format!("orch:{orch_id}");
-        let response = self.send_control_command(OpCode::Status, payload.as_bytes())?;
+        let payload = serde_json::to_vec(&OrchestrationStatusRequest {
+            orchestration_id: orch_id,
+        })?;
+        let response = self.send_control_command(OpCode::OrchestrationStatus, &payload)?;
 
         if response.kind != "+OK" {
             self.drop_connection();
@@ -224,9 +229,62 @@ impl KernelBridge {
 
         let orchestration = self.decode_response::<OrchStatusResponse>(
             &response.payload,
-            &[agentic_protocol::schema::ORCH_STATUS],
+            &[agentic_protocol::schema::ORCHESTRATION_STATUS],
         )?;
         Ok(orchestration)
+    }
+
+    pub fn list_orchestrations(&mut self) -> KernelBridgeResult<OrchestrationListResponse> {
+        let response = self.send_control_command(OpCode::ListOrchestrations, &[])?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(
+            &response.payload,
+            &[agentic_protocol::schema::LIST_ORCHESTRATIONS],
+        )
+    }
+
+    pub fn list_scheduled_jobs(&mut self) -> KernelBridgeResult<ScheduledJobListResponse> {
+        let response = self.send_control_command(OpCode::ListJobs, &[])?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(&response.payload, &[agentic_protocol::schema::LIST_JOBS])
+    }
+
+    pub fn list_artifacts(
+        &mut self,
+        orchestration_id: u64,
+        task: Option<&str>,
+    ) -> KernelBridgeResult<ArtifactListResponse> {
+        let payload = serde_json::to_vec(&ArtifactListRequest {
+            orchestration_id,
+            task: task.map(ToOwned::to_owned),
+        })?;
+        let response = self.send_control_command(OpCode::ListArtifacts, &payload)?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(
+            &response.payload,
+            &[agentic_protocol::schema::LIST_ARTIFACTS],
+        )
     }
 
     pub fn orchestrate(&mut self, payload: &str) -> KernelBridgeResult<OrchestrateResult> {
@@ -655,9 +713,23 @@ fn map_pid_status_to_workspace_snapshot(
             context_window_size: context.context_window_size,
             context_compressions: context.context_compressions,
             context_retrieval_hits: context.context_retrieval_hits,
+            context_retrieval_requests: context.context_retrieval_requests,
+            context_retrieval_misses: context.context_retrieval_misses,
+            context_retrieval_candidates_scored: context.context_retrieval_candidates_scored,
+            context_retrieval_segments_selected: context.context_retrieval_segments_selected,
+            last_retrieval_candidates_scored: context.last_retrieval_candidates_scored,
+            last_retrieval_segments_selected: context.last_retrieval_segments_selected,
+            last_retrieval_latency_ms: context.last_retrieval_latency_ms,
+            last_retrieval_top_score: context.last_retrieval_top_score,
             last_compaction_reason: context.last_compaction_reason.clone(),
             last_summary_ts: context.last_summary_ts.clone(),
             context_segments: context.context_segments,
+            episodic_segments: context.episodic_segments,
+            episodic_tokens: context.episodic_tokens,
+            retrieve_top_k: context.retrieve_top_k,
+            retrieve_candidate_limit: context.retrieve_candidate_limit,
+            retrieve_max_segment_chars: context.retrieve_max_segment_chars,
+            retrieve_min_score: context.retrieve_min_score,
         });
 
     WorkspaceSnapshot {
@@ -695,6 +767,17 @@ fn map_pid_status_to_workspace_snapshot(
         max_tokens: process.max_tokens,
         orchestration,
         context,
+        pending_human_request: process.pending_human_request.map(|request| {
+            WorkspaceHumanInputRequest {
+                kind: request.kind,
+                question: request.question,
+                details: request.details,
+                choices: request.choices,
+                allow_free_text: request.allow_free_text,
+                placeholder: request.placeholder,
+                requested_at_ms: request.requested_at_ms,
+            }
+        }),
         audit_events: Vec::new(),
     }
 }

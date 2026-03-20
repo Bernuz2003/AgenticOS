@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use crate::backend::BackendCapabilities;
 use crate::model_catalog::WorkloadClass;
-use crate::process::{ContextPolicy, ContextState, ContextStatusSnapshot};
+use crate::process::{ContextPolicy, ContextState, ContextStatusSnapshot, HumanInputRequest};
 use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 
 // ── Priority ────────────────────────────────────────────────────────────
@@ -132,6 +132,7 @@ pub struct RestoredProcessMetadata {
     pub backend_capabilities: Option<BackendCapabilities>,
     pub context_policy: ContextPolicy,
     pub context_state: ContextState,
+    pub pending_human_request: Option<HumanInputRequest>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +153,7 @@ pub struct CheckedOutProcessMetadata {
     pub backend_class: Option<String>,
     pub backend_capabilities: Option<BackendCapabilities>,
     pub context: ContextStatusSnapshot,
+    pub pending_human_request: Option<HumanInputRequest>,
 }
 
 // ── ProcessScheduler ────────────────────────────────────────────────────

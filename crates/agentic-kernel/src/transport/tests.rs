@@ -1661,3 +1661,223 @@ fn tcp_auth_bad_token_rejected() {
     );
     assert!(!client.authenticated);
 }
+
+#[test]
+fn workflow_control_schema_files_validate_examples() {
+    let workflow_definition = serde_json::json!({
+        "failure_policy": "fail_fast",
+        "tasks": [
+            {
+                "id": "plan",
+                "role": "planner",
+                "prompt": "Produce a plan",
+                "deps": []
+            },
+            {
+                "id": "draft",
+                "role": "writer",
+                "prompt": "Write a draft",
+                "deps": ["plan"],
+                "allow_actions": false,
+                "allowed_tools": ["read_file"]
+            }
+        ]
+    });
+    assert_matches_schema(
+        "protocol/schemas/v1/workflow-definition.schema.json",
+        &workflow_definition,
+    );
+
+    let list_orchestrations = serde_json::json!({
+        "protocol_version": "v1",
+        "schema_id": "agenticos.control.list_orchestrations.v1",
+        "request_id": "req-1",
+        "ok": true,
+        "code": "LIST_ORCHESTRATIONS",
+        "data": {
+            "orchestrations": [
+                {
+                    "orchestration_id": 11,
+                    "total": 2,
+                    "completed": 1,
+                    "running": 1,
+                    "pending": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                    "finished": false,
+                    "elapsed_secs": 3.5,
+                    "policy": "FailFast"
+                }
+            ]
+        },
+        "error": null,
+        "warnings": []
+    });
+    assert_matches_schema(
+        "protocol/schemas/v1/list-orchestrations.schema.json",
+        &list_orchestrations,
+    );
+
+    let orchestration_status: Value = serde_json::from_str(
+        r#"{
+            "protocol_version": "v1",
+            "schema_id": "agenticos.control.orchestration_status.v1",
+            "request_id": "req-2",
+            "ok": true,
+            "code": "ORCHESTRATION_STATUS",
+            "data": {
+                "orchestration_id": 11,
+                "total": 2,
+                "completed": 1,
+                "running": 1,
+                "pending": 0,
+                "failed": 0,
+                "skipped": 0,
+                "finished": false,
+                "elapsed_secs": 4.2,
+                "policy": "FailFast",
+                "truncations": 0,
+                "output_chars_stored": 128,
+                "tasks": [
+                    {
+                        "task": "plan",
+                        "role": "planner",
+                        "workload": "general",
+                        "backend_class": "remote_stateless",
+                        "context_strategy": "sliding",
+                        "deps": [],
+                        "status": "completed",
+                        "current_attempt": 1,
+                        "pid": null,
+                        "error": null,
+                        "context": null,
+                        "latest_output_preview": "Plan output",
+                        "latest_output_text": "Plan output",
+                        "latest_output_truncated": false,
+                        "input_artifacts": [],
+                        "output_artifacts": [
+                            {
+                                "artifact_id": "art-1",
+                                "task": "plan",
+                                "attempt": 1,
+                                "kind": "task_output",
+                                "label": "plan attempt 1",
+                                "mime_type": "text/markdown",
+                                "preview": "Plan output",
+                                "content": "Plan output",
+                                "bytes": 11,
+                                "created_at_ms": 1000
+                            }
+                        ],
+                        "attempts": [
+                            {
+                                "attempt": 1,
+                                "status": "completed",
+                                "session_id": "sess-1",
+                                "pid": 77,
+                                "error": null,
+                                "output_preview": "Plan output",
+                                "output_chars": 11,
+                                "truncated": false,
+                                "started_at_ms": 900,
+                                "completed_at_ms": 1000,
+                                "primary_artifact_id": "art-1"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "error": null,
+            "warnings": []
+        }"#,
+    )
+    .expect("valid orchestration status example");
+    assert_matches_schema(
+        "protocol/schemas/v1/orchestration-status.schema.json",
+        &orchestration_status,
+    );
+
+    let list_jobs: Value = serde_json::from_str(
+        r#"{
+            "protocol_version": "v1",
+            "schema_id": "agenticos.control.list_jobs.v1",
+            "request_id": "req-3",
+            "ok": true,
+            "code": "LIST_JOBS",
+            "data": {
+                "jobs": [
+                    {
+                        "job_id": 9,
+                        "name": "nightly-review",
+                        "target_kind": "workflow",
+                        "trigger_kind": "cron",
+                        "trigger_label": "0 * * * *",
+                        "enabled": true,
+                        "state": "idle",
+                        "next_run_at_ms": 1700000000000,
+                        "current_trigger_at_ms": null,
+                        "current_attempt": 0,
+                        "timeout_ms": 30000,
+                        "max_retries": 2,
+                        "backoff_ms": 5000,
+                        "last_run_started_at_ms": null,
+                        "last_run_completed_at_ms": null,
+                        "last_run_status": null,
+                        "last_error": null,
+                        "consecutive_failures": 0,
+                        "active_orchestration_id": null,
+                        "recent_runs": [
+                            {
+                                "run_id": 4,
+                                "trigger_at_ms": 1699999999000,
+                                "attempt": 1,
+                                "status": "completed",
+                                "started_at_ms": 1699999999000,
+                                "completed_at_ms": 1700000000000,
+                                "orchestration_id": 22,
+                                "deadline_at_ms": 1700000030000,
+                                "error": null
+                            }
+                        ]
+                    }
+                ]
+            },
+            "error": null,
+            "warnings": []
+        }"#,
+    )
+    .expect("valid job list example");
+    assert_matches_schema("protocol/schemas/v1/list-jobs.schema.json", &list_jobs);
+
+    let list_artifacts = serde_json::json!({
+        "protocol_version": "v1",
+        "schema_id": "agenticos.control.list_artifacts.v1",
+        "request_id": "req-4",
+        "ok": true,
+        "code": "LIST_ARTIFACTS",
+        "data": {
+            "orchestration_id": 11,
+            "task": "draft",
+            "artifacts": [
+                {
+                    "artifact_id": "art-2",
+                    "task": "draft",
+                    "attempt": 1,
+                    "kind": "task_output",
+                    "label": "draft attempt 1",
+                    "mime_type": "text/markdown",
+                    "preview": "Draft preview",
+                    "content": "Draft full text",
+                    "bytes": 15,
+                    "created_at_ms": 2000
+                }
+            ]
+        },
+        "error": null,
+        "warnings": []
+    });
+    assert_matches_schema(
+        "protocol/schemas/v1/list-artifacts.schema.json",
+        &list_artifacts,
+    );
+}

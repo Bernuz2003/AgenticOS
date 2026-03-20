@@ -112,6 +112,7 @@ export function WorkspacePage() {
   const activePid = snapshot?.activePid ?? session?.activePid ?? null;
   const displayedTitle = snapshot?.title ?? session?.title ?? "";
   const displayedRuntimeState = snapshot?.state ?? session?.runtimeState ?? null;
+  const pendingHumanRequest = snapshot?.pendingHumanRequest ?? null;
 
   useEffect(() => {
     if (!sessionId) {
@@ -142,18 +143,25 @@ export function WorkspacePage() {
     Boolean(session && !session.sessionId.startsWith("pid-"));
   const canSendInput =
     canResumeFromHistory ||
-    !!activePid &&
-    snapshot?.state === "WaitingForInput" &&
-    !timeline?.running &&
-    !composerLoading &&
-    !turnActionLoading;
+    (!!activePid &&
+      snapshot?.state === "WaitingForInput" &&
+      !timeline?.running &&
+      !composerLoading &&
+      !turnActionLoading);
+  const canSendTextInput =
+    canResumeFromHistory ||
+    (canSendInput && (!pendingHumanRequest || pendingHumanRequest.allowFreeText));
 
-  async function handleComposerSubmit() {
+  async function refreshWorkspace(sessionKey: string, pid: number) {
+    await Promise.all([refreshTimeline(sessionKey, pid), refresh(sessionKey, pid)]);
+  }
+
+  async function submitInput(rawPrompt: string) {
     if (!session) {
       return;
     }
 
-    const prompt = composerValue.trim();
+    const prompt = rawPrompt.trim();
     if (!prompt) {
       return;
     }
@@ -174,10 +182,7 @@ export function WorkspacePage() {
 
       await sendSessionInput(targetPid, prompt);
       setComposerValue("");
-      await Promise.all([
-        refreshTimeline(session.sessionId, targetPid),
-        refresh(session.sessionId, targetPid),
-      ]);
+      await refreshWorkspace(session.sessionId, targetPid);
     } catch (error) {
       setComposerError(
         error instanceof Error ? error.message : "Failed to resume or send input to session",
@@ -185,6 +190,14 @@ export function WorkspacePage() {
     } finally {
       setComposerLoading(false);
     }
+  }
+
+  async function handleComposerSubmit() {
+    await submitInput(composerValue);
+  }
+
+  async function handleHumanChoice(choice: string) {
+    await submitInput(choice);
   }
 
   async function handleContinueOutput() {
@@ -197,10 +210,7 @@ export function WorkspacePage() {
     setComposerError(null);
     try {
       await continueSessionOutput(activePid);
-      await Promise.all([
-        refreshTimeline(session.sessionId, activePid),
-        refresh(session.sessionId, activePid),
-      ]);
+      await refreshWorkspace(session.sessionId, activePid);
     } catch (error) {
       setTurnActionError(
         error instanceof Error
@@ -221,10 +231,7 @@ export function WorkspacePage() {
     setTurnActionError(null);
     try {
       await stopSessionOutput(activePid);
-      await Promise.all([
-        refreshTimeline(session.sessionId, activePid),
-        refresh(session.sessionId, activePid),
-      ]);
+      await refreshWorkspace(session.sessionId, activePid);
     } catch (error) {
       setTurnActionError(
         error instanceof Error ? error.message : "Failed to stop truncated assistant output",
@@ -286,15 +293,18 @@ export function WorkspacePage() {
               turnActionLoading={turnActionLoading}
               turnActionError={turnActionError}
               canSend={canSendInput}
+              canSendText={canSendTextInput}
+              humanRequest={pendingHumanRequest}
               onComposerChange={setComposerValue}
               onComposerSubmit={handleComposerSubmit}
+              onHumanChoice={handleHumanChoice}
               onContinueOutput={handleContinueOutput}
               onStopOutput={handleStopOutput}
             />
           </div>
         </div>
 
-        <div className="bg-white border rounded-2xl border-slate-200 overflow-hidden shadow-sm shrink-0">
+        <div className="bg-white border rounded-2xl border-slate-200 overflow-hidden shadow-sm shrink-0 min-h-0 flex">
           <MindPanel 
             session={session} 
             snapshot={snapshot} 

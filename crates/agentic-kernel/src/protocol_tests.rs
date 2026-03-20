@@ -117,6 +117,30 @@ fn parse_orchestrate_opcode() {
 }
 
 #[test]
+fn parse_workflow_control_opcodes() {
+    let list_orchestrations =
+        CommandHeader::parse("LIST_ORCHESTRATIONS 1 0").expect("LIST_ORCHESTRATIONS parses");
+    assert!(matches!(
+        list_orchestrations.opcode,
+        OpCode::ListOrchestrations
+    ));
+
+    let orchestration_status =
+        CommandHeader::parse("ORCHESTRATION_STATUS 1 24").expect("ORCHESTRATION_STATUS parses");
+    assert!(matches!(
+        orchestration_status.opcode,
+        OpCode::OrchestrationStatus
+    ));
+
+    let list_jobs = CommandHeader::parse("LIST_JOBS 1 0").expect("LIST_JOBS parses");
+    assert!(matches!(list_jobs.opcode, OpCode::ListJobs));
+
+    let list_artifacts =
+        CommandHeader::parse("LIST_ARTIFACTS 1 32").expect("LIST_ARTIFACTS parses");
+    assert!(matches!(list_artifacts.opcode, OpCode::ListArtifacts));
+}
+
+#[test]
 fn parse_memw_case_insensitive() {
     let memw = CommandHeader::parse("memw 1 4").expect("memw should parse");
     assert!(matches!(memw.opcode, OpCode::MemoryWrite));

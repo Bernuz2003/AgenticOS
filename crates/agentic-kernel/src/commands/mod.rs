@@ -11,6 +11,7 @@ mod process_cmd;
 mod scheduler_cmd;
 mod status;
 mod tools_cmd;
+mod workflow_control;
 
 use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
@@ -171,6 +172,16 @@ pub fn execute_command(
         OpCode::ContinueOutput => process_cmd::handle_continue_output(ctx.process_view(), &payload),
         OpCode::StopOutput => process_cmd::handle_stop_output(ctx.process_view(), &payload),
         OpCode::Status => status::handle_status(ctx.status_view(), &payload),
+        OpCode::ListOrchestrations => {
+            workflow_control::handle_list_orchestrations(ctx.status_view(), &payload)
+        }
+        OpCode::OrchestrationStatus => {
+            workflow_control::handle_orchestration_status(ctx.status_view(), &payload)
+        }
+        OpCode::ListJobs => workflow_control::handle_list_jobs(ctx.status_view(), &payload),
+        OpCode::ListArtifacts => {
+            workflow_control::handle_list_artifacts(ctx.status_view(), &payload)
+        }
         OpCode::Term => process_cmd::handle_term(ctx.process_view(), &payload),
         OpCode::Kill => process_cmd::handle_kill(ctx.process_view(), &payload),
         OpCode::Shutdown => misc::handle_shutdown(ctx.misc_view()),

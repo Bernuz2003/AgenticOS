@@ -435,6 +435,7 @@ impl LLMEngine {
             .to_vec();
         let token_count = new_tokens.len();
 
+        process.clear_pending_human_request();
         process.tokens.extend(new_tokens);
         process.record_user_input(&formatted_prompt, token_count);
         process.begin_next_turn();

@@ -15,13 +15,17 @@ pub mod schema {
     pub const GET_QUOTA: &str = "agenticos.control.get_quota.v1";
     pub const HELLO: &str = "agenticos.control.hello.v1";
     pub const KILL: &str = "agenticos.control.kill.v1";
+    pub const LIST_JOBS: &str = "agenticos.control.list_jobs.v1";
     pub const LIST_MODELS: &str = "agenticos.control.list_models.v1";
+    pub const LIST_ORCHESTRATIONS: &str = "agenticos.control.list_orchestrations.v1";
+    pub const LIST_ARTIFACTS: &str = "agenticos.control.list_artifacts.v1";
     pub const LIST_TOOLS: &str = "agenticos.control.list_tools.v1";
     pub const LOAD: &str = "agenticos.control.load.v1";
     pub const MEMORY_WRITE: &str = "agenticos.control.memw.v1";
     pub const MODEL_INFO: &str = "agenticos.control.model_info.v1";
     pub const ORCHESTRATE: &str = "agenticos.control.orchestrate.v1";
-    pub const ORCH_STATUS: &str = "agenticos.control.orch_status.v1";
+    pub const ORCHESTRATION_STATUS: &str = "agenticos.control.orchestration_status.v1";
+    pub const ORCH_STATUS: &str = ORCHESTRATION_STATUS;
     pub const PID_STATUS: &str = "agenticos.control.pid_status.v1";
     pub const PING: &str = "agenticos.control.ping.v1";
     pub const REGISTER_TOOL: &str = "agenticos.control.register_tool.v1";
@@ -45,6 +49,7 @@ pub mod schema {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ControlErrorCode {
+    ArtifactListInvalid,
     AuthFailed,
     AuthRequired,
     BackendDiag,
@@ -62,6 +67,8 @@ pub enum ControlErrorCode {
     InvalidToolUnregistration,
     LoadBusy,
     LoadFailed,
+    ListJobsInvalid,
+    ListOrchestrationsInvalid,
     MemwFailed,
     MemwInvalid,
     MissingModelId,
@@ -74,6 +81,7 @@ pub enum ControlErrorCode {
     OrchNotFound,
     OrchestrateInvalid,
     OrchestrateJson,
+    OrchestrationStatusInvalid,
     RetryTaskInvalid,
     PidNotFound,
     ProtocolSerialize,
@@ -99,6 +107,7 @@ pub enum ControlErrorCode {
 impl ControlErrorCode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::ArtifactListInvalid => "ARTIFACT_LIST_INVALID",
             Self::AuthFailed => "AUTH_FAILED",
             Self::AuthRequired => "AUTH_REQUIRED",
             Self::BackendDiag => "BACKEND_DIAG",
@@ -116,6 +125,8 @@ impl ControlErrorCode {
             Self::InvalidToolUnregistration => "INVALID_TOOL_UNREGISTRATION",
             Self::LoadBusy => "LOAD_BUSY",
             Self::LoadFailed => "LOAD_FAILED",
+            Self::ListJobsInvalid => "LIST_JOBS_INVALID",
+            Self::ListOrchestrationsInvalid => "LIST_ORCHESTRATIONS_INVALID",
             Self::MemwFailed => "MEMW_FAILED",
             Self::MemwInvalid => "MEMW_INVALID",
             Self::MissingModelId => "MISSING_MODEL_ID",
@@ -128,6 +139,7 @@ impl ControlErrorCode {
             Self::OrchNotFound => "ORCH_NOT_FOUND",
             Self::OrchestrateInvalid => "ORCHESTRATE_INVALID",
             Self::OrchestrateJson => "ORCHESTRATE_JSON",
+            Self::OrchestrationStatusInvalid => "ORCHESTRATION_STATUS_INVALID",
             Self::RetryTaskInvalid => "RETRY_TASK_INVALID",
             Self::PidNotFound => "PID_NOT_FOUND",
             Self::ProtocolSerialize => "PROTOCOL_SERIALIZE",
@@ -237,6 +249,10 @@ pub enum OpCode {
     ResumeSession,
     ScheduleJob,
     Orchestrate,
+    ListOrchestrations,
+    OrchestrationStatus,
+    ListJobs,
+    ListArtifacts,
     RetryTask,
     ListTools,
     RegisterTool,
@@ -275,6 +291,10 @@ impl OpCode {
             "RESUME_SESSION" => Some(Self::ResumeSession),
             "SCHEDULE_JOB" => Some(Self::ScheduleJob),
             "ORCHESTRATE" => Some(Self::Orchestrate),
+            "LIST_ORCHESTRATIONS" => Some(Self::ListOrchestrations),
+            "ORCHESTRATION_STATUS" => Some(Self::OrchestrationStatus),
+            "LIST_JOBS" => Some(Self::ListJobs),
+            "LIST_ARTIFACTS" => Some(Self::ListArtifacts),
             "RETRY_TASK" => Some(Self::RetryTask),
             "LIST_TOOLS" => Some(Self::ListTools),
             "REGISTER_TOOL" => Some(Self::RegisterTool),
@@ -314,6 +334,10 @@ impl OpCode {
             Self::ResumeSession => "RESUME_SESSION",
             Self::ScheduleJob => "SCHEDULE_JOB",
             Self::Orchestrate => "ORCHESTRATE",
+            Self::ListOrchestrations => "LIST_ORCHESTRATIONS",
+            Self::OrchestrationStatus => "ORCHESTRATION_STATUS",
+            Self::ListJobs => "LIST_JOBS",
+            Self::ListArtifacts => "LIST_ARTIFACTS",
             Self::RetryTask => "RETRY_TASK",
             Self::ListTools => "LIST_TOOLS",
             Self::RegisterTool => "REGISTER_TOOL",

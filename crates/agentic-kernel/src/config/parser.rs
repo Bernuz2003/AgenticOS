@@ -291,6 +291,15 @@ pub(crate) fn apply_env_overrides(config: &mut KernelConfig) {
     if let Some(value) = env_usize_opt("AGENTIC_CONTEXT_RETRIEVE_TOP_K") {
         config.context.retrieve_top_k = value.max(1);
     }
+    if let Some(value) = env_usize_opt("AGENTIC_CONTEXT_RETRIEVE_CANDIDATE_LIMIT") {
+        config.context.retrieve_candidate_limit = value.max(1);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_CONTEXT_RETRIEVE_MAX_SEGMENT_CHARS") {
+        config.context.retrieve_max_segment_chars = value.max(64);
+    }
+    if let Some(value) = env_f64_opt("AGENTIC_CONTEXT_RETRIEVE_MIN_SCORE") {
+        config.context.retrieve_min_score = value.max(0.0);
+    }
     if let Some(value) = env_u64_opt("AGENTIC_CHECKPOINT_INTERVAL_SECS") {
         config.checkpoint.interval_secs = value;
     }

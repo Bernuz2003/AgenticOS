@@ -28,6 +28,16 @@ local_runtime_ram_overhead_bytes = 268435456
 local_runtime_vram_overhead_bytes = 134217728
 max_queue_entries = 32
 
+[context]
+default_strategy = "sliding"
+default_window_tokens = 2048
+compaction_trigger_tokens = 1792
+compaction_target_tokens = 1536
+retrieve_top_k = 3
+retrieve_candidate_limit = 64
+retrieve_max_segment_chars = 768
+retrieve_min_score = 0.12
+
 [checkpoint]
 interval_secs = 0
 

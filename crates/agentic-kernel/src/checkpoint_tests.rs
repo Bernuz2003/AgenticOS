@@ -24,6 +24,7 @@ fn make_test_snapshot() -> KernelSnapshot {
                 max_tokens: 256,
                 context_policy: ContextPolicy::from_kernel_defaults(),
                 context_state: ContextState::default(),
+                pending_human_request: None,
             },
             ProcessSnapshot {
                 pid: 2,
@@ -35,6 +36,7 @@ fn make_test_snapshot() -> KernelSnapshot {
                 max_tokens: 512,
                 context_policy: ContextPolicy::from_kernel_defaults(),
                 context_state: ContextState::default(),
+                pending_human_request: None,
             },
         ],
         scheduler: SchedulerStateSnapshot {

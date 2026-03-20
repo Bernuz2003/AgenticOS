@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use agentic_control_models::{
-    BackendCapabilitiesView, BackendTelemetryView,
-    ContextStatusSnapshot as ControlContextStatusSnapshot, GenerationStatus, JobsStatus,
-    MemoryStatus, ModelStatus, OrchArtifactRefView, OrchArtifactView, OrchStatusResponse,
-    OrchSummaryResponse, OrchTaskAttemptView, OrchTaskEntry, OrchestrationsStatus,
-    PidStatusResponse, ProcessPermissionsView, ProcessesStatus, ResourceGovernorStatusView,
-    RuntimeInstanceView, RuntimeLoadQueueEntryView, SchedulerStatus, StatusResponse,
+    ArtifactListResponse, BackendCapabilitiesView, BackendTelemetryView,
+    ContextStatusSnapshot as ControlContextStatusSnapshot, GenerationStatus, HumanInputRequestView,
+    JobsStatus, MemoryStatus, ModelStatus, OrchArtifactRefView, OrchArtifactView,
+    OrchStatusResponse, OrchSummaryResponse, OrchTaskAttemptView, OrchTaskEntry,
+    OrchestrationListResponse, OrchestrationsStatus, PidStatusResponse, ProcessPermissionsView,
+    ProcessesStatus, ResourceGovernorStatusView, RuntimeInstanceView, RuntimeLoadQueueEntryView,
+    ScheduledJobListResponse, SchedulerStatus, StatusResponse,
 };
 
 use crate::backend::{runtime_backend_telemetry, BackendCapabilities, RuntimeModel};
@@ -561,6 +562,63 @@ pub fn build_orchestration_status(
     })
 }
 
+pub fn build_orchestration_list(deps: &StatusSnapshotDeps<'_>) -> OrchestrationListResponse {
+    OrchestrationListResponse {
+        orchestrations: build_orchestration_summaries(deps),
+    }
+}
+
+pub fn build_scheduled_job_list(deps: &StatusSnapshotDeps<'_>) -> ScheduledJobListResponse {
+    ScheduledJobListResponse {
+        jobs: deps
+            .job_scheduler
+            .scheduled_jobs()
+            .into_iter()
+            .map(|job| job.to_view())
+            .collect(),
+    }
+}
+
+pub fn build_artifact_list(
+    deps: &StatusSnapshotDeps<'_>,
+    orch_id: u64,
+    task_filter: Option<&str>,
+) -> Option<ArtifactListResponse> {
+    deps.orchestrator.get(orch_id)?;
+    let workflow_io = deps.storage.load_workflow_io(orch_id).ok()?;
+    let task_filter_owned = task_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let artifacts = workflow_io
+        .artifacts
+        .into_iter()
+        .filter(|artifact| {
+            task_filter_owned
+                .as_deref()
+                .is_none_or(|task| artifact.producer_task_id == task)
+        })
+        .map(|artifact| OrchArtifactView {
+            artifact_id: artifact.artifact_id,
+            task: artifact.producer_task_id,
+            attempt: artifact.producer_attempt,
+            kind: artifact.kind,
+            label: artifact.label,
+            mime_type: artifact.mime_type,
+            preview: artifact.preview,
+            content: artifact.content_text,
+            bytes: artifact.bytes,
+            created_at_ms: artifact.created_at_ms,
+        })
+        .collect();
+
+    Some(ArtifactListResponse {
+        orchestration_id: orch_id,
+        task: task_filter_owned,
+        artifacts,
+    })
+}
+
 fn collect_unique_pids<const N: usize>(groups: [&[u64]; N]) -> Vec<u64> {
     let mut seen = HashSet::new();
     let mut unique = Vec::new();
@@ -614,6 +672,7 @@ fn build_pid_status_or_placeholder(
             path_scopes: Vec::new(),
         },
         context: None,
+        pending_human_request: None,
     })
 }
 
@@ -682,6 +741,10 @@ fn build_pid_status_response_checked(
                 session_accounting,
                 permissions: map_permissions_view(&process.permission_policy),
                 context: Some(map_context_snapshot(process.context_status_snapshot())),
+                pending_human_request: process
+                    .pending_human_request
+                    .as_ref()
+                    .map(map_human_input_request),
             });
         }
     }
@@ -747,6 +810,10 @@ fn checked_out_pid_status_response(
         session_accounting: None,
         permissions: map_permissions_view(&metadata.permission_policy),
         context: Some(map_context_snapshot(metadata.context.clone())),
+        pending_human_request: metadata
+            .pending_human_request
+            .as_ref()
+            .map(map_human_input_request),
     }
 }
 
@@ -791,6 +858,10 @@ fn restored_pid_status_response(
                 &metadata.context_state,
             ),
         )),
+        pending_human_request: metadata
+            .pending_human_request
+            .as_ref()
+            .map(map_human_input_request),
     }
 }
 
@@ -836,9 +907,35 @@ fn map_context_snapshot(
         context_window_size: snapshot.context_window_size,
         context_compressions: snapshot.context_compressions,
         context_retrieval_hits: snapshot.context_retrieval_hits,
+        context_retrieval_requests: snapshot.context_retrieval_requests,
+        context_retrieval_misses: snapshot.context_retrieval_misses,
+        context_retrieval_candidates_scored: snapshot.context_retrieval_candidates_scored,
+        context_retrieval_segments_selected: snapshot.context_retrieval_segments_selected,
+        last_retrieval_candidates_scored: snapshot.last_retrieval_candidates_scored,
+        last_retrieval_segments_selected: snapshot.last_retrieval_segments_selected,
+        last_retrieval_latency_ms: snapshot.last_retrieval_latency_ms,
+        last_retrieval_top_score: snapshot.last_retrieval_top_score,
         last_compaction_reason: snapshot.last_compaction_reason,
         last_summary_ts: snapshot.last_summary_ts,
         context_segments: snapshot.context_segments,
+        episodic_segments: snapshot.episodic_segments,
+        episodic_tokens: snapshot.episodic_tokens,
+        retrieve_top_k: snapshot.retrieve_top_k,
+        retrieve_candidate_limit: snapshot.retrieve_candidate_limit,
+        retrieve_max_segment_chars: snapshot.retrieve_max_segment_chars,
+        retrieve_min_score: snapshot.retrieve_min_score,
+    }
+}
+
+fn map_human_input_request(request: &crate::process::HumanInputRequest) -> HumanInputRequestView {
+    HumanInputRequestView {
+        kind: request.kind.as_str().to_string(),
+        question: request.question.clone(),
+        details: request.details.clone(),
+        choices: request.choices.clone(),
+        allow_free_text: request.allow_free_text,
+        placeholder: request.placeholder.clone(),
+        requested_at_ms: request.requested_at_ms,
     }
 }
 

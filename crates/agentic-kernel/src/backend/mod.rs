@@ -21,6 +21,8 @@ use remote::RemoteOpenAICompatibleBackend;
 #[cfg(test)]
 pub(crate) use local::TestExternalEndpointOverrideGuard;
 #[cfg(test)]
+pub(crate) use local::TestExternalRuntimeReadyGuard;
+#[cfg(test)]
 pub(crate) use remote::{TestOpenAIConfigOverrideGuard, TestRemoteOpenAIConfigOverrideGuard};
 #[cfg(test)]
 use remote_adapter::{combine_completion_text, completion_is_finished, CompletionResponse};
@@ -171,6 +173,13 @@ pub fn driver_descriptor(backend_id: &str) -> Option<&'static DriverDescriptor> 
     DRIVER_REGISTRY
         .iter()
         .find(|driver| driver.id == backend_id)
+}
+
+pub(crate) fn ensure_runtime_backend_ready(backend_id: &str) -> Result<(), String> {
+    match backend_id {
+        "external-llamacpp" => local::ensure_runtime_ready(),
+        _ => Ok(()),
+    }
 }
 
 fn is_driver_runtime_loadable(driver: &DriverDescriptor) -> bool {

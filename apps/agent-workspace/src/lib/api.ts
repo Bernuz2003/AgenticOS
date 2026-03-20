@@ -62,9 +62,33 @@ export interface WorkspaceContextSnapshot {
   contextWindowSize: number;
   contextCompressions: number;
   contextRetrievalHits: number;
+  contextRetrievalRequests: number;
+  contextRetrievalMisses: number;
+  contextRetrievalCandidatesScored: number;
+  contextRetrievalSegmentsSelected: number;
+  lastRetrievalCandidatesScored: number;
+  lastRetrievalSegmentsSelected: number;
+  lastRetrievalLatencyMs: number;
+  lastRetrievalTopScore: number | null;
   lastCompactionReason: string | null;
   lastSummaryTs: string | null;
   contextSegments: number;
+  episodicSegments: number;
+  episodicTokens: number;
+  retrieveTopK: number;
+  retrieveCandidateLimit: number;
+  retrieveMaxSegmentChars: number;
+  retrieveMinScore: number;
+}
+
+export interface HumanInputRequest {
+  kind: string;
+  question: string;
+  details: string | null;
+  choices: string[];
+  allowFreeText: boolean;
+  placeholder: string | null;
+  requestedAtMs: number;
 }
 
 export interface WorkspaceSnapshot {
@@ -99,6 +123,7 @@ export interface WorkspaceSnapshot {
   maxTokens: number;
   orchestration: WorkspaceOrchestrationSnapshot | null;
   context: WorkspaceContextSnapshot | null;
+  pendingHumanRequest: HumanInputRequest | null;
   auditEvents: AuditEvent[];
 }
 
@@ -779,9 +804,32 @@ export interface WorkspaceSnapshotDto {
     context_window_size: number;
     context_compressions: number;
     context_retrieval_hits: number;
+    context_retrieval_requests: number;
+    context_retrieval_misses: number;
+    context_retrieval_candidates_scored: number;
+    context_retrieval_segments_selected: number;
+    last_retrieval_candidates_scored: number;
+    last_retrieval_segments_selected: number;
+    last_retrieval_latency_ms: number;
+    last_retrieval_top_score: number | null;
     last_compaction_reason: string | null;
     last_summary_ts: string | null;
     context_segments: number;
+    episodic_segments: number;
+    episodic_tokens: number;
+    retrieve_top_k: number;
+    retrieve_candidate_limit: number;
+    retrieve_max_segment_chars: number;
+    retrieve_min_score: number;
+  };
+  pending_human_request: null | {
+    kind: string;
+    question: string;
+    details: string | null;
+    choices: string[];
+    allow_free_text: boolean;
+    placeholder: string | null;
+    requested_at_ms: number;
   };
   audit_events: AuditEventDto[];
 }
@@ -883,6 +931,19 @@ export function auditEventKey(event: AuditEvent): string {
     event.runtimeId ?? "",
     event.detail,
   ].join("|");
+}
+
+function formatElapsedLabel(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 1) {
+    return "<1s";
+  }
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`;
+  }
+  if (seconds < 3600) {
+    return `${Math.floor(seconds / 60)}m`;
+  }
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
 function mapScheduledJob(job: LobbySnapshotDto["scheduled_jobs"][number]): ScheduledJob {
@@ -1028,9 +1089,41 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
           contextWindowSize: snapshot.context.context_window_size,
           contextCompressions: snapshot.context.context_compressions,
           contextRetrievalHits: snapshot.context.context_retrieval_hits,
+          contextRetrievalRequests:
+            snapshot.context.context_retrieval_requests,
+          contextRetrievalMisses: snapshot.context.context_retrieval_misses,
+          contextRetrievalCandidatesScored:
+            snapshot.context.context_retrieval_candidates_scored,
+          contextRetrievalSegmentsSelected:
+            snapshot.context.context_retrieval_segments_selected,
+          lastRetrievalCandidatesScored:
+            snapshot.context.last_retrieval_candidates_scored,
+          lastRetrievalSegmentsSelected:
+            snapshot.context.last_retrieval_segments_selected,
+          lastRetrievalLatencyMs: snapshot.context.last_retrieval_latency_ms,
+          lastRetrievalTopScore: snapshot.context.last_retrieval_top_score,
           lastCompactionReason: snapshot.context.last_compaction_reason,
           lastSummaryTs: snapshot.context.last_summary_ts,
           contextSegments: snapshot.context.context_segments,
+          episodicSegments: snapshot.context.episodic_segments,
+          episodicTokens: snapshot.context.episodic_tokens,
+          retrieveTopK: snapshot.context.retrieve_top_k,
+          retrieveCandidateLimit:
+            snapshot.context.retrieve_candidate_limit,
+          retrieveMaxSegmentChars:
+            snapshot.context.retrieve_max_segment_chars,
+          retrieveMinScore: snapshot.context.retrieve_min_score,
+        }
+      : null,
+    pendingHumanRequest: snapshot.pending_human_request
+      ? {
+          kind: snapshot.pending_human_request.kind,
+          question: snapshot.pending_human_request.question,
+          details: snapshot.pending_human_request.details,
+          choices: snapshot.pending_human_request.choices,
+          allowFreeText: snapshot.pending_human_request.allow_free_text,
+          placeholder: snapshot.pending_human_request.placeholder,
+          requestedAtMs: snapshot.pending_human_request.requested_at_ms,
         }
       : null,
     auditEvents: snapshot.audit_events.map(normalizeAuditEvent),
@@ -1247,6 +1340,144 @@ export async function scheduleWorkflowJob(
   };
 }
 
+export async function listOrchestrations(): Promise<LobbyOrchestrationSummary[]> {
+  const result = await invoke<{
+    orchestrations: Array<{
+      orchestration_id: number;
+      total: number;
+      completed: number;
+      running: number;
+      pending: number;
+      failed: number;
+      skipped: number;
+      finished: boolean;
+      elapsed_secs: number;
+      policy: string;
+    }>;
+  }>("list_orchestrations");
+
+  return result.orchestrations.map((orchestration) => ({
+    orchestrationId: orchestration.orchestration_id,
+    total: orchestration.total,
+    completed: orchestration.completed,
+    running: orchestration.running,
+    pending: orchestration.pending,
+    failed: orchestration.failed,
+    skipped: orchestration.skipped,
+    finished: orchestration.finished,
+    elapsedLabel: formatElapsedLabel(orchestration.elapsed_secs),
+    policy: orchestration.policy,
+  }));
+}
+
+export async function listScheduledJobs(): Promise<ScheduledJob[]> {
+  const result = await invoke<{
+    jobs: Array<{
+      job_id: number;
+      name: string;
+      target_kind: string;
+      trigger_kind: string;
+      trigger_label: string;
+      enabled: boolean;
+      state: string;
+      next_run_at_ms: number | null;
+      current_trigger_at_ms: number | null;
+      current_attempt: number;
+      timeout_ms: number;
+      max_retries: number;
+      backoff_ms: number;
+      last_run_started_at_ms: number | null;
+      last_run_completed_at_ms: number | null;
+      last_run_status: string | null;
+      last_error: string | null;
+      consecutive_failures: number;
+      active_orchestration_id: number | null;
+      recent_runs: Array<{
+        run_id: number;
+        trigger_at_ms: number;
+        attempt: number;
+        status: string;
+        started_at_ms: number | null;
+        completed_at_ms: number | null;
+        orchestration_id: number | null;
+        deadline_at_ms: number | null;
+        error: string | null;
+      }>;
+    }>;
+  }>("list_scheduled_jobs");
+
+  return result.jobs.map((job) => ({
+    jobId: job.job_id,
+    name: job.name,
+    targetKind: job.target_kind,
+    triggerKind: job.trigger_kind,
+    triggerLabel: job.trigger_label,
+    enabled: job.enabled,
+    state: job.state,
+    nextRunAtMs: job.next_run_at_ms,
+    currentTriggerAtMs: job.current_trigger_at_ms,
+    currentAttempt: job.current_attempt,
+    timeoutMs: job.timeout_ms,
+    maxRetries: job.max_retries,
+    backoffMs: job.backoff_ms,
+    lastRunStartedAtMs: job.last_run_started_at_ms,
+    lastRunCompletedAtMs: job.last_run_completed_at_ms,
+    lastRunStatus: job.last_run_status,
+    lastError: job.last_error,
+    consecutiveFailures: job.consecutive_failures,
+    activeOrchestrationId: job.active_orchestration_id,
+    recentRuns: job.recent_runs.map((run) => ({
+      runId: run.run_id,
+      triggerAtMs: run.trigger_at_ms,
+      attempt: run.attempt,
+      status: run.status,
+      startedAtMs: run.started_at_ms,
+      completedAtMs: run.completed_at_ms,
+      orchestrationId: run.orchestration_id,
+      deadlineAtMs: run.deadline_at_ms,
+      error: run.error,
+    })),
+  }));
+}
+
+export async function listWorkflowArtifacts(
+  orchestrationId: number,
+  task: string | null = null,
+): Promise<OrchestrationArtifact[]> {
+  const result = await invoke<{
+    orchestration_id: number;
+    task: string | null;
+    artifacts: Array<{
+      artifact_id: string;
+      task: string;
+      attempt: number;
+      kind: string;
+      label: string;
+      mime_type: string;
+      preview: string;
+      content: string;
+      bytes: number;
+      created_at_ms: number;
+    }>;
+  }>("list_workflow_artifacts", {
+    orchestrationId,
+    task,
+  });
+
+  return result.artifacts.map((artifact) => ({
+    artifactId: artifact.artifact_id,
+    task: artifact.task,
+    attempt: artifact.attempt,
+    kind: artifact.kind,
+    label: artifact.label,
+    mimeType: artifact.mime_type,
+    preview: artifact.preview,
+    content: artifact.content,
+    bytes: artifact.bytes,
+    createdAtMs: artifact.created_at_ms,
+  }));
+}
+
 export async function fetchOrchestrationStatus(
   orchestrationId: number,
 ): Promise<OrchestrationStatus> {
@@ -1280,9 +1511,23 @@ export async function fetchOrchestrationStatus(
         context_window_size: number;
         context_compressions: number;
         context_retrieval_hits: number;
+        context_retrieval_requests: number;
+        context_retrieval_misses: number;
+        context_retrieval_candidates_scored: number;
+        context_retrieval_segments_selected: number;
+        last_retrieval_candidates_scored: number;
+        last_retrieval_segments_selected: number;
+        last_retrieval_latency_ms: number;
+        last_retrieval_top_score?: number | null;
         last_compaction_reason: string | null;
         last_summary_ts: string | null;
         context_segments: number;
+        episodic_segments: number;
+        episodic_tokens: number;
+        retrieve_top_k: number;
+        retrieve_candidate_limit: number;
+        retrieve_max_segment_chars: number;
+        retrieve_min_score: number;
       };
       latest_output_preview?: string | null;
       latest_output_text?: string | null;
@@ -1353,9 +1598,32 @@ export async function fetchOrchestrationStatus(
             contextWindowSize: task.context.context_window_size,
             contextCompressions: task.context.context_compressions,
             contextRetrievalHits: task.context.context_retrieval_hits,
+            contextRetrievalRequests:
+              task.context.context_retrieval_requests,
+            contextRetrievalMisses: task.context.context_retrieval_misses,
+            contextRetrievalCandidatesScored:
+              task.context.context_retrieval_candidates_scored,
+            contextRetrievalSegmentsSelected:
+              task.context.context_retrieval_segments_selected,
+            lastRetrievalCandidatesScored:
+              task.context.last_retrieval_candidates_scored,
+            lastRetrievalSegmentsSelected:
+              task.context.last_retrieval_segments_selected,
+            lastRetrievalLatencyMs:
+              task.context.last_retrieval_latency_ms,
+            lastRetrievalTopScore:
+              task.context.last_retrieval_top_score ?? null,
             lastCompactionReason: task.context.last_compaction_reason,
             lastSummaryTs: task.context.last_summary_ts,
             contextSegments: task.context.context_segments,
+            episodicSegments: task.context.episodic_segments,
+            episodicTokens: task.context.episodic_tokens,
+            retrieveTopK: task.context.retrieve_top_k,
+            retrieveCandidateLimit:
+              task.context.retrieve_candidate_limit,
+            retrieveMaxSegmentChars:
+              task.context.retrieve_max_segment_chars,
+            retrieveMinScore: task.context.retrieve_min_score,
           }
         : null,
       latestOutputPreview: task.latest_output_preview ?? null,

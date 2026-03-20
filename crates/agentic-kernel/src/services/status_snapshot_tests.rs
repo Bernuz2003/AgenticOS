@@ -1,6 +1,7 @@
 use super::{
-    build_global_status, checked_out_pid_status_response, collect_unique_pids,
-    restored_pid_status_response, runtime_backend_status, StatusSnapshotDeps,
+    build_artifact_list, build_global_status, build_orchestration_list, build_scheduled_job_list,
+    checked_out_pid_status_response, collect_unique_pids, restored_pid_status_response,
+    runtime_backend_status, StatusSnapshotDeps,
 };
 use crate::backend::{resolve_driver_for_model, TestOpenAIConfigOverrideGuard};
 use crate::backend::{
@@ -11,15 +12,17 @@ use crate::commands::MetricsState;
 use crate::config::OpenAIResponsesConfig;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::{ModelCatalog, RemoteModelEntry, ResolvedModelTarget};
-use crate::orchestrator::Orchestrator;
+use crate::orchestrator::{FailurePolicy, Orchestrator, TaskGraphDef, TaskNodeDef};
 use crate::process::{ContextPolicy, ContextState, ContextStatusSnapshot, ContextStrategy};
 use crate::prompting::PromptFamily;
 use crate::resource_governor::ResourceGovernor;
 use crate::runtimes::{RuntimeRegistry, RuntimeReservation};
 use crate::scheduler::{CheckedOutProcessMetadata, ProcessScheduler, RestoredProcessMetadata};
-use crate::services::job_scheduler::JobScheduler;
+use crate::services::job_scheduler::{
+    JobScheduler, ScheduledJobTriggerInput, ScheduledWorkflowJobRequest,
+};
 use crate::session::SessionRegistry;
-use crate::storage::StorageService;
+use crate::storage::{current_timestamp_ms, StorageService};
 use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 use anyhow::Result;
 use std::collections::HashSet;
@@ -115,6 +118,7 @@ fn checked_out_status_preserves_backend_slot_metadata() {
                 parallel_sessions: true,
             }),
             context,
+            pending_human_request: None,
         },
     );
 
@@ -163,6 +167,7 @@ fn restored_status_can_surface_absent_backend_slot_metadata() {
             backend_capabilities: None,
             context_policy: ContextPolicy::new(ContextStrategy::Summarize, 512, 384, 192, 4),
             context_state: ContextState::default(),
+            pending_human_request: None,
         },
     );
 
@@ -293,6 +298,171 @@ fn global_status_surfaces_cloud_backend_metadata_for_lobby() {
     );
 }
 
+#[test]
+fn orchestration_list_returns_active_orchestrations() {
+    let memory = NeuralMemory::new().expect("memory init");
+    let model_catalog =
+        ModelCatalog::discover(crate::config::kernel_config().paths.models_dir.clone())
+            .expect("discover model catalog");
+    let scheduler = ProcessScheduler::new();
+    let job_scheduler = JobScheduler::new();
+    let mut orchestrator = Orchestrator::new();
+    let in_flight = HashSet::new();
+    let metrics = MetricsState::new();
+    let session_registry = fresh_session_registry();
+    let (runtime_storage, runtime_registry, resource_governor) = fresh_runtime_registry();
+
+    let (orch_id, _) = orchestrator
+        .register(sample_workflow_graph(), 11)
+        .expect("register orchestration");
+
+    let response = build_orchestration_list(&StatusSnapshotDeps {
+        memory: &memory,
+        runtime_registry: &runtime_registry,
+        resource_governor: &resource_governor,
+        model_catalog: &model_catalog,
+        scheduler: &scheduler,
+        job_scheduler: &job_scheduler,
+        orchestrator: &orchestrator,
+        in_flight: &in_flight,
+        metrics: &metrics,
+        session_registry: &session_registry,
+        storage: &runtime_storage,
+    });
+
+    assert_eq!(response.orchestrations.len(), 1);
+    assert_eq!(response.orchestrations[0].orchestration_id, orch_id);
+    assert_eq!(response.orchestrations[0].total, 2);
+    assert_eq!(response.orchestrations[0].pending, 2);
+}
+
+#[test]
+fn scheduled_job_list_surfaces_scheduled_workflow_jobs() {
+    let memory = NeuralMemory::new().expect("memory init");
+    let model_catalog =
+        ModelCatalog::discover(crate::config::kernel_config().paths.models_dir.clone())
+            .expect("discover model catalog");
+    let scheduler = ProcessScheduler::new();
+    let mut job_scheduler = JobScheduler::new();
+    let orchestrator = Orchestrator::new();
+    let in_flight = HashSet::new();
+    let metrics = MetricsState::new();
+    let session_registry = fresh_session_registry();
+    let (mut runtime_storage, runtime_registry, resource_governor) = fresh_runtime_registry();
+
+    let workflow_payload = sample_workflow_json();
+    let workflow =
+        serde_json::from_str::<TaskGraphDef>(&workflow_payload).expect("parse sample workflow");
+    let now_ms = current_timestamp_ms();
+    job_scheduler
+        .schedule_workflow_job(
+            &mut runtime_storage,
+            ScheduledWorkflowJobRequest {
+                name: "nightly-review".to_string(),
+                workflow,
+                workflow_payload,
+                trigger: ScheduledJobTriggerInput::At {
+                    at_ms: now_ms + 60_000,
+                },
+                timeout_ms: Some(30_000),
+                max_retries: Some(2),
+                backoff_ms: Some(5_000),
+                enabled: true,
+            },
+        )
+        .expect("schedule workflow job");
+
+    let response = build_scheduled_job_list(&StatusSnapshotDeps {
+        memory: &memory,
+        runtime_registry: &runtime_registry,
+        resource_governor: &resource_governor,
+        model_catalog: &model_catalog,
+        scheduler: &scheduler,
+        job_scheduler: &job_scheduler,
+        orchestrator: &orchestrator,
+        in_flight: &in_flight,
+        metrics: &metrics,
+        session_registry: &session_registry,
+        storage: &runtime_storage,
+    });
+
+    assert_eq!(response.jobs.len(), 1);
+    assert_eq!(response.jobs[0].name, "nightly-review");
+    assert_eq!(response.jobs[0].target_kind, "workflow");
+    assert_eq!(response.jobs[0].trigger_kind, "at");
+}
+
+#[test]
+fn artifact_list_filters_by_task_and_rejects_missing_orchestrations() {
+    let memory = NeuralMemory::new().expect("memory init");
+    let model_catalog =
+        ModelCatalog::discover(crate::config::kernel_config().paths.models_dir.clone())
+            .expect("discover model catalog");
+    let scheduler = ProcessScheduler::new();
+    let job_scheduler = JobScheduler::new();
+    let mut orchestrator = Orchestrator::new();
+    let in_flight = HashSet::new();
+    let metrics = MetricsState::new();
+    let session_registry = fresh_session_registry();
+    let (mut runtime_storage, runtime_registry, resource_governor) = fresh_runtime_registry();
+
+    let (orch_id, _) = orchestrator
+        .register(sample_workflow_graph(), 29)
+        .expect("register orchestration");
+    runtime_storage
+        .begin_workflow_task_attempt(orch_id, "plan", 1, None, None, 1_000, &[])
+        .expect("begin plan attempt");
+    runtime_storage
+        .finalize_workflow_task_attempt(
+            orch_id,
+            "plan",
+            1,
+            "completed",
+            None,
+            "plan output",
+            false,
+            1_100,
+        )
+        .expect("finalize plan attempt");
+    runtime_storage
+        .begin_workflow_task_attempt(orch_id, "draft", 1, None, None, 1_200, &[])
+        .expect("begin draft attempt");
+    runtime_storage
+        .finalize_workflow_task_attempt(
+            orch_id,
+            "draft",
+            1,
+            "completed",
+            None,
+            "draft output",
+            false,
+            1_300,
+        )
+        .expect("finalize draft attempt");
+
+    let deps = StatusSnapshotDeps {
+        memory: &memory,
+        runtime_registry: &runtime_registry,
+        resource_governor: &resource_governor,
+        model_catalog: &model_catalog,
+        scheduler: &scheduler,
+        job_scheduler: &job_scheduler,
+        orchestrator: &orchestrator,
+        in_flight: &in_flight,
+        metrics: &metrics,
+        session_registry: &session_registry,
+        storage: &runtime_storage,
+    };
+
+    let filtered = build_artifact_list(&deps, orch_id, Some("draft")).expect("artifact list");
+    assert_eq!(filtered.orchestration_id, orch_id);
+    assert_eq!(filtered.task.as_deref(), Some("draft"));
+    assert_eq!(filtered.artifacts.len(), 1);
+    assert_eq!(filtered.artifacts[0].task, "draft");
+
+    assert!(build_artifact_list(&deps, orch_id + 999, None).is_none());
+}
+
 fn fresh_session_registry() -> SessionRegistry {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -329,4 +499,67 @@ fn fresh_runtime_registry() -> (StorageService, RuntimeRegistry, ResourceGoverno
     )
     .expect("load resource governor");
     (storage, registry, governor)
+}
+
+fn sample_workflow_json() -> String {
+    r#"{
+        "failure_policy": "fail_fast",
+        "tasks": [
+            {
+                "id": "plan",
+                "role": "planner",
+                "prompt": "Produce a plan",
+                "deps": []
+            },
+            {
+                "id": "draft",
+                "role": "writer",
+                "prompt": "Write the draft",
+                "deps": ["plan"]
+            }
+        ]
+    }"#
+    .to_string()
+}
+
+fn sample_workflow_graph() -> TaskGraphDef {
+    TaskGraphDef {
+        tasks: vec![
+            TaskNodeDef {
+                id: "plan".to_string(),
+                role: Some("planner".to_string()),
+                prompt: "Produce a plan".to_string(),
+                workload: None,
+                backend_class: None,
+                context_strategy: None,
+                context_window_size: None,
+                context_trigger_tokens: None,
+                context_target_tokens: None,
+                context_retrieve_top_k: None,
+                trust_scope: None,
+                allow_actions: None,
+                allowed_tools: None,
+                path_scopes: None,
+                deps: Vec::new(),
+            },
+            TaskNodeDef {
+                id: "draft".to_string(),
+                role: Some("writer".to_string()),
+                prompt: "Write the draft".to_string(),
+                workload: None,
+                backend_class: None,
+                context_strategy: None,
+                context_window_size: None,
+                context_trigger_tokens: None,
+                context_target_tokens: None,
+                context_retrieve_top_k: None,
+                trust_scope: None,
+                allow_actions: None,
+                allowed_tools: None,
+                path_scopes: None,
+                deps: vec!["plan".to_string()],
+            },
+        ],
+        failure_policy: FailurePolicy::FailFast,
+    }
 }

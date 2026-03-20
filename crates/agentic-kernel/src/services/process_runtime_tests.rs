@@ -4,7 +4,7 @@ use super::{
 };
 use crate::backend::{
     resolve_driver_for_model, BackendClass, TestExternalEndpointOverrideGuard,
-    TestOpenAIConfigOverrideGuard,
+    TestExternalRuntimeReadyGuard, TestOpenAIConfigOverrideGuard,
 };
 use crate::config::OpenAIResponsesConfig;
 use crate::engine::LLMEngine;
@@ -219,6 +219,53 @@ fn resident_local_engine_rejects_remote_stateless_task_policy() {
 
     assert!(err.contains("remote_stateless"));
     assert!(err.contains("resident_local"));
+}
+
+#[test]
+fn resident_local_spawn_fails_fast_when_external_backend_is_unreachable() {
+    let _endpoint = TestExternalEndpointOverrideGuard::set("http://127.0.0.1:1");
+    let _health = TestExternalRuntimeReadyGuard::unavailable();
+    let tokenizer_path = write_test_tokenizer();
+    let driver_resolution =
+        resolve_driver_for_model(PromptFamily::Mistral, None, Some("external-llamacpp"))
+            .expect("resolve resident backend");
+    let target = ResolvedModelTarget::local(
+        None,
+        PathBuf::from("ignored.gguf"),
+        PromptFamily::Mistral,
+        Some(tokenizer_path.clone()),
+        None,
+        driver_resolution,
+    );
+
+    let mut engine = LLMEngine::load_target(&target).expect("load resident local engine");
+    let mut memory = NeuralMemory::new().expect("memory init");
+    let mut scheduler = ProcessScheduler::new();
+
+    let err = spawn_managed_process(
+        &mut engine,
+        &mut memory,
+        &mut scheduler,
+        ManagedProcessRequest {
+            prompt: "run this workflow task".to_string(),
+            system_prompt: None,
+            owner_id: 7,
+            tool_caller: ToolCaller::AgentSupervisor,
+            permission_policy: Some(test_permissions()),
+            workload: WorkloadClass::General,
+            required_backend_class: Some(BackendClass::ResidentLocal),
+            priority: ProcessPriority::Normal,
+            lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+            context_policy: None,
+        },
+    )
+    .expect_err("spawn should fail before forking a process");
+
+    let _ = std::fs::remove_file(tokenizer_path);
+
+    assert!(err.contains("external-llamacpp"));
+    assert!(err.contains("unavailable"));
+    assert!(engine.processes.is_empty());
 }
 
 #[test]

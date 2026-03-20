@@ -105,7 +105,7 @@ fn test_remote_openai_config_override_get(
 ) -> Option<crate::config::RemoteProviderRuntimeConfig> {
     let cell = test_remote_openai_config_override_cell();
     cell.lock()
-        .expect("lock remote openai config override")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(backend_id)
         .cloned()
 }
@@ -116,7 +116,7 @@ fn test_remote_openai_config_override_set(
     value: Option<crate::config::RemoteProviderRuntimeConfig>,
 ) {
     let cell = test_remote_openai_config_override_cell();
-    let mut overrides = cell.lock().expect("lock remote openai config override");
+    let mut overrides = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(value) = value {
         overrides.insert(backend_id.to_string(), value);
     } else {
@@ -159,7 +159,7 @@ impl TestRemoteOpenAIConfigOverrideGuard {
     ) -> Self {
         let lock = test_remote_openai_config_override_lock()
             .lock()
-            .expect("lock remote openai config override guard");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = test_remote_openai_config_override_get(backend_id);
         test_remote_openai_config_override_set(backend_id, Some(config));
         Self {

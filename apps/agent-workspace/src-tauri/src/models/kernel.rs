@@ -106,6 +106,7 @@ pub struct WorkspaceSnapshot {
     pub max_tokens: usize,
     pub orchestration: Option<WorkspaceOrchestrationSnapshot>,
     pub context: Option<WorkspaceContextSnapshot>,
+    pub pending_human_request: Option<WorkspaceHumanInputRequest>,
     pub audit_events: Vec<AuditEvent>,
 }
 
@@ -139,9 +140,34 @@ pub struct WorkspaceContextSnapshot {
     pub context_window_size: usize,
     pub context_compressions: u64,
     pub context_retrieval_hits: u64,
+    pub context_retrieval_requests: u64,
+    pub context_retrieval_misses: u64,
+    pub context_retrieval_candidates_scored: u64,
+    pub context_retrieval_segments_selected: u64,
+    pub last_retrieval_candidates_scored: usize,
+    pub last_retrieval_segments_selected: usize,
+    pub last_retrieval_latency_ms: u64,
+    pub last_retrieval_top_score: Option<f64>,
     pub last_compaction_reason: Option<String>,
     pub last_summary_ts: Option<String>,
     pub context_segments: usize,
+    pub episodic_segments: usize,
+    pub episodic_tokens: usize,
+    pub retrieve_top_k: usize,
+    pub retrieve_candidate_limit: usize,
+    pub retrieve_max_segment_chars: usize,
+    pub retrieve_min_score: f64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WorkspaceHumanInputRequest {
+    pub kind: String,
+    pub question: String,
+    pub details: Option<String>,
+    pub choices: Vec<String>,
+    pub allow_free_text: bool,
+    pub placeholder: Option<String>,
+    pub requested_at_ms: i64,
 }
 
 #[derive(Debug, Serialize, Clone)]

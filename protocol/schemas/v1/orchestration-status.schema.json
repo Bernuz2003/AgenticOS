@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.orchestration_status.v1",
+  "title": "AgenticOS ORCHESTRATION_STATUS Response v1",
+  "$defs": {
+    "contextSnapshot": {
+      "type": "object",
+      "required": [
+        "context_strategy",
+        "context_tokens_used",
+        "context_window_size",
+        "context_compressions",
+        "context_retrieval_hits",
+        "last_compaction_reason",
+        "last_summary_ts",
+        "context_segments"
+      ],
+      "properties": {
+        "context_strategy": {"type": "string"},
+        "context_tokens_used": {"type": "integer", "minimum": 0},
+        "context_window_size": {"type": "integer", "minimum": 1},
+        "context_compressions": {"type": "integer", "minimum": 0},
+        "context_retrieval_hits": {"type": "integer", "minimum": 0},
+        "last_compaction_reason": {"type": ["string", "null"]},
+        "last_summary_ts": {"type": ["string", "null"]},
+        "context_segments": {"type": "integer", "minimum": 0}
+      }
+    },
+    "artifactRef": {
+      "type": "object",
+      "required": ["artifact_id", "task", "attempt", "kind", "label"],
+      "properties": {
+        "artifact_id": {"type": "string", "minLength": 1},
+        "task": {"type": "string", "minLength": 1},
+        "attempt": {"type": "integer", "minimum": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "artifact_id",
+        "task",
+        "attempt",
+        "kind",
+        "label",
+        "mime_type",
+        "preview",
+        "content",
+        "bytes",
+        "created_at_ms"
+      ],
+      "properties": {
+        "artifact_id": {"type": "string", "minLength": 1},
+        "task": {"type": "string", "minLength": 1},
+        "attempt": {"type": "integer", "minimum": 1},
+        "kind": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "mime_type": {"type": "string", "minLength": 1},
+        "preview": {"type": "string"},
+        "content": {"type": "string"},
+        "bytes": {"type": "integer", "minimum": 0},
+        "created_at_ms": {"type": "integer"}
+      }
+    },
+    "taskAttempt": {
+      "type": "object",
+      "required": [
+        "attempt",
+        "status",
+        "session_id",
+        "pid",
+        "error",
+        "output_preview",
+        "output_chars",
+        "truncated",
+        "started_at_ms",
+        "completed_at_ms",
+        "primary_artifact_id"
+      ],
+      "properties": {
+        "attempt": {"type": "integer", "minimum": 1},
+        "status": {"type": "string", "minLength": 1},
+        "session_id": {"type": ["string", "null"]},
+        "pid": {"type": ["integer", "null"]},
+        "error": {"type": ["string", "null"]},
+        "output_preview": {"type": "string"},
+        "output_chars": {"type": "integer", "minimum": 0},
+        "truncated": {"type": "boolean"},
+        "started_at_ms": {"type": "integer"},
+        "completed_at_ms": {"type": ["integer", "null"]},
+        "primary_artifact_id": {"type": ["string", "null"]}
+      }
+    },
+    "taskEntry": {
+      "type": "object",
+      "required": [
+        "task",
+        "status",
+        "current_attempt",
+        "pid",
+        "error",
+        "context",
+        "latest_output_preview",
+        "latest_output_text",
+        "latest_output_truncated",
+        "input_artifacts",
+        "output_artifacts",
+        "attempts"
+      ],
+      "properties": {
+        "task": {"type": "string", "minLength": 1},
+        "role": {"type": ["string", "null"]},
+        "workload": {"type": ["string", "null"]},
+        "backend_class": {"type": ["string", "null"]},
+        "context_strategy": {"type": ["string", "null"]},
+        "deps": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "status": {"type": "string", "minLength": 1},
+        "current_attempt": {"type": ["integer", "null"], "minimum": 1},
+        "pid": {"type": ["integer", "null"]},
+        "error": {"type": ["string", "null"]},
+        "context": {
+          "oneOf": [
+            {"$ref": "#/$defs/contextSnapshot"},
+            {"type": "null"}
+          ]
+        },
+        "latest_output_preview": {"type": ["string", "null"]},
+        "latest_output_text": {"type": ["string", "null"]},
+        "latest_output_truncated": {"type": "boolean"},
+        "input_artifacts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/artifactRef"}
+        },
+        "output_artifacts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/artifact"}
+        },
+        "attempts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/taskAttempt"}
+        }
+      }
+    }
+  },
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.orchestration_status.v1"},
+        "data": {
+          "type": "object",
+          "required": [
+            "orchestration_id",
+            "total",
+            "completed",
+            "running",
+            "pending",
+            "failed",
+            "skipped",
+            "finished",
+            "elapsed_secs",
+            "policy",
+            "truncations",
+            "output_chars_stored",
+            "tasks"
+          ],
+          "properties": {
+            "orchestration_id": {"type": "integer", "minimum": 1},
+            "total": {"type": "integer", "minimum": 0},
+            "completed": {"type": "integer", "minimum": 0},
+            "running": {"type": "integer", "minimum": 0},
+            "pending": {"type": "integer", "minimum": 0},
+            "failed": {"type": "integer", "minimum": 0},
+            "skipped": {"type": "integer", "minimum": 0},
+            "finished": {"type": "boolean"},
+            "elapsed_secs": {"type": "number", "minimum": 0},
+            "policy": {"type": "string", "minLength": 1},
+            "truncations": {"type": "integer", "minimum": 0},
+            "output_chars_stored": {"type": "integer", "minimum": 0},
+            "tasks": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/taskEntry"}
+            }
+          }
+        }
+      }
+    }
+  ]
+}

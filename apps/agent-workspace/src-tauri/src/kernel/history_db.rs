@@ -261,6 +261,7 @@ pub fn load_workspace_snapshot(
         max_tokens: 0,
         orchestration: None,
         context: None,
+        pending_human_request: None,
         audit_events,
     }))
 }

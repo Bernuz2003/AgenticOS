@@ -1,5 +1,5 @@
 use crate::audit::{self, AuditContext};
-use crate::backend::BackendClass;
+use crate::backend::{ensure_runtime_backend_ready, BackendClass};
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;
@@ -136,6 +136,7 @@ pub fn spawn_managed_process(
     } = request;
 
     validate_backend_class_policy(engine.loaded_backend_class(), required_backend_class)?;
+    ensure_runtime_backend_ready(engine.loaded_backend_id())?;
 
     let context_policy = context_policy.unwrap_or_else(ContextPolicy::from_kernel_defaults);
     let permission_policy = permission_policy
@@ -180,6 +181,7 @@ pub fn spawn_restored_managed_process(
     } = request;
 
     validate_backend_class_policy(engine.loaded_backend_class(), required_backend_class)?;
+    ensure_runtime_backend_ready(engine.loaded_backend_id())?;
 
     let context_policy = context_policy.unwrap_or_else(ContextPolicy::from_kernel_defaults);
     let permission_policy = permission_policy

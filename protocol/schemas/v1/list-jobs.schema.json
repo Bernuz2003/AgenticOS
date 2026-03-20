@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.list_jobs.v1",
+  "title": "AgenticOS LIST_JOBS Response v1",
+  "$defs": {
+    "recentRun": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "trigger_at_ms",
+        "attempt",
+        "status",
+        "started_at_ms",
+        "completed_at_ms",
+        "orchestration_id",
+        "deadline_at_ms",
+        "error"
+      ],
+      "properties": {
+        "run_id": {"type": "integer", "minimum": 1},
+        "trigger_at_ms": {"type": "integer"},
+        "attempt": {"type": "integer", "minimum": 0},
+        "status": {"type": "string", "minLength": 1},
+        "started_at_ms": {"type": ["integer", "null"]},
+        "completed_at_ms": {"type": ["integer", "null"]},
+        "orchestration_id": {"type": ["integer", "null"]},
+        "deadline_at_ms": {"type": ["integer", "null"]},
+        "error": {"type": ["string", "null"]}
+      }
+    }
+  },
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.list_jobs.v1"},
+        "data": {
+          "type": "object",
+          "properties": {
+            "jobs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "job_id",
+                  "name",
+                  "target_kind",
+                  "trigger_kind",
+                  "trigger_label",
+                  "enabled",
+                  "state",
+                  "next_run_at_ms",
+                  "current_trigger_at_ms",
+                  "current_attempt",
+                  "timeout_ms",
+                  "max_retries",
+                  "backoff_ms",
+                  "last_run_started_at_ms",
+                  "last_run_completed_at_ms",
+                  "last_run_status",
+                  "last_error",
+                  "consecutive_failures",
+                  "active_orchestration_id",
+                  "recent_runs"
+                ],
+                "properties": {
+                  "job_id": {"type": "integer", "minimum": 1},
+                  "name": {"type": "string", "minLength": 1},
+                  "target_kind": {"type": "string", "minLength": 1},
+                  "trigger_kind": {"type": "string", "minLength": 1},
+                  "trigger_label": {"type": "string", "minLength": 1},
+                  "enabled": {"type": "boolean"},
+                  "state": {"type": "string", "minLength": 1},
+                  "next_run_at_ms": {"type": ["integer", "null"]},
+                  "current_trigger_at_ms": {"type": ["integer", "null"]},
+                  "current_attempt": {"type": "integer", "minimum": 0},
+                  "timeout_ms": {"type": "integer", "minimum": 1},
+                  "max_retries": {"type": "integer", "minimum": 0},
+                  "backoff_ms": {"type": "integer", "minimum": 1},
+                  "last_run_started_at_ms": {"type": ["integer", "null"]},
+                  "last_run_completed_at_ms": {"type": ["integer", "null"]},
+                  "last_run_status": {"type": ["string", "null"]},
+                  "last_error": {"type": ["string", "null"]},
+                  "consecutive_failures": {"type": "integer", "minimum": 0},
+                  "active_orchestration_id": {"type": ["integer", "null"]},
+                  "recent_runs": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/recentRun"}
+                  }
+                }
+              }
+            }
+          },
+          "required": ["jobs"]
+        }
+      }
+    }
+  ]
+}

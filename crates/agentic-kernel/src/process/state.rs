@@ -64,3 +64,32 @@ impl ProcessLifecyclePolicy {
         matches!(self, Self::Interactive)
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanInputRequestKind {
+    #[default]
+    Question,
+    Approval,
+}
+
+impl HumanInputRequestKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Question => "question",
+            Self::Approval => "approval",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct HumanInputRequest {
+    pub kind: HumanInputRequestKind,
+    pub question: String,
+    pub details: Option<String>,
+    pub choices: Vec<String>,
+    pub allow_free_text: bool,
+    pub placeholder: Option<String>,
+    pub requested_at_ms: i64,
+}

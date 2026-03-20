@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.list_orchestrations.v1",
+  "title": "AgenticOS LIST_ORCHESTRATIONS Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.list_orchestrations.v1"},
+        "data": {
+          "type": "object",
+          "properties": {
+            "orchestrations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "orchestration_id",
+                  "total",
+                  "completed",
+                  "running",
+                  "pending",
+                  "failed",
+                  "skipped",
+                  "finished",
+                  "elapsed_secs",
+                  "policy"
+                ],
+                "properties": {
+                  "orchestration_id": {"type": "integer", "minimum": 1},
+                  "total": {"type": "integer", "minimum": 0},
+                  "completed": {"type": "integer", "minimum": 0},
+                  "running": {"type": "integer", "minimum": 0},
+                  "pending": {"type": "integer", "minimum": 0},
+                  "failed": {"type": "integer", "minimum": 0},
+                  "skipped": {"type": "integer", "minimum": 0},
+                  "finished": {"type": "boolean"},
+                  "elapsed_secs": {"type": "number", "minimum": 0},
+                  "policy": {"type": "string", "minLength": 1}
+                }
+              }
+            }
+          },
+          "required": ["orchestrations"]
+        }
+      }
+    }
+  ]
+}

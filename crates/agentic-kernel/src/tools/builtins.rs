@@ -36,6 +36,7 @@ pub(crate) fn host_builtin_registrations() -> Vec<HostBuiltinRegistration> {
         crate::tools::runner::read_file_host_builtin_registration(),
         crate::tools::runner::list_files_host_builtin_registration(),
         crate::tools::runner::calc_host_builtin_registration(),
+        crate::tools::human_tools::ask_human_host_builtin_registration(),
         crate::tools::workspace_tools::path_info_host_builtin_registration(),
         crate::tools::workspace_tools::find_files_host_builtin_registration(),
         crate::tools::workspace_tools::search_text_host_builtin_registration(),

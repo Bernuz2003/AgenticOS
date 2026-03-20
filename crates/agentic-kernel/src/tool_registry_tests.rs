@@ -19,6 +19,7 @@ fn builtins_are_registered_and_sorted() {
     assert_eq!(
         names,
         vec![
+            "ask_human",
             "calc",
             "find_files",
             "list_files",

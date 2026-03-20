@@ -13,6 +13,7 @@
 
 mod agent;
 mod context;
+mod retrieval;
 mod state;
 
 #[cfg(test)]

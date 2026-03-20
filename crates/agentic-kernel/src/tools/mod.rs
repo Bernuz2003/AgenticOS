@@ -10,6 +10,7 @@ pub mod dispatcher;
 pub mod error;
 pub mod executor;
 pub mod governance;
+pub(crate) mod human_tools;
 pub mod invocation;
 pub mod parser;
 pub mod path_guard;

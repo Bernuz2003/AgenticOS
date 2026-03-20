@@ -58,6 +58,23 @@ function formatPercent(used: number, total: number): string {
   return `${Math.min(100, Math.round((used / total) * 100))}%`;
 }
 
+function formatLatency(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return "0 ms";
+  }
+  if (ms < 1000) {
+    return `${Math.round(ms)} ms`;
+  }
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
+function formatScore(score: number | null): string {
+  if (score === null || !Number.isFinite(score)) {
+    return "n/a";
+  }
+  return score.toFixed(3);
+}
+
 function taskStatusTone(status: string): string {
   switch (status) {
     case "running":
@@ -1054,6 +1071,72 @@ export function ControlCenterPage() {
                             {task.latestOutputPreview ? (
                               <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-6 text-slate-600">
                                 {task.latestOutputPreview}
+                              </div>
+                            ) : null}
+
+                            {task.context ? (
+                              <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50/60 px-4 py-4">
+                                <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-indigo-700">
+                                  Semantic Retrieval
+                                </div>
+                                <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                                  <div className="rounded-lg border border-indigo-100 bg-white/80 px-3 py-2">
+                                    <div className="text-indigo-500">Strategy</div>
+                                    <div className="mt-1 font-semibold text-slate-900">
+                                      {strategyLabel(task.context.contextStrategy)}
+                                    </div>
+                                  </div>
+                                  <div className="rounded-lg border border-indigo-100 bg-white/80 px-3 py-2">
+                                    <div className="text-indigo-500">Episodic Memory</div>
+                                    <div className="mt-1 font-semibold text-slate-900">
+                                      {task.context.episodicSegments} segments ·{" "}
+                                      {task.context.episodicTokens} tokens
+                                    </div>
+                                  </div>
+                                  <div className="rounded-lg border border-indigo-100 bg-white/80 px-3 py-2">
+                                    <div className="text-indigo-500">Requests / Hits / Misses</div>
+                                    <div className="mt-1 font-semibold text-slate-900">
+                                      {task.context.contextRetrievalRequests} /{" "}
+                                      {task.context.contextRetrievalHits} /{" "}
+                                      {task.context.contextRetrievalMisses}
+                                    </div>
+                                  </div>
+                                  <div className="rounded-lg border border-indigo-100 bg-white/80 px-3 py-2">
+                                    <div className="text-indigo-500">Candidates / Selected</div>
+                                    <div className="mt-1 font-semibold text-slate-900">
+                                      {task.context.contextRetrievalCandidatesScored} /{" "}
+                                      {task.context.contextRetrievalSegmentsSelected}
+                                    </div>
+                                  </div>
+                                  <div className="rounded-lg border border-indigo-100 bg-white/80 px-3 py-2">
+                                    <div className="text-indigo-500">Last Scan</div>
+                                    <div className="mt-1 font-semibold text-slate-900">
+                                      {task.context.lastRetrievalCandidatesScored} scored ·{" "}
+                                      {task.context.lastRetrievalSegmentsSelected} kept
+                                    </div>
+                                  </div>
+                                  <div className="rounded-lg border border-indigo-100 bg-white/80 px-3 py-2">
+                                    <div className="text-indigo-500">Latency / Top Score</div>
+                                    <div className="mt-1 font-semibold text-slate-900">
+                                      {formatLatency(task.context.lastRetrievalLatencyMs)} ·{" "}
+                                      {formatScore(task.context.lastRetrievalTopScore)}
+                                    </div>
+                                  </div>
+                                  <div className="rounded-lg border border-indigo-100 bg-white/80 px-3 py-2">
+                                    <div className="text-indigo-500">Top K / Candidate Limit</div>
+                                    <div className="mt-1 font-semibold text-slate-900">
+                                      {task.context.retrieveTopK} /{" "}
+                                      {task.context.retrieveCandidateLimit}
+                                    </div>
+                                  </div>
+                                  <div className="rounded-lg border border-indigo-100 bg-white/80 px-3 py-2">
+                                    <div className="text-indigo-500">Min Score / Max Chars</div>
+                                    <div className="mt-1 font-semibold text-slate-900">
+                                      {task.context.retrieveMinScore.toFixed(2)} /{" "}
+                                      {task.context.retrieveMaxSegmentChars}
+                                    </div>
+                                  </div>
+                                </div>
                               </div>
                             ) : null}
                           </div>

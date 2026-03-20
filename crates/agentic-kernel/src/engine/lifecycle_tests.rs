@@ -7,8 +7,9 @@ use crate::engine::slot_manager::ResidentSlotManager;
 use crate::memory::ContextSlotId;
 use crate::model_catalog::ModelCatalog;
 use crate::process::{
-    AgentProcess, ContextPolicy, ContextStrategy, InitialContextSeed, ProcessLifecyclePolicy,
-    ResidentSlotPolicy, ResidentSlotState,
+    AgentProcess, ContextPolicy, ContextStrategy, HumanInputRequest, HumanInputRequestKind,
+    InitialContextSeed, ProcessLifecyclePolicy, ProcessState, ResidentSlotPolicy,
+    ResidentSlotState,
 };
 use crate::prompting::GenerationConfig;
 use crate::prompting::PromptFamily;
@@ -312,4 +313,28 @@ fn park_process_marks_resident_slot_policy_and_state_explicitly() {
             ResidentSlotState::ParkRequested
         ))
     );
+}
+
+#[test]
+fn send_user_input_clears_pending_human_request_and_resumes_process() {
+    let (mut engine, _saves, _loads, _frees) = test_engine();
+    let process = engine.processes.get_mut(&1).expect("process present");
+    process.state = ProcessState::WaitingForInput;
+    process.set_pending_human_request(HumanInputRequest {
+        kind: HumanInputRequestKind::Approval,
+        question: "Ship this workflow?".to_string(),
+        details: None,
+        choices: vec!["approve".to_string(), "reject".to_string()],
+        allow_free_text: false,
+        placeholder: None,
+        requested_at_ms: 1234,
+    });
+
+    engine
+        .send_user_input(1, "approve")
+        .expect("human reply accepted");
+
+    let process = engine.processes.get(&1).expect("process present");
+    assert_eq!(process.state, ProcessState::Ready);
+    assert!(process.pending_human_request.is_none());
 }

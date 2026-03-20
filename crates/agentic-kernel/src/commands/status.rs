@@ -37,7 +37,7 @@ pub(crate) fn handle_status(ctx: StatusCommandContext<'_>, payload: &[u8]) -> Ve
                 request_id,
                 ControlErrorCode::StatusInvalid,
                 protocol::schema::ERROR,
-                "STATUS payload must be empty, numeric PID, or orch:<N>",
+                "STATUS payload must be empty, numeric PID, or legacy orch:<N>",
             ),
         };
     }
@@ -102,7 +102,7 @@ fn respond_orchestration_status(
         client,
         request_id,
         "STATUS",
-        protocol::schema::ORCH_STATUS,
+        protocol::schema::ORCHESTRATION_STATUS,
         &resp,
         Some(&json),
     )

@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::process::{ContextPolicy, ContextState};
+use crate::process::{ContextPolicy, ContextState, HumanInputRequest};
 use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 
 fn current_family_snapshot(
@@ -69,6 +69,8 @@ pub struct ProcessSnapshot {
     pub context_policy: ContextPolicy,
     #[serde(default)]
     pub context_state: ContextState,
+    #[serde(default)]
+    pub pending_human_request: Option<HumanInputRequest>,
 }
 
 fn default_context_policy() -> ContextPolicy {
@@ -261,6 +263,7 @@ pub fn build_kernel_snapshot(
                     max_tokens: process.max_tokens,
                     context_policy: process.context_policy.clone(),
                     context_state: process.context_state.clone(),
+                    pending_human_request: process.pending_human_request.clone(),
                 }
             })
             .collect();
@@ -282,6 +285,7 @@ pub fn build_kernel_snapshot(
                             max_tokens: metadata.max_tokens,
                             context_policy: metadata.context_policy.clone(),
                             context_state: metadata.context_state.clone(),
+                            pending_human_request: metadata.pending_human_request.clone(),
                         })
                 }),
         );
@@ -311,6 +315,7 @@ pub fn build_kernel_snapshot(
                             max_tokens: metadata.max_tokens,
                             context_policy: metadata.context_policy.clone(),
                             context_state: metadata.context_state.clone(),
+                            pending_human_request: metadata.pending_human_request.clone(),
                         })
                 })
                 .collect(),

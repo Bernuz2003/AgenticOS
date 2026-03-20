@@ -33,11 +33,31 @@ export function MindPanel({
   const strategy = snapshot?.context?.contextStrategy ?? session.contextStrategy;
   const compressions = snapshot?.context?.contextCompressions ?? 0;
   const retrievalHits = snapshot?.context?.contextRetrievalHits ?? 0;
+  const retrievalRequests = snapshot?.context?.contextRetrievalRequests ?? 0;
+  const retrievalMisses = snapshot?.context?.contextRetrievalMisses ?? 0;
+  const retrievalCandidatesScored =
+    snapshot?.context?.contextRetrievalCandidatesScored ?? 0;
+  const retrievalSegmentsSelected =
+    snapshot?.context?.contextRetrievalSegmentsSelected ?? 0;
+  const lastRetrievalCandidatesScored =
+    snapshot?.context?.lastRetrievalCandidatesScored ?? 0;
+  const lastRetrievalSegmentsSelected =
+    snapshot?.context?.lastRetrievalSegmentsSelected ?? 0;
+  const lastRetrievalLatencyMs = snapshot?.context?.lastRetrievalLatencyMs ?? 0;
+  const lastRetrievalTopScore = snapshot?.context?.lastRetrievalTopScore ?? null;
+  const episodicSegments = snapshot?.context?.episodicSegments ?? 0;
+  const episodicTokens = snapshot?.context?.episodicTokens ?? 0;
+  const retrieveTopK = snapshot?.context?.retrieveTopK ?? 0;
+  const retrieveCandidateLimit = snapshot?.context?.retrieveCandidateLimit ?? 0;
+  const retrieveMaxSegmentChars =
+    snapshot?.context?.retrieveMaxSegmentChars ?? 0;
+  const retrieveMinScore = snapshot?.context?.retrieveMinScore ?? 0;
   const backendClass = snapshot?.backendClass ?? "unknown";
   const runtimeState = snapshot?.state ?? session.runtimeState ?? null;
   const runtimeLabel = snapshot?.runtimeLabel ?? session.runtimeLabel ?? "unbound";
   const ownerId = snapshot?.ownerId ?? null;
   const toolCaller = snapshot?.toolCaller ?? null;
+  const pendingHumanRequest = snapshot?.pendingHumanRequest ?? null;
   const indexPos = snapshot?.indexPos ?? null;
   const priority = snapshot?.priority ?? null;
   const quotaTokens = snapshot?.quotaTokens ?? null;
@@ -92,6 +112,16 @@ export function MindPanel({
     return value;
   }
 
+  function formatLatency(ms: number): string {
+    if (!Number.isFinite(ms) || ms <= 0) {
+      return "0 ms";
+    }
+    if (ms < 1000) {
+      return `${ms} ms`;
+    }
+    return `${(ms / 1000).toFixed(2)} s`;
+  }
+
   useEffect(() => {
     const currentReason = snapshot?.context?.lastCompactionReason ?? null;
     if (
@@ -109,7 +139,7 @@ export function MindPanel({
   }, [snapshot?.context?.lastCompactionReason]);
 
   return (
-    <aside className="bg-slate-50 border-l border-slate-200 flex min-h-[calc(100vh-2rem)] flex-col gap-6 p-6 overflow-y-auto w-full md:w-80 lg:w-96 flex-shrink-0">
+    <aside className="flex h-full min-h-0 w-full flex-shrink-0 flex-col gap-6 overflow-y-auto border-l border-slate-200 bg-slate-50 p-6 md:w-80 lg:w-96">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-slate-900">
@@ -155,6 +185,39 @@ export function MindPanel({
           </div>
         </div>
       </section>
+
+      {pendingHumanRequest && (
+        <section className="rounded-2xl border border-sky-200 bg-sky-50 p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-bold uppercase tracking-wider text-sky-600">
+                Human-in-the-Loop
+              </div>
+              <div className="mt-1 text-sm font-semibold text-slate-900">
+                {pendingHumanRequest.kind === "approval"
+                  ? "Approval pending"
+                  : "Human response pending"}
+              </div>
+            </div>
+            <span className="rounded-full border border-sky-200 bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-sky-700">
+              Waiting
+            </span>
+          </div>
+          <div className="mt-3 text-sm leading-relaxed text-slate-800">
+            {pendingHumanRequest.question}
+          </div>
+          {pendingHumanRequest.choices.length > 0 && (
+            <div className="mt-3 text-xs text-slate-600">
+              Choices: {pendingHumanRequest.choices.join(", ")}
+            </div>
+          )}
+          <div className="mt-2 text-xs text-slate-500">
+            {pendingHumanRequest.allowFreeText
+              ? "Free text enabled"
+              : "Structured reply only"}
+          </div>
+        </section>
+      )}
 
       <section className="rounded-2xl bg-white border border-slate-200 p-4 shadow-sm">
         <div className="flex items-center justify-between gap-3 mb-4">
@@ -354,9 +417,63 @@ export function MindPanel({
           <div className="rounded-2xl bg-white border border-slate-200 p-4 shadow-sm flex flex-col items-center justify-center text-center">
             <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400 mb-1 flex items-center gap-1">
               <Activity className="w-3 h-3" />
-              Retrievals
+              Retrieval Hits
             </span>
             <span className="text-2xl font-black text-slate-800">{retrievalHits}</span>
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-white border border-slate-200 p-4 shadow-sm">
+          <div className="flex items-center gap-2 mb-3 text-sm font-bold text-slate-900">
+            <DatabaseZap className="h-4 w-4 text-indigo-500" />
+            Semantic Retrieval
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <span className="block text-slate-500 mb-0.5">Episodic Segments</span>
+              <span className="font-medium text-slate-900">{episodicSegments}</span>
+            </div>
+            <div>
+              <span className="block text-slate-500 mb-0.5">Episodic Tokens</span>
+              <span className="font-medium text-slate-900">{episodicTokens}</span>
+            </div>
+            <div>
+              <span className="block text-slate-500 mb-0.5">Requests / Misses</span>
+              <span className="font-medium text-slate-900">
+                {retrievalRequests} / {retrievalMisses}
+              </span>
+            </div>
+            <div>
+              <span className="block text-slate-500 mb-0.5">Candidates / Selected</span>
+              <span className="font-medium text-slate-900">
+                {retrievalCandidatesScored} / {retrievalSegmentsSelected}
+              </span>
+            </div>
+            <div>
+              <span className="block text-slate-500 mb-0.5">Last Scan</span>
+              <span className="font-medium text-slate-900">
+                {lastRetrievalCandidatesScored} scored / {lastRetrievalSegmentsSelected} kept
+              </span>
+            </div>
+            <div>
+              <span className="block text-slate-500 mb-0.5">Latency / Top Score</span>
+              <span className="font-medium text-slate-900">
+                {formatLatency(lastRetrievalLatencyMs)} /{" "}
+                {lastRetrievalTopScore === null ? "n/a" : lastRetrievalTopScore.toFixed(3)}
+              </span>
+            </div>
+            <div>
+              <span className="block text-slate-500 mb-0.5">Top K / Candidate Limit</span>
+              <span className="font-medium text-slate-900">
+                {retrieveTopK} / {retrieveCandidateLimit}
+              </span>
+            </div>
+            <div>
+              <span className="block text-slate-500 mb-0.5">Min Score / Max Chars</span>
+              <span className="font-medium text-slate-900">
+                {retrieveMinScore.toFixed(2)} / {retrieveMaxSegmentChars}
+              </span>
+            </div>
           </div>
         </div>
 

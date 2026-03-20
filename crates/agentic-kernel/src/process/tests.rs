@@ -260,6 +260,13 @@ fn retrieve_archives_old_segments_and_reinjects_top_k_context() {
         ContextSegmentKind::AssistantTurn
     );
     assert_eq!(process.context_state.context_retrieval_hits, 1);
+    assert_eq!(process.context_state.context_retrieval_requests, 1);
+    assert_eq!(process.context_state.context_retrieval_misses, 0);
+    assert!(process.context_state.context_retrieval_candidates_scored >= 1);
+    assert!(process.context_state.context_retrieval_segments_selected >= 1);
+    assert!(process.context_state.last_retrieval_candidates_scored >= 1);
+    assert!(process.context_state.last_retrieval_segments_selected >= 1);
+    assert!(process.context_state.last_retrieval_top_score.is_some());
     assert!(process.tokens.len() <= process.context_policy.window_size_tokens);
     assert_eq!(*frees.lock().expect("lock frees"), vec![13]);
 }
@@ -288,11 +295,46 @@ fn retrieve_prefers_overlap_before_pure_recency() {
     process.tokens = vec![1, 2, 1];
     process.context_state.tokens_used = process.tokens.len();
 
-    let payload = process
-        .build_retrieval_payload(&process.context_state.episodic_segments, 8)
-        .expect("retrieval payload");
+    let payload = process.build_retrieval_payload(&process.context_state.episodic_segments, 8);
 
-    assert!(payload.0.contains("kernel scheduler quota"));
+    assert!(payload
+        .text
+        .as_deref()
+        .expect("retrieval payload")
+        .contains("kernel scheduler quota"));
+    assert!(payload.hits >= 1);
+    assert!(payload.top_score.is_some());
+}
+
+#[test]
+fn retrieve_matches_semantic_variants_not_only_exact_terms() {
+    let policy = ContextPolicy::new(ContextStrategy::Retrieve, 24, 12, 10, 2);
+    let (mut process, _frees) = test_process(policy);
+    process.context_state.episodic_segments = vec![
+        ContextSegment::new(
+            ContextSegmentKind::AssistantTurn,
+            3,
+            "generic unrelated archive".to_string(),
+        ),
+        ContextSegment::new(
+            ContextSegmentKind::AssistantTurn,
+            3,
+            "scheduler throttling budgets".to_string(),
+        ),
+    ];
+    process.context_state.segments = vec![ContextSegment::new(
+        ContextSegmentKind::UserTurn,
+        4,
+        "explain throttled scheduler budget".to_string(),
+    )];
+    process.tokens = vec![1, 2, 1];
+    process.context_state.tokens_used = process.tokens.len();
+
+    let payload = process.build_retrieval_payload(&process.context_state.episodic_segments, 8);
+    let text = payload.text.as_deref().expect("semantic payload");
+
+    assert!(text.contains("scheduler throttling budgets"));
+    assert!(!text.contains("generic unrelated archive"));
 }
 
 #[test]
@@ -350,6 +392,9 @@ fn long_running_multi_turn_strategies_remain_bounded_and_observable() {
             ContextStrategy::Retrieve => {
                 assert!(process.context_state.last_compaction_reason.is_some());
                 assert!(process.context_state.context_retrieval_hits > 0);
+                assert!(process.context_state.context_retrieval_requests > 0);
+                assert!(process.context_state.context_retrieval_candidates_scored > 0);
+                assert!(process.context_state.last_retrieval_top_score.is_some());
                 assert!(!process.context_state.episodic_segments.is_empty());
             }
         }

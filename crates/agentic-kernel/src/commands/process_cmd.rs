@@ -328,6 +328,8 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
         );
     };
 
+    let had_pending_human_request = process.pending_human_request.is_some();
+
     if process.state != crate::process::ProcessState::WaitingForInput {
         return protocol::response_protocol_err_typed(
             ctx.client,
@@ -378,8 +380,16 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
             });
             audit::record(
                 ctx.storage,
-                audit::PROCESS_INPUT_RECEIVED,
-                format!("source=send_input chars={}", prompt.chars().count()),
+                if had_pending_human_request {
+                    audit::PROCESS_HUMAN_INPUT_RECEIVED
+                } else {
+                    audit::PROCESS_INPUT_RECEIVED
+                },
+                format!(
+                    "source=send_input chars={} hitl={}",
+                    prompt.chars().count(),
+                    had_pending_human_request
+                ),
                 AuditContext::for_process(session_id.as_deref(), payload.pid, Some(&runtime_id)),
             );
             log_event(

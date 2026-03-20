@@ -44,6 +44,12 @@ impl Default for ProtocolRuntimeConfig {
                 "status_v1".to_string(),
                 "pid_status_v1".to_string(),
                 "orch_status_v1".to_string(),
+                "workflow_control_api_v1".to_string(),
+                "orchestration_list_v1".to_string(),
+                "orchestration_status_v1".to_string(),
+                "scheduled_job_list_v1".to_string(),
+                "artifact_list_v1".to_string(),
+                "workflow_definition_schema_v1".to_string(),
                 "list_models_v1".to_string(),
                 "model_info_v1".to_string(),
                 "backend_diag_v1".to_string(),
@@ -161,6 +167,9 @@ pub struct ContextConfig {
     pub compaction_trigger_tokens: usize,
     pub compaction_target_tokens: usize,
     pub retrieve_top_k: usize,
+    pub retrieve_candidate_limit: usize,
+    pub retrieve_max_segment_chars: usize,
+    pub retrieve_min_score: f64,
 }
 
 impl Default for ContextConfig {
@@ -171,6 +180,9 @@ impl Default for ContextConfig {
             compaction_trigger_tokens: 1792,
             compaction_target_tokens: 1536,
             retrieve_top_k: 3,
+            retrieve_candidate_limit: 64,
+            retrieve_max_segment_chars: 768,
+            retrieve_min_score: 0.12,
         }
     }
 }

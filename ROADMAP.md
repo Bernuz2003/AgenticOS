@@ -184,7 +184,7 @@ Perché orchestrazione e proactive agents senza osservabilità trasformano il si
 
 ## M31) Protocol Contracts v2 & Workflow Control API
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 ### Obiettivo
 
@@ -209,15 +209,15 @@ Perché quando workflow e scheduler diventano di primo livello, il protocollo de
 
 ### DoD
 
-* [ ] schema stabili per orchestration/scheduler/artifacts
-* [ ] control-plane coerente con le nuove entità
-* [ ] additive-first evolution policy documentata
+* [x] schema stabili per orchestration/scheduler/artifacts
+* [x] control-plane coerente con le nuove entità
+* [x] additive-first evolution policy documentata
 
 ---
 
 ## M32) Episodic Memory & Semantic Retrieval
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 ### Obiettivo
 
@@ -238,16 +238,16 @@ La memoria semantica diventa molto più utile quando il sistema esegue workload 
 
 ### DoD
 
-* [ ] retrieval semantico integrato
-* [ ] metriche utili su qualità retrieval
-* [ ] cost controls / latency controls
-* [ ] visibilità in STATUS / GUI
+* [x] retrieval semantico integrato
+* [x] metriche utili su qualità retrieval
+* [x] cost controls / latency controls
+* [x] visibilità in STATUS / GUI
 
 ---
 
 ## M38) Human-in-the-Loop nativo
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 ### Obiettivo
 
@@ -266,10 +266,10 @@ Perché rende AgenticOS adatto a task reali con autonomia governata.
 
 ### DoD
 
-* [ ] wait state HITL supportato nel kernel
-* [ ] notifica/risposta dalla GUI
-* [ ] ripresa pulita del processo/workflow
-* [ ] approvazioni integrabili nei workflow
+* [x] wait state HITL supportato nel kernel
+* [x] notifica/risposta dalla GUI
+* [x] ripresa pulita del processo/workflow
+* [x] approvazioni integrabili nei workflow
 
 ---
 

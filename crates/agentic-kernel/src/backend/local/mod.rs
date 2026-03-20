@@ -81,6 +81,35 @@ pub(crate) fn persist_context_slot_payload_for_backend(
     }
 }
 
+pub(crate) fn ensure_runtime_ready() -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(ready) = test_external_runtime_ready_override_get() {
+        return if ready {
+            Ok(())
+        } else {
+            Err("external-llamacpp is unavailable (test override).".to_string())
+        };
+    }
+
+    #[cfg(test)]
+    if test_external_endpoint_override_get().is_some() {
+        return Ok(());
+    }
+
+    let backend = ExternalLlamaCppBackend::from_env(PromptFamily::Unknown)
+        .map_err(|err| format!("external-llamacpp is not configured correctly: {err}"))?;
+    let response = backend
+        .request_json("GET", &backend.endpoint_path("/health"), None)
+        .map_err(|err| format!("external-llamacpp is unavailable: {err}"))?;
+    if response.status_code != 200 {
+        return Err(format!(
+            "external-llamacpp health check failed with status '{}'.",
+            response.status_line
+        ));
+    }
+    Ok(())
+}
+
 fn persist_external_context_slot_snapshot(
     slot_id: ContextSlotId,
     final_path: &Path,
@@ -97,14 +126,14 @@ fn persist_external_context_slot_snapshot(
 fn test_external_endpoint_override_get() -> Option<String> {
     let cell = test_external_endpoint_override_cell();
     cell.lock()
-        .expect("lock external endpoint override")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
 }
 
 #[cfg(test)]
 fn test_external_endpoint_override_set(value: Option<String>) {
     let cell = test_external_endpoint_override_cell();
-    *cell.lock().expect("lock external endpoint override") = value;
+    *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = value;
 }
 
 #[cfg(test)]
@@ -140,7 +169,7 @@ impl TestExternalEndpointOverrideGuard {
     fn set_option(value: Option<String>) -> Self {
         let lock = test_external_endpoint_override_lock()
             .lock()
-            .expect("lock external endpoint override guard");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = test_external_endpoint_override_get();
         test_external_endpoint_override_set(value);
         Self {
@@ -154,5 +183,64 @@ impl TestExternalEndpointOverrideGuard {
 impl Drop for TestExternalEndpointOverrideGuard {
     fn drop(&mut self) {
         test_external_endpoint_override_set(self.previous.clone());
+    }
+}
+
+#[cfg(test)]
+fn test_external_runtime_ready_override_get() -> Option<bool> {
+    let cell = test_external_runtime_ready_override_cell();
+    *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+fn test_external_runtime_ready_override_set(value: Option<bool>) {
+    let cell = test_external_runtime_ready_override_cell();
+    *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = value;
+}
+
+#[cfg(test)]
+fn test_external_runtime_ready_override_cell() -> &'static std::sync::Mutex<Option<bool>> {
+    static TEST_EXTERNAL_RUNTIME_READY_OVERRIDE: std::sync::OnceLock<
+        std::sync::Mutex<Option<bool>>,
+    > = std::sync::OnceLock::new();
+    TEST_EXTERNAL_RUNTIME_READY_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+fn test_external_runtime_ready_override_lock() -> &'static std::sync::Mutex<()> {
+    static TEST_EXTERNAL_RUNTIME_READY_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+    TEST_EXTERNAL_RUNTIME_READY_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[cfg(test)]
+pub(crate) struct TestExternalRuntimeReadyGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: Option<bool>,
+}
+
+#[cfg(test)]
+impl TestExternalRuntimeReadyGuard {
+    pub(crate) fn unavailable() -> Self {
+        Self::set(Some(false))
+    }
+
+    fn set(value: Option<bool>) -> Self {
+        let lock = test_external_runtime_ready_override_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = test_external_runtime_ready_override_get();
+        test_external_runtime_ready_override_set(value);
+        Self {
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestExternalRuntimeReadyGuard {
+    fn drop(&mut self) {
+        test_external_runtime_ready_override_set(self.previous);
     }
 }

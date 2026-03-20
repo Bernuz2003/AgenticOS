@@ -1,6 +1,7 @@
 use agentic_control_models::{
-    LoadModelResult, ModelCatalogSnapshot, OrchStatusResponse, OrchestrateResult, RetryTaskResult,
-    ScheduleJobResult, SelectModelResult, SendInputResult, TurnControlResult,
+    ArtifactListResponse, LoadModelResult, ModelCatalogSnapshot, OrchStatusResponse,
+    OrchestrateResult, OrchestrationListResponse, RetryTaskResult, ScheduleJobResult,
+    ScheduledJobListResponse, SelectModelResult, SendInputResult, TurnControlResult,
 };
 use tauri::{async_runtime, State};
 
@@ -161,6 +162,52 @@ pub async fn fetch_orchestration_status(
             .map_err(|_| "Bridge state lock poisoned".to_string())?;
         bridge
             .fetch_orchestration_status(orchestration_id)
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_orchestrations(
+    state: State<'_, AppState>,
+) -> Result<OrchestrationListResponse, String> {
+    let bridge = state.bridge.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        bridge.list_orchestrations().map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_scheduled_jobs(
+    state: State<'_, AppState>,
+) -> Result<ScheduledJobListResponse, String> {
+    let bridge = state.bridge.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        bridge.list_scheduled_jobs().map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_workflow_artifacts(
+    orchestration_id: u64,
+    task: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ArtifactListResponse, String> {
+    let bridge = state.bridge.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        bridge
+            .list_artifacts(orchestration_id, task.as_deref())
             .map_err(|err| err.to_string())
     })
     .await

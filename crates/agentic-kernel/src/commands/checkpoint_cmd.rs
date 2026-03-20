@@ -242,6 +242,7 @@ fn apply_restore_snapshot(
                 backend_capabilities: None,
                 context_policy: process.context_policy.clone(),
                 context_state: process.context_state.clone(),
+                pending_human_request: process.pending_human_request.clone(),
             },
         );
     }

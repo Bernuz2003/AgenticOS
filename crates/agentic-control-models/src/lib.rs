@@ -141,6 +141,18 @@ pub struct ScheduleJobResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestrationStatusRequest {
+    pub orchestration_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactListRequest {
+    pub orchestration_id: u64,
+    #[serde(default)]
+    pub task: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub uptime_secs: u64,
     pub total_commands: u64,
@@ -285,6 +297,12 @@ pub struct OrchestrationsStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestrationListResponse {
+    #[serde(default)]
+    pub orchestrations: Vec<OrchSummaryResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchSummaryResponse {
     pub orchestration_id: u64,
     pub total: usize,
@@ -296,6 +314,20 @@ pub struct OrchSummaryResponse {
     pub finished: bool,
     pub elapsed_secs: f64,
     pub policy: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HumanInputRequestView {
+    pub kind: String,
+    pub question: String,
+    #[serde(default)]
+    pub details: Option<String>,
+    #[serde(default)]
+    pub choices: Vec<String>,
+    pub allow_free_text: bool,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    pub requested_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,6 +360,8 @@ pub struct PidStatusResponse {
     pub session_accounting: Option<BackendTelemetryView>,
     pub permissions: ProcessPermissionsView,
     pub context: Option<ContextStatusSnapshot>,
+    #[serde(default)]
+    pub pending_human_request: Option<HumanInputRequestView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,9 +379,23 @@ pub struct ContextStatusSnapshot {
     pub context_window_size: usize,
     pub context_compressions: u64,
     pub context_retrieval_hits: u64,
+    pub context_retrieval_requests: u64,
+    pub context_retrieval_misses: u64,
+    pub context_retrieval_candidates_scored: u64,
+    pub context_retrieval_segments_selected: u64,
+    pub last_retrieval_candidates_scored: usize,
+    pub last_retrieval_segments_selected: usize,
+    pub last_retrieval_latency_ms: u64,
+    pub last_retrieval_top_score: Option<f64>,
     pub last_compaction_reason: Option<String>,
     pub last_summary_ts: Option<String>,
     pub context_segments: usize,
+    pub episodic_segments: usize,
+    pub episodic_tokens: usize,
+    pub retrieve_top_k: usize,
+    pub retrieve_candidate_limit: usize,
+    pub retrieve_max_segment_chars: usize,
+    pub retrieve_min_score: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -408,6 +456,21 @@ pub struct OrchStatusResponse {
     pub truncations: usize,
     pub output_chars_stored: usize,
     pub tasks: Vec<OrchTaskEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledJobListResponse {
+    #[serde(default)]
+    pub jobs: Vec<ScheduledJobView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtifactListResponse {
+    pub orchestration_id: u64,
+    #[serde(default)]
+    pub task: Option<String>,
+    #[serde(default)]
+    pub artifacts: Vec<OrchArtifactView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

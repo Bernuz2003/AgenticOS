@@ -1,9 +1,9 @@
 /// The core AgentProcess structure and budget enforcement algorithms.
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
 use super::context::*;
+use super::retrieval::rank_retrieval_candidates;
 use super::state::*;
 use crate::backend::RuntimeModel;
 use crate::memory::ContextSlotId;
@@ -30,6 +30,7 @@ pub struct AgentProcess {
     pub syscall_buffer: String,
     pub context_policy: ContextPolicy,
     pub context_state: ContextState,
+    pub pending_human_request: Option<HumanInputRequest>,
     rendered_prompt_cache: String,
     resident_prompt_checkpoint_bytes: usize,
 }
@@ -73,6 +74,14 @@ impl AgentProcess {
                 tokens_used: initial_token_count,
                 context_compressions: 0,
                 context_retrieval_hits: 0,
+                context_retrieval_requests: 0,
+                context_retrieval_misses: 0,
+                context_retrieval_candidates_scored: 0,
+                context_retrieval_segments_selected: 0,
+                last_retrieval_candidates_scored: 0,
+                last_retrieval_segments_selected: 0,
+                last_retrieval_latency_ms: 0,
+                last_retrieval_top_score: None,
                 last_compaction_reason: None,
                 last_summary_ts: None,
                 segments: vec![ContextSegment::new(
@@ -82,6 +91,7 @@ impl AgentProcess {
                 )],
                 episodic_segments: Vec::new(),
             },
+            pending_human_request: None,
             rendered_prompt_cache: initial_segment_text,
             resident_prompt_checkpoint_bytes: 0,
         }
@@ -110,6 +120,14 @@ impl AgentProcess {
 
     pub fn prompt_text(&self) -> &str {
         &self.rendered_prompt_cache
+    }
+
+    pub fn set_pending_human_request(&mut self, request: HumanInputRequest) {
+        self.pending_human_request = Some(request);
+    }
+
+    pub fn clear_pending_human_request(&mut self) -> Option<HumanInputRequest> {
+        self.pending_human_request.take()
     }
 
     pub fn pending_resident_prompt_suffix(&self) -> &str {
@@ -265,10 +283,22 @@ impl AgentProcess {
             .context_policy
             .window_size_tokens
             .saturating_sub(base_tokens_after_archive);
+        self.context_state.context_retrieval_requests += 1;
         let retrieval_payload = self.build_retrieval_payload(&retrieval_corpus, remaining_budget);
+        self.context_state.context_retrieval_candidates_scored +=
+            retrieval_payload.candidates_scored as u64;
+        self.context_state.last_retrieval_candidates_scored = retrieval_payload.candidates_scored;
+        self.context_state.last_retrieval_segments_selected = retrieval_payload.selected_segments;
+        self.context_state.last_retrieval_latency_ms = retrieval_payload.elapsed_ms;
+        self.context_state.last_retrieval_top_score = retrieval_payload.top_score;
+        self.context_state.context_retrieval_segments_selected +=
+            retrieval_payload.selected_segments as u64;
+        if retrieval_payload.selected_segments == 0 {
+            self.context_state.context_retrieval_misses += 1;
+        }
 
         let changed =
-            retrieved_prefix_segments > 0 || archived_count > 0 || retrieval_payload.is_some();
+            retrieved_prefix_segments > 0 || archived_count > 0 || retrieval_payload.text.is_some();
         if !changed {
             return None;
         }
@@ -294,8 +324,18 @@ impl AgentProcess {
             self.tokens.drain(0..archived_tokens);
         }
 
+        let RetrievalPayloadBuild {
+            text,
+            encoded_tokens,
+            hits,
+            candidates_scored,
+            selected_segments,
+            elapsed_ms,
+            top_score,
+        } = retrieval_payload;
+
         let mut retrieval_hits = 0usize;
-        if let Some((text, encoded_tokens, hits)) = retrieval_payload {
+        if let Some(text) = text {
             retrieval_hits = hits;
             self.context_state.segments.insert(
                 0,
@@ -313,8 +353,16 @@ impl AgentProcess {
         self.context_state.tokens_used = self.tokens.len();
         self.rebuild_rendered_prompt_cache();
         let reason = format!(
-            "retrieve_archived_segments={} archived_tokens={} retrieval_hits={}",
-            archived_count, archived_tokens, retrieval_hits
+            "retrieve_archived_segments={} archived_tokens={} retrieval_hits={} candidates_scored={} selected_segments={} latency_ms={} top_score={}",
+            archived_count,
+            archived_tokens,
+            retrieval_hits,
+            candidates_scored,
+            selected_segments,
+            elapsed_ms,
+            top_score
+                .map(|score| format!("{score:.3}"))
+                .unwrap_or_else(|| "none".to_string())
         );
         self.context_state.last_compaction_reason = Some(reason.clone());
 
@@ -484,79 +532,53 @@ impl AgentProcess {
         &self,
         corpus: &[ContextSegment],
         remaining_budget: usize,
-    ) -> Option<(String, Vec<u32>, usize)> {
+    ) -> RetrievalPayloadBuild {
         if corpus.is_empty() || remaining_budget == 0 {
-            return None;
+            return RetrievalPayloadBuild::default();
         }
-
-        let live_query = self
-            .context_state
-            .segments
-            .iter()
-            .filter(|segment| segment.kind != ContextSegmentKind::RetrievedMemory)
-            .rev()
-            .take(3)
-            .map(|segment| segment.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let query_terms = lexical_terms(&live_query);
-
-        let mut ranked: Vec<(usize, usize, String)> = corpus
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, segment)| {
-                let candidate_text = segment.text.trim().to_string();
-                if candidate_text.is_empty() {
-                    return None;
-                }
-                let overlap = lexical_overlap_score(&query_terms, &candidate_text);
-                let recency_bonus = idx + 1;
-                let score = overlap.saturating_mul(100) + recency_bonus;
-                Some((score, idx, candidate_text))
-            })
-            .collect();
-        ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
-
-        let mut chosen: Vec<(usize, String)> = ranked
-            .into_iter()
-            .take(self.context_policy.retrieve_top_k)
-            .map(|(_, idx, text)| (idx, text))
-            .collect();
-        chosen.sort_by_key(|(idx, _)| *idx);
-
-        let mut selected_texts: Vec<String> = Vec::new();
+        let ranking =
+            rank_retrieval_candidates(&self.context_policy, &self.context_state.segments, corpus);
+        let mut chosen: Vec<(usize, String)> = Vec::new();
         let mut selected_hits = 0usize;
+        let mut selected_texts: Vec<String> = Vec::new();
+        let mut selected_tokens: Vec<u32> = Vec::new();
 
-        for (_idx, candidate_text) in chosen {
-            let mut next_texts = vec![candidate_text];
-            next_texts.extend(selected_texts.iter().cloned());
-            let next_text = next_texts.join("\n");
-            let next_tokens = self
-                .tokenizer
-                .encode(next_text.as_str(), true)
-                .ok()?
-                .get_ids()
-                .to_vec();
+        for candidate in ranking
+            .candidates
+            .iter()
+            .take(self.context_policy.retrieve_top_k)
+        {
+            let mut next_choices = chosen.clone();
+            next_choices.push((candidate.idx, candidate.text.clone()));
+            next_choices.sort_by_key(|(idx, _)| *idx);
+            let next_text = next_choices
+                .iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let Ok(next_tokens) = self.tokenizer.encode(next_text.as_str(), true) else {
+                continue;
+            };
+            let next_tokens = next_tokens.get_ids().to_vec();
             if next_tokens.len() > remaining_budget {
                 continue;
             }
 
-            selected_texts = next_texts;
             selected_hits += 1;
+            selected_tokens = next_tokens;
+            selected_texts = next_choices.iter().map(|(_, text)| text.clone()).collect();
+            chosen = next_choices;
         }
 
-        if selected_texts.is_empty() {
-            return None;
+        RetrievalPayloadBuild {
+            text: (!selected_texts.is_empty()).then(|| selected_texts.join("\n")),
+            encoded_tokens: selected_tokens,
+            hits: selected_hits,
+            candidates_scored: ranking.candidates_scored,
+            selected_segments: selected_hits,
+            elapsed_ms: ranking.elapsed_ms,
+            top_score: ranking.top_score,
         }
-
-        let text = selected_texts.join("\n");
-        let encoded_tokens = self
-            .tokenizer
-            .encode(text.as_str(), true)
-            .ok()?
-            .get_ids()
-            .to_vec();
-        Some((text, encoded_tokens, selected_hits))
     }
 
     fn append_segment(
@@ -598,6 +620,17 @@ impl AgentProcess {
             .resident_prompt_checkpoint_bytes
             .min(self.rendered_prompt_cache.len());
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RetrievalPayloadBuild {
+    pub text: Option<String>,
+    pub encoded_tokens: Vec<u32>,
+    pub hits: usize,
+    pub candidates_scored: usize,
+    pub selected_segments: usize,
+    pub elapsed_ms: u64,
+    pub top_score: Option<f64>,
 }
 
 fn build_summary_text(segments: &[ContextSegment], max_summary_tokens: usize) -> String {
@@ -658,21 +691,4 @@ fn build_summary_text(segments: &[ContextSegment], max_summary_tokens: usize) ->
         summary.insert_str(0, "summary ");
     }
     summary
-}
-
-fn lexical_terms(text: &str) -> HashSet<String> {
-    text.split(|ch: char| !ch.is_alphanumeric())
-        .filter(|term| term.len() >= 3)
-        .map(|term| term.to_ascii_lowercase())
-        .collect()
-}
-
-fn lexical_overlap_score(query_terms: &HashSet<String>, candidate_text: &str) -> usize {
-    if query_terms.is_empty() {
-        return 0;
-    }
-    lexical_terms(candidate_text)
-        .into_iter()
-        .filter(|term| query_terms.contains(term))
-        .count()
 }
