@@ -1,4 +1,4 @@
-use agentic_control_models::{KernelEvent, RetryTaskResult};
+use agentic_control_models::{KernelEvent, OrchestrationControlResult, RetryTaskResult};
 use thiserror::Error;
 
 use crate::errors::OrchestratorError;
@@ -10,10 +10,16 @@ use crate::resource_governor::ResourceGovernor;
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::services::model_runtime::activate_model_target;
+use crate::services::process_control::{
+    request_process_kill_with_session, ProcessSignalResult,
+};
 use crate::session::SessionRegistry;
+use crate::session::SessionRegistryError;
 use crate::storage::{current_timestamp_ms, StorageService, WorkflowArtifactInputRef};
 use crate::tool_registry::ToolRegistry;
 use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
+
+use std::collections::HashSet;
 
 use super::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
 
@@ -42,6 +48,18 @@ pub enum OrchestrationRetryError {
 
     #[error("{0}")]
     RoutingFailed(String),
+}
+
+#[derive(Debug, Error)]
+pub enum OrchestrationControlError {
+    #[error("orchestration {0} not found")]
+    NotFound(u64),
+
+    #[error("{0}")]
+    Invalid(String),
+
+    #[error("{0}")]
+    ControlFailed(String),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -138,6 +156,135 @@ pub fn retry_orchestration_task(
         task: task_id.to_string(),
         reset_tasks: plan.reset_tasks,
         spawned,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn stop_orchestration(
+    runtime_registry: &mut RuntimeRegistry,
+    memory: &mut NeuralMemory,
+    scheduler: &mut ProcessScheduler,
+    orchestrator: &mut Orchestrator,
+    job_scheduler: &mut crate::services::job_scheduler::JobScheduler,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
+    in_flight: &HashSet<u64>,
+    pending_kills: &mut Vec<u64>,
+    pending_events: &mut Vec<KernelEvent>,
+    orch_id: u64,
+) -> Result<OrchestrationControlResult, OrchestrationControlError> {
+    let Some(plan) = orchestrator.stop(orch_id) else {
+        return Err(OrchestrationControlError::NotFound(orch_id));
+    };
+
+    for finalized in plan.finalized_attempts {
+        storage
+            .finalize_workflow_task_attempt(
+                finalized.orch_id,
+                &finalized.task_id,
+                finalized.attempt,
+                &finalized.status,
+                finalized.error.as_deref(),
+                &finalized.output_text,
+                finalized.truncated,
+                current_timestamp_ms(),
+            )
+            .map_err(|err| OrchestrationControlError::ControlFailed(err.to_string()))?;
+    }
+
+    for pid in plan.kill_pids {
+        match request_process_kill_with_session(
+            runtime_registry,
+            memory,
+            scheduler,
+            session_registry,
+            storage,
+            in_flight,
+            pending_kills,
+            pid,
+        ) {
+            ProcessSignalResult::Deferred | ProcessSignalResult::Applied => {
+                pending_events.push(KernelEvent::SessionFinished {
+                    pid,
+                    tokens_generated: None,
+                    elapsed_secs: None,
+                    reason: "orchestration_stopped".to_string(),
+                });
+                pending_events.push(KernelEvent::WorkspaceChanged {
+                    pid,
+                    reason: "orchestration_stopped".to_string(),
+                });
+            }
+            ProcessSignalResult::NotFound | ProcessSignalResult::NoModelLoaded => {}
+        }
+    }
+
+    job_scheduler
+        .complete_orchestration(storage, orch_id, "cancelled", Some("orchestration_stopped"))
+        .map_err(OrchestrationControlError::ControlFailed)?;
+
+    pending_events.push(KernelEvent::LobbyChanged {
+        reason: "orchestration_stopped".to_string(),
+    });
+
+    Ok(OrchestrationControlResult {
+        orchestration_id: orch_id,
+        status: "stopped".to_string(),
+    })
+}
+
+pub fn delete_orchestration(
+    orchestrator: &mut Orchestrator,
+    session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
+    pending_events: &mut Vec<KernelEvent>,
+    orch_id: u64,
+) -> Result<OrchestrationControlResult, OrchestrationControlError> {
+    let Some(orch) = orchestrator.get(orch_id) else {
+        return Err(OrchestrationControlError::NotFound(orch_id));
+    };
+    if !orch.is_finished() {
+        return Err(OrchestrationControlError::Invalid(format!(
+            "Orchestration {} is still running; stop it before deleting it.",
+            orch_id
+        )));
+    }
+
+    let workflow_io = storage
+        .load_workflow_io(orch_id)
+        .map_err(|err| OrchestrationControlError::ControlFailed(err.to_string()))?;
+    let session_ids = workflow_io
+        .attempts
+        .iter()
+        .filter_map(|attempt| attempt.session_id.clone())
+        .collect::<HashSet<_>>();
+
+    storage
+        .delete_workflow_io(orch_id)
+        .map_err(|err| OrchestrationControlError::ControlFailed(err.to_string()))?;
+
+    for session_id in session_ids {
+        match session_registry.delete_session(storage, &session_id) {
+            Ok(()) => {}
+            Err(SessionRegistryError::SessionNotFound(_)) => {
+                storage
+                    .delete_session(&session_id)
+                    .map_err(|err| OrchestrationControlError::ControlFailed(err.to_string()))?;
+            }
+            Err(err) => {
+                return Err(OrchestrationControlError::ControlFailed(err.to_string()));
+            }
+        }
+    }
+
+    orchestrator.remove(orch_id);
+    pending_events.push(KernelEvent::LobbyChanged {
+        reason: "orchestration_deleted".to_string(),
+    });
+
+    Ok(OrchestrationControlResult {
+        orchestration_id: orch_id,
+        status: "deleted".to_string(),
     })
 }
 

@@ -277,7 +277,7 @@ Perché rende AgenticOS adatto a task reali con autonomia governata.
 
 ## M39) Workflow Templates Library
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 ### Obiettivo
 
@@ -294,6 +294,15 @@ Rendere l’orchestrazione usabile subito senza richiedere all’utente di proge
 ### Perché è una kill-feature
 
 Perché rende immediatamente sfruttabile il motore di orchestrazione e abbassa enormemente la soglia d’ingresso.
+
+### DONE
+
+* registry centrale dei workflow template, estendibile senza duplicare logica tra codice e GUI
+* landing `Templates` nella sezione Workflows con preview e `Use Template`
+* builder separato dal monitor runtime, mantenendo il flow form-based per task e scheduler
+* pagina `Jobs` dedicata a live runs e scheduled jobs, separata da `Workflows`
+* dettaglio dedicato del workflow run con task board, transcript, artifacts ed events
+* task session dei workflow rimosse dalla sezione `Chats`
 
 ---
 
@@ -378,6 +387,18 @@ Perché prima bisogna stabilizzare:
 * observability
 
 Il visual builder ha senso solo sopra primitive già solide.
+
+### Slice implemented (DONE)
+
+* separazione netta tra `Workflows` design surface e `Jobs` runtime surface
+* pagina di dettaglio del run con inspector dedicato per task, artifacts, transcript ed events
+* controllo operativo dei run e dei job dalla GUI (`stop`, `delete`, `enable/disable`)
+
+### Resta aperto
+
+* canvas visuale vero e proprio per comporre e modificare il DAG
+* editing drag-and-drop del grafo
+* visual graph builder completo sopra le primitive ora stabilizzate
 
 ---
 

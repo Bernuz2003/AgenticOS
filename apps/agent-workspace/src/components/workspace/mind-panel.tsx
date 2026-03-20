@@ -11,6 +11,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { runtimeStateLabel, runtimeStateTone, strategyLabel } from "../../lib/format";
+import { friendlyRuntimeLabel } from "../../lib/model-labels";
 import type { AgentSessionSummary } from "../../store/sessions-store";
 import type { WorkspaceSnapshot } from "../../lib/api";
 
@@ -54,7 +55,10 @@ export function MindPanel({
   const retrieveMinScore = snapshot?.context?.retrieveMinScore ?? 0;
   const backendClass = snapshot?.backendClass ?? "unknown";
   const runtimeState = snapshot?.state ?? session.runtimeState ?? null;
-  const runtimeLabel = snapshot?.runtimeLabel ?? session.runtimeLabel ?? "unbound";
+  const runtimeLabel = friendlyRuntimeLabel(
+    snapshot?.runtimeLabel ?? session.runtimeLabel ?? null,
+    snapshot?.runtimeId ?? session.runtimeId ?? null,
+  );
   const ownerId = snapshot?.ownerId ?? null;
   const toolCaller = snapshot?.toolCaller ?? null;
   const pendingHumanRequest = snapshot?.pendingHumanRequest ?? null;

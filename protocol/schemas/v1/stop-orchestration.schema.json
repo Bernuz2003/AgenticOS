@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.stop_orchestration.v1",
+  "title": "AgenticOS STOP_ORCHESTRATION Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.stop_orchestration.v1"},
+        "data": {
+          "type": "object",
+          "properties": {
+            "orchestration_id": {"type": "integer", "minimum": 1},
+            "status": {"const": "stopped"}
+          },
+          "required": ["orchestration_id", "status"]
+        }
+      }
+    }
+  ]
+}

@@ -9,6 +9,8 @@ pub mod schema {
     pub const BACKEND_DIAG: &str = "agenticos.control.backend_diag.v1";
     pub const CHECKPOINT: &str = "agenticos.control.checkpoint.v1";
     pub const CONTINUE_OUTPUT: &str = "agenticos.control.continue_output.v1";
+    pub const DELETE_JOB: &str = "agenticos.control.delete_job.v1";
+    pub const DELETE_ORCHESTRATION: &str = "agenticos.control.delete_orchestration.v1";
     pub const EXEC: &str = "agenticos.control.exec.v1";
     pub const ERROR: &str = "agenticos.control.error.v1";
     pub const GET_GEN: &str = "agenticos.control.get_gen.v1";
@@ -36,11 +38,13 @@ pub mod schema {
     pub const SEND_INPUT: &str = "agenticos.control.send_input.v1";
     pub const SELECT_MODEL: &str = "agenticos.control.select_model.v1";
     pub const SET_GEN: &str = "agenticos.control.set_gen.v1";
+    pub const SET_JOB_ENABLED: &str = "agenticos.control.set_job_enabled.v1";
     pub const SET_PRIORITY: &str = "agenticos.control.set_priority.v1";
     pub const SET_QUOTA: &str = "agenticos.control.set_quota.v1";
     pub const SHUTDOWN: &str = "agenticos.control.shutdown.v1";
     pub const STOP_OUTPUT: &str = "agenticos.control.stop_output.v1";
     pub const STATUS: &str = "agenticos.control.status.v1";
+    pub const STOP_ORCHESTRATION: &str = "agenticos.control.stop_orchestration.v1";
     pub const SUBSCRIBE: &str = "agenticos.control.subscribe.v1";
     pub const TERM: &str = "agenticos.control.term.v1";
     pub const TOOL_INFO: &str = "agenticos.control.tool_info.v1";
@@ -60,6 +64,8 @@ pub enum ControlErrorCode {
     GetQuotaInvalid,
     InFlight,
     ContinueOutputInvalid,
+    DeleteJobInvalid,
+    DeleteOrchestrationInvalid,
     InvalidPid,
     InvalidSessionState,
     InvalidToolName,
@@ -93,12 +99,14 @@ pub enum ControlErrorCode {
     SchedulerLoadFailed,
     SchedulerTargetFailed,
     SendInputInvalid,
+    SetJobEnabledInvalid,
     SetPriorityInvalid,
     SetQuotaInvalid,
     SetGenInvalid,
     SpawnFailed,
     StatusInvalid,
     StopOutputInvalid,
+    StopOrchestrationInvalid,
     ToolNotFound,
     ToolRegistryMutationForbidden,
     UnregisterToolFailed,
@@ -118,6 +126,8 @@ impl ControlErrorCode {
             Self::GetQuotaInvalid => "GET_QUOTA_INVALID",
             Self::InFlight => "IN_FLIGHT",
             Self::ContinueOutputInvalid => "CONTINUE_OUTPUT_INVALID",
+            Self::DeleteJobInvalid => "DELETE_JOB_INVALID",
+            Self::DeleteOrchestrationInvalid => "DELETE_ORCHESTRATION_INVALID",
             Self::InvalidPid => "INVALID_PID",
             Self::InvalidSessionState => "INVALID_SESSION_STATE",
             Self::InvalidToolName => "INVALID_TOOL_NAME",
@@ -151,12 +161,14 @@ impl ControlErrorCode {
             Self::SchedulerLoadFailed => "SCHEDULER_LOAD_FAILED",
             Self::SchedulerTargetFailed => "SCHEDULER_TARGET_FAILED",
             Self::SendInputInvalid => "SEND_INPUT_INVALID",
+            Self::SetJobEnabledInvalid => "SET_JOB_ENABLED_INVALID",
             Self::SetPriorityInvalid => "SET_PRIORITY_INVALID",
             Self::SetQuotaInvalid => "SET_QUOTA_INVALID",
             Self::SetGenInvalid => "SET_GEN_INVALID",
             Self::SpawnFailed => "SPAWN_FAILED",
             Self::StatusInvalid => "STATUS_INVALID",
             Self::StopOutputInvalid => "STOP_OUTPUT_INVALID",
+            Self::StopOrchestrationInvalid => "STOP_ORCHESTRATION_INVALID",
             Self::ToolNotFound => "TOOL_NOT_FOUND",
             Self::ToolRegistryMutationForbidden => "TOOL_REGISTRY_MUTATION_FORBIDDEN",
             Self::UnregisterToolFailed => "UNREGISTER_TOOL_FAILED",
@@ -228,6 +240,8 @@ pub enum OpCode {
     Exec,
     SendInput,
     ContinueOutput,
+    StopOrchestration,
+    DeleteOrchestration,
     StopOutput,
     Kill,
     Term,
@@ -248,6 +262,8 @@ pub enum OpCode {
     Restore,
     ResumeSession,
     ScheduleJob,
+    SetJobEnabled,
+    DeleteJob,
     Orchestrate,
     ListOrchestrations,
     OrchestrationStatus,
@@ -270,6 +286,8 @@ impl OpCode {
             "EXEC" => Some(Self::Exec),
             "SEND_INPUT" => Some(Self::SendInput),
             "CONTINUE_OUTPUT" => Some(Self::ContinueOutput),
+            "STOP_ORCHESTRATION" => Some(Self::StopOrchestration),
+            "DELETE_ORCHESTRATION" => Some(Self::DeleteOrchestration),
             "STOP_OUTPUT" => Some(Self::StopOutput),
             "KILL" => Some(Self::Kill),
             "TERM" => Some(Self::Term),
@@ -290,6 +308,8 @@ impl OpCode {
             "RESTORE" => Some(Self::Restore),
             "RESUME_SESSION" => Some(Self::ResumeSession),
             "SCHEDULE_JOB" => Some(Self::ScheduleJob),
+            "SET_JOB_ENABLED" => Some(Self::SetJobEnabled),
+            "DELETE_JOB" => Some(Self::DeleteJob),
             "ORCHESTRATE" => Some(Self::Orchestrate),
             "LIST_ORCHESTRATIONS" => Some(Self::ListOrchestrations),
             "ORCHESTRATION_STATUS" => Some(Self::OrchestrationStatus),
@@ -313,6 +333,8 @@ impl OpCode {
             Self::Exec => "EXEC",
             Self::SendInput => "SEND_INPUT",
             Self::ContinueOutput => "CONTINUE_OUTPUT",
+            Self::StopOrchestration => "STOP_ORCHESTRATION",
+            Self::DeleteOrchestration => "DELETE_ORCHESTRATION",
             Self::StopOutput => "STOP_OUTPUT",
             Self::Kill => "KILL",
             Self::Term => "TERM",
@@ -333,6 +355,8 @@ impl OpCode {
             Self::Restore => "RESTORE",
             Self::ResumeSession => "RESUME_SESSION",
             Self::ScheduleJob => "SCHEDULE_JOB",
+            Self::SetJobEnabled => "SET_JOB_ENABLED",
+            Self::DeleteJob => "DELETE_JOB",
             Self::Orchestrate => "ORCHESTRATE",
             Self::ListOrchestrations => "LIST_ORCHESTRATIONS",
             Self::OrchestrationStatus => "ORCHESTRATION_STATUS",

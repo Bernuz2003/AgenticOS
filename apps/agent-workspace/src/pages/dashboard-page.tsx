@@ -5,6 +5,7 @@ import {
   loadModel,
   type ModelCatalogSnapshot,
 } from "../lib/api";
+import { friendlyModelLabel } from "../lib/model-labels";
 import { useSessionsStore } from "../store/sessions-store";
 
 export function DashboardPage() {
@@ -99,7 +100,11 @@ export function DashboardPage() {
           <div className="flex gap-4">
             <div className="bg-indigo-800/50 rounded-2xl px-5 py-4 border border-indigo-700/50 flex-1">
               <div className="text-indigo-300 text-xs uppercase tracking-wider font-semibold mb-1">Target Attivo</div>
-              <div className="font-semibold">{loadedModelId || "Nessun target attualmente in memoria"}</div>
+              <div className="font-semibold">
+                {loadedModelId
+                  ? friendlyModelLabel(loadedModelId)
+                  : "Nessun target attualmente in memoria"}
+              </div>
               <div className="text-indigo-400 text-sm mt-1">{loadedTargetKind ? `${loadedTargetKind} via ${loadedBackendId}` : "Il resource governor non ha allocato memoria VRAM."}</div>
             </div>
             <div className="bg-indigo-800/50 rounded-2xl px-5 py-4 border border-indigo-700/50 flex-1">
@@ -148,7 +153,7 @@ export function DashboardPage() {
                   >
                     {catalog?.models.map((m) => (
                       <option key={m.id} value={m.id}>
-                        {m.family} · {m.id}
+                        {m.family} · {friendlyModelLabel(m.id)}
                       </option>
                     ))}
                   </select>

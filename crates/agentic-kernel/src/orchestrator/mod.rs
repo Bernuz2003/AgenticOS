@@ -25,6 +25,12 @@ pub use types::{
 };
 use validation::validate_and_sort;
 
+#[derive(Debug, Default)]
+pub(crate) struct StopOrchestrationPlan {
+    pub(crate) kill_pids: Vec<u64>,
+    pub(crate) finalized_attempts: Vec<TaskAttemptFinalization>,
+}
+
 impl Orchestrator {
     pub fn new() -> Self {
         Self {
@@ -410,14 +416,53 @@ impl Orchestrator {
             .and_then(|orch| orch.running_output.get(task_id))
     }
 
-    pub fn active_ids(&self) -> Vec<u64> {
-        let mut ids: Vec<u64> = self
-            .orchestrations
-            .iter()
-            .filter_map(|(orch_id, orch)| (!orch.is_finished()).then_some(*orch_id))
-            .collect();
+    pub fn all_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.orchestrations.keys().copied().collect();
         ids.sort_unstable();
         ids
+    }
+
+    pub(crate) fn stop(&mut self, orch_id: u64) -> Option<StopOrchestrationPlan> {
+        let orch = self.orchestrations.get_mut(&orch_id)?;
+        let mut plan = StopOrchestrationPlan::default();
+        let task_ids = orch.topo_order.clone();
+
+        for task_id in task_ids {
+            match orch.status.get(&task_id).cloned() {
+                Some(TaskStatus::Running { pid, attempt }) => {
+                    let output = orch.running_output.remove(&task_id);
+                    orch.status.insert(task_id.clone(), TaskStatus::Skipped);
+                    plan.kill_pids.push(pid);
+                    plan.finalized_attempts.push(TaskAttemptFinalization {
+                        orch_id,
+                        task_id,
+                        attempt,
+                        status: "skipped".to_string(),
+                        error: Some("orchestration_stopped".to_string()),
+                        output_text: output
+                            .as_ref()
+                            .map(|item| item.text.clone())
+                            .unwrap_or_default(),
+                        truncated: output.as_ref().map(|item| item.truncated).unwrap_or(false),
+                    });
+                }
+                Some(TaskStatus::Pending) => {
+                    orch.status.insert(task_id, TaskStatus::Skipped);
+                }
+                _ => {}
+            }
+        }
+
+        self.pid_to_task
+            .retain(|_, (existing_orch_id, _, _)| *existing_orch_id != orch_id);
+        refresh_output_metrics(orch);
+        Some(plan)
+    }
+
+    pub fn remove(&mut self, orch_id: u64) -> bool {
+        self.pid_to_task
+            .retain(|_, (existing_orch_id, _, _)| *existing_orch_id != orch_id);
+        self.orchestrations.remove(&orch_id).is_some()
     }
 
     /// Format a human-readable status report for one orchestration.

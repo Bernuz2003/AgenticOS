@@ -1,7 +1,8 @@
 use agentic_control_models::{
     ArtifactListResponse, LoadModelResult, ModelCatalogSnapshot, OrchStatusResponse,
-    OrchestrateResult, OrchestrationListResponse, RetryTaskResult, ScheduleJobResult,
-    ScheduledJobListResponse, SelectModelResult, SendInputResult, TurnControlResult,
+    OrchestrateResult, OrchestrationControlResult, OrchestrationListResponse, RetryTaskResult,
+    ScheduleJobResult, ScheduledJobControlResult, ScheduledJobListResponse, SelectModelResult,
+    SendInputResult, TurnControlResult,
 };
 use tauri::{async_runtime, State};
 
@@ -227,6 +228,73 @@ pub async fn retry_workflow_task(
         bridge
             .retry_task(orchestration_id, &task_id)
             .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn stop_workflow_run(
+    orchestration_id: u64,
+    state: State<'_, AppState>,
+) -> Result<OrchestrationControlResult, String> {
+    let bridge = state.bridge.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        bridge
+            .stop_orchestration(orchestration_id)
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_workflow_run(
+    orchestration_id: u64,
+    state: State<'_, AppState>,
+) -> Result<OrchestrationControlResult, String> {
+    let bridge = state.bridge.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        bridge
+            .delete_orchestration(orchestration_id)
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_scheduled_job_enabled(
+    job_id: u64,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<ScheduledJobControlResult, String> {
+    let bridge = state.bridge.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        bridge
+            .set_job_enabled(job_id, enabled)
+            .map_err(|err| err.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_scheduled_job(
+    job_id: u64,
+    state: State<'_, AppState>,
+) -> Result<ScheduledJobControlResult, String> {
+    let bridge = state.bridge.clone();
+    run_blocking(move || {
+        let mut bridge = bridge
+            .lock()
+            .map_err(|_| "Bridge state lock poisoned".to_string())?;
+        bridge.delete_job(job_id).map_err(|err| err.to_string())
     })
     .await
 }

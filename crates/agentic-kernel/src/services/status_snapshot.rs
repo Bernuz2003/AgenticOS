@@ -941,7 +941,7 @@ fn map_human_input_request(request: &crate::process::HumanInputRequest) -> Human
 
 fn build_orchestration_summaries(deps: &StatusSnapshotDeps<'_>) -> Vec<OrchSummaryResponse> {
     deps.orchestrator
-        .active_ids()
+        .all_ids()
         .into_iter()
         .filter_map(|orch_id| {
             let orch = deps.orchestrator.get(orch_id)?;

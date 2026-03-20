@@ -7,9 +7,10 @@ use std::time::Duration;
 use agentic_control_models::{
     ArtifactListRequest, ArtifactListResponse, ControlMessage, LoadModelResult,
     ModelCatalogSnapshot, OrchStatusResponse, OrchSummaryResponse, OrchestrateResult,
-    OrchestrationListResponse, OrchestrationStatusRequest, PidStatusResponse, ResumeSessionResult,
-    RetryTaskResult, ScheduleJobResult, ScheduledJobListResponse, SelectModelResult,
-    SendInputResult, StatusResponse, TurnControlResult,
+    OrchestrationControlResult, OrchestrationListResponse, OrchestrationStatusRequest,
+    PidStatusResponse, ResumeSessionResult, RetryTaskResult, ScheduleJobResult,
+    ScheduledJobControlResult, ScheduledJobListResponse, SelectModelResult, SendInputResult,
+    StatusResponse, TurnControlResult,
 };
 use agentic_protocol::OpCode;
 
@@ -69,6 +70,7 @@ impl KernelBridge {
 
                 let mut sessions = active_sessions;
                 sessions.extend(persisted_sessions.into_values());
+                sessions.retain(|session| session.orchestration_id.is_none());
 
                 LobbySnapshot {
                     connected: true,
@@ -122,7 +124,10 @@ impl KernelBridge {
                 global_audit_events,
                 scheduled_jobs: Vec::new(),
                 orchestrations: Vec::new(),
-                sessions: archived_sessions,
+                sessions: archived_sessions
+                    .into_iter()
+                    .filter(|session| session.orchestration_id.is_none())
+                    .collect(),
                 error: Some(err.to_string()),
             },
         }
@@ -333,6 +338,88 @@ impl KernelBridge {
         }
 
         self.decode_response(&response.payload, &[agentic_protocol::schema::RETRY_TASK])
+    }
+
+    pub fn stop_orchestration(
+        &mut self,
+        orch_id: u64,
+    ) -> KernelBridgeResult<OrchestrationControlResult> {
+        let payload = serde_json::json!({ "orchestration_id": orch_id });
+        let response = self.send_control_command(
+            OpCode::StopOrchestration,
+            payload.to_string().as_bytes(),
+        )?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(
+            &response.payload,
+            &[agentic_protocol::schema::STOP_ORCHESTRATION],
+        )
+    }
+
+    pub fn delete_orchestration(
+        &mut self,
+        orch_id: u64,
+    ) -> KernelBridgeResult<OrchestrationControlResult> {
+        let payload = serde_json::json!({ "orchestration_id": orch_id });
+        let response = self.send_control_command(
+            OpCode::DeleteOrchestration,
+            payload.to_string().as_bytes(),
+        )?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(
+            &response.payload,
+            &[agentic_protocol::schema::DELETE_ORCHESTRATION],
+        )
+    }
+
+    pub fn set_job_enabled(
+        &mut self,
+        job_id: u64,
+        enabled: bool,
+    ) -> KernelBridgeResult<ScheduledJobControlResult> {
+        let payload = serde_json::json!({ "job_id": job_id, "enabled": enabled });
+        let response =
+            self.send_control_command(OpCode::SetJobEnabled, payload.to_string().as_bytes())?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(
+            &response.payload,
+            &[agentic_protocol::schema::SET_JOB_ENABLED],
+        )
+    }
+
+    pub fn delete_job(&mut self, job_id: u64) -> KernelBridgeResult<ScheduledJobControlResult> {
+        let payload = serde_json::json!({ "job_id": job_id });
+        let response = self.send_control_command(OpCode::DeleteJob, payload.to_string().as_bytes())?;
+        if response.kind != "+OK" {
+            self.drop_connection();
+            return Err(protocol::decode_protocol_error(
+                &response.code,
+                &response.payload,
+            ));
+        }
+
+        self.decode_response(&response.payload, &[agentic_protocol::schema::DELETE_JOB])
     }
 
     pub fn ping(&mut self) -> KernelBridgeResult<String> {

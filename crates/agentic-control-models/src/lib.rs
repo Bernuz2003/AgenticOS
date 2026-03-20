@@ -141,6 +141,19 @@ pub struct ScheduleJobResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchestrationControlResult {
+    pub orchestration_id: u64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledJobControlResult {
+    pub job_id: u64,
+    pub enabled: bool,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestrationStatusRequest {
     pub orchestration_id: u64,
 }

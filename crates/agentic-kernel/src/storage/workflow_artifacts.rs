@@ -312,6 +312,27 @@ impl StorageService {
         })
     }
 
+    pub(crate) fn delete_workflow_io(
+        &mut self,
+        orchestration_id: u64,
+    ) -> Result<(), StorageError> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM workflow_task_artifact_inputs WHERE orchestration_id = ?1",
+            params![orchestration_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM workflow_artifacts WHERE orchestration_id = ?1",
+            params![orchestration_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM workflow_task_attempts WHERE orchestration_id = ?1",
+            params![orchestration_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn load_workflow_task_attempts(
         &self,
         orchestration_id: u64,

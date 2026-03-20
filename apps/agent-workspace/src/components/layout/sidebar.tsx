@@ -2,6 +2,7 @@ import {
   LayoutDashboard,
   MessageSquare,
   Activity,
+  BriefcaseBusiness,
   ServerCog,
   Waypoints,
 } from "lucide-react";
@@ -14,6 +15,7 @@ export function Sidebar() {
     { name: "Dashboard", path: "/", icon: LayoutDashboard },
     { name: "Chats", path: "/sessions", icon: MessageSquare },
     { name: "Workflows", path: "/workflows", icon: Waypoints },
+    { name: "Jobs", path: "/jobs", icon: BriefcaseBusiness },
     { name: "Control Center", path: "/control-center", icon: ServerCog },
   ];
 
@@ -30,7 +32,9 @@ export function Sidebar() {
 
       <nav className="flex-1 px-4 space-y-1">
         {navItems.map((item) => {
-          const isActive = location.pathname === item.path;
+          const isActive =
+            location.pathname === item.path ||
+            (item.path === "/jobs" && location.pathname.startsWith("/workflow-runs/"));
           const Icon = item.icon;
           return (
             <Link

@@ -202,6 +202,14 @@ impl StorageService {
         Ok(())
     }
 
+    pub(crate) fn delete_scheduled_job(&mut self, job_id: u64) -> Result<(), StorageError> {
+        self.connection.execute(
+            "DELETE FROM scheduled_jobs WHERE job_id = ?1",
+            params![job_id],
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn load_scheduled_jobs(&self) -> Result<Vec<StoredScheduledJob>, StorageError> {
         let mut statement = self.connection.prepare(
             r#"

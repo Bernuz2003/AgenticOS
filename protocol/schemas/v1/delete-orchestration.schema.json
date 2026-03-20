@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.delete_orchestration.v1",
+  "title": "AgenticOS DELETE_ORCHESTRATION Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.delete_orchestration.v1"},
+        "data": {
+          "type": "object",
+          "properties": {
+            "orchestration_id": {"type": "integer", "minimum": 1},
+            "status": {"const": "deleted"}
+          },
+          "required": ["orchestration_id", "status"]
+        }
+      }
+    }
+  ]
+}

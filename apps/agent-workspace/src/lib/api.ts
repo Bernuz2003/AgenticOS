@@ -257,10 +257,21 @@ export interface RetryWorkflowTaskResult {
   spawned: number;
 }
 
+export interface WorkflowRunControlResult {
+  orchestrationId: number;
+  status: string;
+}
+
 export interface ScheduleJobResult {
   jobId: number;
   nextRunAtMs: number | null;
   triggerKind: string;
+}
+
+export interface ScheduledJobControlResult {
+  jobId: number;
+  enabled: boolean;
+  state: string;
 }
 
 export interface ScheduledJobRun {
@@ -1681,6 +1692,67 @@ export async function retryWorkflowTask(
     task: result.task,
     resetTasks: result.reset_tasks,
     spawned: result.spawned,
+  };
+}
+
+export async function stopWorkflowRun(
+  orchestrationId: number,
+): Promise<WorkflowRunControlResult> {
+  const result = await invoke<{
+    orchestration_id: number;
+    status: string;
+  }>("stop_workflow_run", { orchestrationId });
+
+  return {
+    orchestrationId: result.orchestration_id,
+    status: result.status,
+  };
+}
+
+export async function deleteWorkflowRun(
+  orchestrationId: number,
+): Promise<WorkflowRunControlResult> {
+  const result = await invoke<{
+    orchestration_id: number;
+    status: string;
+  }>("delete_workflow_run", { orchestrationId });
+
+  return {
+    orchestrationId: result.orchestration_id,
+    status: result.status,
+  };
+}
+
+export async function setScheduledJobEnabled(
+  jobId: number,
+  enabled: boolean,
+): Promise<ScheduledJobControlResult> {
+  const result = await invoke<{
+    job_id: number;
+    enabled: boolean;
+    state: string;
+  }>("set_scheduled_job_enabled", { jobId, enabled });
+
+  return {
+    jobId: result.job_id,
+    enabled: result.enabled,
+    state: result.state,
+  };
+}
+
+export async function deleteScheduledJob(
+  jobId: number,
+): Promise<ScheduledJobControlResult> {
+  const result = await invoke<{
+    job_id: number;
+    enabled: boolean;
+    state: string;
+  }>("delete_scheduled_job", { jobId });
+
+  return {
+    jobId: result.job_id,
+    enabled: result.enabled,
+    state: result.state,
   };
 }
 

@@ -168,8 +168,44 @@ pub fn execute_command(
                 return;
             }
         }
+        OpCode::SetJobEnabled => {
+            if let Some(r) =
+                orchestration_cmd::handle_set_job_enabled(ctx.orchestration_view(), &payload)
+            {
+                r
+            } else {
+                return;
+            }
+        }
+        OpCode::DeleteJob => {
+            if let Some(r) =
+                orchestration_cmd::handle_delete_job(ctx.orchestration_view(), &payload)
+            {
+                r
+            } else {
+                return;
+            }
+        }
         OpCode::SendInput => process_cmd::handle_send_input(ctx.process_view(), &payload),
         OpCode::ContinueOutput => process_cmd::handle_continue_output(ctx.process_view(), &payload),
+        OpCode::StopOrchestration => {
+            if let Some(r) =
+                orchestration_cmd::handle_stop_orchestration(ctx.orchestration_view(), &payload)
+            {
+                r
+            } else {
+                return;
+            }
+        }
+        OpCode::DeleteOrchestration => {
+            if let Some(r) =
+                orchestration_cmd::handle_delete_orchestration(ctx.orchestration_view(), &payload)
+            {
+                r
+            } else {
+                return;
+            }
+        }
         OpCode::StopOutput => process_cmd::handle_stop_output(ctx.process_view(), &payload),
         OpCode::Status => status::handle_status(ctx.status_view(), &payload),
         OpCode::ListOrchestrations => {

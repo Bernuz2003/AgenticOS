@@ -21,6 +21,7 @@ import {
   statusTone,
   strategyLabel,
 } from "../lib/format";
+import { friendlyModelLabel, friendlyRuntimeLabel } from "../lib/model-labels";
 import { useSessionsStore } from "../store/sessions-store";
 
 function formatBytes(bytes: number, decimals = 1): string {
@@ -343,12 +344,12 @@ export function ControlCenterPage() {
             Runtime Target
           </div>
           <div className="mt-3 text-lg font-bold text-slate-900">
-            {loadedModelId || "No model resident"}
+            {loadedModelId ? friendlyModelLabel(loadedModelId) : "No model resident"}
           </div>
           <div className="mt-2 text-sm text-slate-500">
             {loadedTargetKind
               ? `${loadedTargetKind} via ${loadedBackendClass || loadedBackendId || "unknown"}`
-              : `Selected model: ${selectedModelId || "none"}`}
+              : `Selected model: ${selectedModelId ? friendlyModelLabel(selectedModelId) : "none"}`}
           </div>
         </section>
 
@@ -417,7 +418,9 @@ export function ControlCenterPage() {
                 <div>
                   <div className="text-slate-500">Remote model</div>
                   <div className="font-medium text-slate-900">
-                    {loadedRemoteModelId || loadedRemoteModel?.modelLabel || "n/a"}
+                    {loadedRemoteModelId
+                      ? friendlyModelLabel(loadedRemoteModelId)
+                      : loadedRemoteModel?.modelLabel || "n/a"}
                   </div>
                 </div>
                 <div>
@@ -519,7 +522,7 @@ export function ControlCenterPage() {
                     <div>
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="text-sm font-semibold text-slate-900">
-                          {runtime.logicalModelId}
+                          {friendlyModelLabel(runtime.logicalModelId)}
                         </div>
                         <span
                           className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${
@@ -722,7 +725,7 @@ export function ControlCenterPage() {
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                     <div>
                       <div className="text-sm font-semibold text-slate-900">
-                        {entry.logicalModelId}
+                        {friendlyModelLabel(entry.logicalModelId)}
                       </div>
                       <div className="mt-1 text-xs text-slate-500">
                         {entry.backendClass} · {entry.reason}
@@ -766,8 +769,8 @@ export function ControlCenterPage() {
               Explicit process state and workspace routing
             </h2>
             <p className="mt-2 text-sm text-slate-500">
-              Sessions stay visible with both UI status and live runtime state, so
-              parked, idle and active processes are not conflated.
+              Interactive chat sessions stay visible with both UI status and live
+              runtime state, so parked, idle and active processes are not conflated.
             </p>
           </div>
           <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-slate-600">
@@ -781,7 +784,8 @@ export function ControlCenterPage() {
               No sessions yet
             </div>
             <div className="mt-2 text-sm text-slate-500">
-              Start a chat or a workflow task to populate the process board.
+              Start a chat to populate the process board. Workflow task execution is
+              monitored from Jobs and workflow run detail.
             </div>
           </div>
         ) : (
@@ -834,7 +838,7 @@ export function ControlCenterPage() {
                   <div className="rounded-xl border border-slate-200 bg-white px-3 py-3">
                     <div className="text-slate-500">Runtime</div>
                     <div className="mt-1 font-medium text-slate-900">
-                      {session.runtimeLabel || session.runtimeId || "unbound"}
+                      {friendlyRuntimeLabel(session.runtimeLabel, session.runtimeId)}
                     </div>
                   </div>
                   <div className="rounded-xl border border-slate-200 bg-white px-3 py-3">
