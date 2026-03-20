@@ -15,7 +15,7 @@ remote_provider_catalog_path = "../../config/providers/remote_providers.toml"
 [memory]
 swap_async = true
 swap_dir = "../../workspace/swap"
-token_slot_quota_per_pid = 4096
+token_slot_quota_per_pid = 8192
 
 [resources]
 ram_budget_bytes = 0

@@ -79,18 +79,31 @@ pub(crate) fn builtin_action_descriptors() -> Vec<ActionDescriptor> {
         },
         ActionDescriptor {
             name: ActionName::Send.as_str().to_string(),
-            description: "Send a message to another running PID.".to_string(),
+            description: "Send a typed IPC message to another running PID.".to_string(),
             input_schema: json!({
                 "type": "object",
-                "required": ["pid", "message"],
+                "required": ["pid"],
                 "properties": {
                     "pid": {"type": "integer", "minimum": 0},
-                    "message": {"type": "string"}
+                    "message": {"type": "string"},
+                    "message_type": {
+                        "type": "string",
+                        "enum": ["request", "response", "event", "notification", "handoff", "control"]
+                    },
+                    "channel": {"type": "string"},
+                    "payload": {}
                 },
                 "additionalProperties": false
             }),
-            input_example: json!({"pid": 0, "message": "string"}),
-            notes: vec!["Use this only when you already know the target PID.".to_string()],
+            input_example: json!({
+                "pid": 0,
+                "message_type": "notification",
+                "message": "string"
+            }),
+            notes: vec![
+                "Use this only when you already know the target PID.".to_string(),
+                "The legacy 'message' field remains supported for compatibility.".to_string(),
+            ],
         },
     ]
 }

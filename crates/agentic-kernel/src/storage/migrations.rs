@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::service::StorageError;
 
-pub(crate) const LATEST_SCHEMA_VERSION: i32 = 9;
+pub(crate) const LATEST_SCHEMA_VERSION: i32 = 10;
 
 pub(super) fn apply_pending_migrations(connection: &mut Connection) -> Result<(), StorageError> {
     let current_version: i32 =
@@ -41,6 +41,9 @@ pub(super) fn apply_pending_migrations(connection: &mut Connection) -> Result<()
     }
     if current_version < 9 {
         apply_v9_schema(connection)?;
+    }
+    if current_version < 10 {
+        apply_v10_schema(connection)?;
     }
 
     Ok(())
@@ -482,6 +485,52 @@ fn apply_v9_schema(connection: &mut Connection) -> Result<(), StorageError> {
 
         CREATE INDEX IF NOT EXISTS idx_scheduled_job_runs_orch
             ON scheduled_job_runs(orchestration_id);
+        "#,
+    )?;
+    transaction.pragma_update(None, "user_version", LATEST_SCHEMA_VERSION)?;
+    transaction.commit()?;
+
+    Ok(())
+}
+
+fn apply_v10_schema(connection: &mut Connection) -> Result<(), StorageError> {
+    let transaction = connection.transaction()?;
+
+    transaction.execute_batch(
+        r#"
+        ALTER TABLE workflow_task_attempts
+            ADD COLUMN termination_reason TEXT NULL;
+
+        CREATE TABLE IF NOT EXISTS ipc_messages (
+            message_id TEXT PRIMARY KEY,
+            orchestration_id INTEGER NULL,
+            sender_pid INTEGER NULL,
+            sender_task_id TEXT NULL,
+            sender_attempt INTEGER NULL,
+            receiver_pid INTEGER NULL,
+            receiver_task_id TEXT NULL,
+            receiver_attempt INTEGER NULL,
+            message_type TEXT NOT NULL,
+            channel TEXT NULL,
+            payload_preview TEXT NOT NULL,
+            payload_text TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            delivered_at_ms INTEGER NULL,
+            consumed_at_ms INTEGER NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ipc_messages_orch_created
+            ON ipc_messages(orchestration_id, created_at_ms DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_ipc_messages_sender_created
+            ON ipc_messages(sender_pid, created_at_ms DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_ipc_messages_receiver_created
+            ON ipc_messages(receiver_pid, created_at_ms DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_ipc_messages_status_created
+            ON ipc_messages(status, created_at_ms DESC);
         "#,
     )?;
     transaction.pragma_update(None, "user_version", LATEST_SCHEMA_VERSION)?;

@@ -384,6 +384,15 @@ pub enum InferenceFinishReason {
     TurnBudgetExhausted,
 }
 
+impl InferenceFinishReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ModelStop => "model_stop",
+            Self::TurnBudgetExhausted => "turn_budget_exhausted",
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub trait ContextSlotPersistence: InferenceBackend {
     fn save_context_slot(&self, slot_id: ContextSlotId, path: &Path) -> Result<()> {

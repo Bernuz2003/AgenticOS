@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use agentic_control_models::{
     ArtifactListResponse, BackendCapabilitiesView, BackendTelemetryView,
     ContextStatusSnapshot as ControlContextStatusSnapshot, GenerationStatus, HumanInputRequestView,
-    JobsStatus, MemoryStatus, ModelStatus, OrchArtifactRefView, OrchArtifactView,
+    IpcMessageView, JobsStatus, MemoryStatus, ModelStatus, OrchArtifactRefView, OrchArtifactView,
     OrchStatusResponse, OrchSummaryResponse, OrchTaskAttemptView, OrchTaskEntry,
     OrchestrationListResponse, OrchestrationsStatus, PidStatusResponse, ProcessPermissionsView,
     ProcessesStatus, ResourceGovernorStatusView, RuntimeInstanceView, RuntimeLoadQueueEntryView,
@@ -337,6 +337,10 @@ pub fn build_orchestration_status(
 ) -> Option<OrchStatusResponse> {
     let orch = deps.orchestrator.get(orch_id)?;
     let workflow_io = deps.storage.load_workflow_io(orch_id).ok()?;
+    let ipc_messages = deps
+        .storage
+        .load_ipc_messages_for_orchestration(orch_id)
+        .unwrap_or_default();
     let (pending, running, completed, failed, skipped) = orch.counts();
     let total = orch.tasks.len();
     let elapsed = orch.created_at.elapsed().as_secs_f64();
@@ -490,9 +494,13 @@ pub fn build_orchestration_status(
                         started_at_ms: attempt.started_at_ms,
                         completed_at_ms: attempt.completed_at_ms,
                         primary_artifact_id: attempt.primary_artifact_id,
+                        termination_reason: attempt.termination_reason,
                     }
                 })
                 .collect::<Vec<_>>();
+            let termination_reason = attempts
+                .iter()
+                .find_map(|attempt| attempt.termination_reason.clone());
             OrchTaskEntry {
                 task: task_id.clone(),
                 role: task_def.and_then(|task| task.role.clone()),
@@ -516,6 +524,7 @@ pub fn build_orchestration_status(
                 input_artifacts,
                 output_artifacts: artifact_views,
                 attempts,
+                termination_reason,
             }
         })
         .collect();
@@ -559,6 +568,27 @@ pub fn build_orchestration_status(
         truncations,
         output_chars_stored,
         tasks,
+        ipc_messages: ipc_messages
+            .into_iter()
+            .map(|message| IpcMessageView {
+                message_id: message.message_id,
+                orchestration_id: message.orchestration_id,
+                sender_pid: message.sender_pid,
+                sender_task: message.sender_task_id,
+                sender_attempt: message.sender_attempt,
+                receiver_pid: message.receiver_pid,
+                receiver_task: message.receiver_task_id,
+                receiver_attempt: message.receiver_attempt,
+                message_type: message.message_type,
+                channel: message.channel,
+                payload_preview: message.payload_preview,
+                payload_text: message.payload_text,
+                status: message.status,
+                created_at_ms: message.created_at_ms,
+                delivered_at_ms: message.delivered_at_ms,
+                consumed_at_ms: message.consumed_at_ms,
+            })
+            .collect(),
     })
 }
 

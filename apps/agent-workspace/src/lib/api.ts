@@ -342,6 +342,26 @@ export interface OrchestrationTaskAttempt {
   startedAtMs: number;
   completedAtMs: number | null;
   primaryArtifactId: string | null;
+  terminationReason: string | null;
+}
+
+export interface OrchestrationIpcMessage {
+  messageId: string;
+  orchestrationId: number | null;
+  senderPid: number | null;
+  senderTask: string | null;
+  senderAttempt: number | null;
+  receiverPid: number | null;
+  receiverTask: string | null;
+  receiverAttempt: number | null;
+  messageType: string;
+  channel: string | null;
+  payloadPreview: string;
+  payloadText: string;
+  status: string;
+  createdAtMs: number;
+  deliveredAtMs: number | null;
+  consumedAtMs: number | null;
 }
 
 export interface OrchestrationTaskStatus {
@@ -362,6 +382,7 @@ export interface OrchestrationTaskStatus {
   inputArtifacts: OrchestrationArtifactRef[];
   outputArtifacts: OrchestrationArtifact[];
   attempts: OrchestrationTaskAttempt[];
+  terminationReason: string | null;
 }
 
 export interface OrchestrationStatus {
@@ -378,6 +399,7 @@ export interface OrchestrationStatus {
   truncations: number;
   outputCharsStored: number;
   tasks: OrchestrationTaskStatus[];
+  ipcMessages: OrchestrationIpcMessage[];
 }
 
 export interface BackendCapabilities {
@@ -1574,7 +1596,27 @@ export async function fetchOrchestrationStatus(
         started_at_ms: number;
         completed_at_ms?: number | null;
         primary_artifact_id?: string | null;
+        termination_reason?: string | null;
       }>;
+      termination_reason?: string | null;
+    }>;
+    ipc_messages?: Array<{
+      message_id: string;
+      orchestration_id?: number | null;
+      sender_pid?: number | null;
+      sender_task?: string | null;
+      sender_attempt?: number | null;
+      receiver_pid?: number | null;
+      receiver_task?: string | null;
+      receiver_attempt?: number | null;
+      message_type: string;
+      channel?: string | null;
+      payload_preview: string;
+      payload_text: string;
+      status: string;
+      created_at_ms: number;
+      delivered_at_ms?: number | null;
+      consumed_at_ms?: number | null;
     }>;
   }>("fetch_orchestration_status", { orchestrationId });
 
@@ -1671,7 +1713,27 @@ export async function fetchOrchestrationStatus(
         startedAtMs: attempt.started_at_ms,
         completedAtMs: attempt.completed_at_ms ?? null,
         primaryArtifactId: attempt.primary_artifact_id ?? null,
+        terminationReason: attempt.termination_reason ?? null,
       })),
+      terminationReason: task.termination_reason ?? null,
+    })),
+    ipcMessages: (result.ipc_messages ?? []).map((message) => ({
+      messageId: message.message_id,
+      orchestrationId: message.orchestration_id ?? null,
+      senderPid: message.sender_pid ?? null,
+      senderTask: message.sender_task ?? null,
+      senderAttempt: message.sender_attempt ?? null,
+      receiverPid: message.receiver_pid ?? null,
+      receiverTask: message.receiver_task ?? null,
+      receiverAttempt: message.receiver_attempt ?? null,
+      messageType: message.message_type,
+      channel: message.channel ?? null,
+      payloadPreview: message.payload_preview,
+      payloadText: message.payload_text,
+      status: message.status,
+      createdAtMs: message.created_at_ms,
+      deliveredAtMs: message.delivered_at_ms ?? null,
+      consumedAtMs: message.consumed_at_ms ?? null,
     })),
   };
 }

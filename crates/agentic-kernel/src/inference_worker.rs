@@ -36,6 +36,7 @@ pub enum InferenceResult {
         text_output: String,
         generated_tokens: usize,
         finished: bool,
+        finish_reason: Option<InferenceFinishReason>,
         accounting_event: Option<BackendAccountingEvent>,
     },
     /// Inference failed — the process has been dropped (model weights freed).
@@ -115,6 +116,7 @@ pub fn spawn_worker(
                                     text_output: String::new(),
                                     generated_tokens: 0,
                                     finished: true,
+                                    finish_reason: Some(InferenceFinishReason::TurnBudgetExhausted),
                                     accounting_event: None,
                                 })
                                 .is_err()
@@ -204,6 +206,7 @@ pub fn spawn_worker(
                                 text_output,
                                 generated_tokens,
                                 finished,
+                                finish_reason,
                                 accounting_event,
                             })
                             .is_err()

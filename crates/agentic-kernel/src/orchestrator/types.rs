@@ -169,8 +169,16 @@ pub struct TaskAttemptFinalization {
     pub attempt: u32,
     pub status: String,
     pub error: Option<String>,
+    pub termination_reason: Option<String>,
     pub output_text: String,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskPidBinding {
+    pub orch_id: u64,
+    pub task_id: String,
+    pub attempt: u32,
 }
 
 #[derive(Debug, Clone)]

@@ -435,6 +435,36 @@ pub struct OrchArtifactView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpcMessageView {
+    pub message_id: String,
+    #[serde(default)]
+    pub orchestration_id: Option<u64>,
+    #[serde(default)]
+    pub sender_pid: Option<u64>,
+    #[serde(default)]
+    pub sender_task: Option<String>,
+    #[serde(default)]
+    pub sender_attempt: Option<u32>,
+    #[serde(default)]
+    pub receiver_pid: Option<u64>,
+    #[serde(default)]
+    pub receiver_task: Option<String>,
+    #[serde(default)]
+    pub receiver_attempt: Option<u32>,
+    pub message_type: String,
+    #[serde(default)]
+    pub channel: Option<String>,
+    pub payload_preview: String,
+    pub payload_text: String,
+    pub status: String,
+    pub created_at_ms: i64,
+    #[serde(default)]
+    pub delivered_at_ms: Option<i64>,
+    #[serde(default)]
+    pub consumed_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchTaskAttemptView {
     pub attempt: u32,
     pub status: String,
@@ -452,6 +482,8 @@ pub struct OrchTaskAttemptView {
     pub completed_at_ms: Option<i64>,
     #[serde(default)]
     pub primary_artifact_id: Option<String>,
+    #[serde(default)]
+    pub termination_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -469,6 +501,8 @@ pub struct OrchStatusResponse {
     pub truncations: usize,
     pub output_chars_stored: usize,
     pub tasks: Vec<OrchTaskEntry>,
+    #[serde(default)]
+    pub ipc_messages: Vec<IpcMessageView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -517,6 +551,8 @@ pub struct OrchTaskEntry {
     pub output_artifacts: Vec<OrchArtifactView>,
     #[serde(default)]
     pub attempts: Vec<OrchTaskAttemptView>,
+    #[serde(default)]
+    pub termination_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

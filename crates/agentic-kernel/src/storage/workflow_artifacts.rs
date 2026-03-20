@@ -27,6 +27,7 @@ pub(crate) struct StoredWorkflowTaskAttempt {
     pub updated_at_ms: i64,
     pub completed_at_ms: Option<i64>,
     pub primary_artifact_id: Option<String>,
+    pub termination_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,14 +90,16 @@ impl StorageService {
                 started_at_ms,
                 updated_at_ms,
                 completed_at_ms,
-                primary_artifact_id
-            ) VALUES (?1, ?2, ?3, 'running', ?4, ?5, NULL, '', 0, 0, ?6, ?6, NULL, NULL)
+                primary_artifact_id,
+                termination_reason
+            ) VALUES (?1, ?2, ?3, 'running', ?4, ?5, NULL, '', 0, 0, ?6, ?6, NULL, NULL, NULL)
             ON CONFLICT(orchestration_id, task_id, attempt) DO UPDATE SET
                 status = excluded.status,
                 session_id = excluded.session_id,
                 pid = excluded.pid,
                 error = NULL,
-                updated_at_ms = excluded.updated_at_ms
+                updated_at_ms = excluded.updated_at_ms,
+                termination_reason = NULL
             "#,
             params![
                 orchestration_id,
@@ -164,14 +167,16 @@ impl StorageService {
                 started_at_ms,
                 updated_at_ms,
                 completed_at_ms,
-                primary_artifact_id
-            ) VALUES (?1, ?2, ?3, 'failed', NULL, NULL, ?4, '', 0, 0, ?5, ?5, ?5, NULL)
+                primary_artifact_id,
+                termination_reason
+            ) VALUES (?1, ?2, ?3, 'failed', NULL, NULL, ?4, '', 0, 0, ?5, ?5, ?5, NULL, 'spawn_failed')
             ON CONFLICT(orchestration_id, task_id, attempt) DO UPDATE SET
                 status = 'failed',
                 pid = NULL,
                 error = excluded.error,
                 updated_at_ms = excluded.updated_at_ms,
-                completed_at_ms = excluded.completed_at_ms
+                completed_at_ms = excluded.completed_at_ms,
+                termination_reason = excluded.termination_reason
             "#,
             params![orchestration_id, task_id, attempt, error, recorded_at_ms],
         )?;
@@ -185,6 +190,7 @@ impl StorageService {
         attempt: u32,
         status: &str,
         error: Option<&str>,
+        termination_reason: Option<&str>,
         output_text: &str,
         truncated: bool,
         completed_at_ms: i64,
@@ -271,8 +277,9 @@ impl StorageService {
                 started_at_ms,
                 updated_at_ms,
                 completed_at_ms,
-                primary_artifact_id
-            ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, ?9, ?9, ?10)
+                primary_artifact_id,
+                termination_reason
+            ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, ?9, ?9, ?10, ?11)
             ON CONFLICT(orchestration_id, task_id, attempt) DO UPDATE SET
                 status = excluded.status,
                 error = excluded.error,
@@ -281,7 +288,8 @@ impl StorageService {
                 truncated = excluded.truncated,
                 updated_at_ms = excluded.updated_at_ms,
                 completed_at_ms = excluded.completed_at_ms,
-                primary_artifact_id = excluded.primary_artifact_id
+                primary_artifact_id = excluded.primary_artifact_id,
+                termination_reason = excluded.termination_reason
             "#,
             params![
                 orchestration_id,
@@ -294,6 +302,7 @@ impl StorageService {
                 truncated,
                 completed_at_ms,
                 artifact.as_ref().map(|entry| entry.artifact_id.as_str()),
+                termination_reason,
             ],
         )?;
         transaction.commit()?;
@@ -353,7 +362,8 @@ impl StorageService {
                 started_at_ms,
                 updated_at_ms,
                 completed_at_ms,
-                primary_artifact_id
+                primary_artifact_id,
+                termination_reason
             FROM workflow_task_attempts
             WHERE orchestration_id = ?1
             ORDER BY task_id ASC, attempt DESC
@@ -375,6 +385,7 @@ impl StorageService {
                 updated_at_ms: row.get(11)?,
                 completed_at_ms: row.get(12)?,
                 primary_artifact_id: row.get(13)?,
+                termination_reason: row.get(14)?,
             })
         })?;
         collect_rows(rows)
@@ -474,13 +485,14 @@ impl StorageService {
                     output_preview,
                     output_chars,
                     truncated,
-                    started_at_ms,
-                    updated_at_ms,
-                    completed_at_ms,
-                    primary_artifact_id
-                FROM workflow_task_attempts
-                WHERE orchestration_id = ?1 AND task_id = ?2 AND attempt = ?3
-                "#,
+                        started_at_ms,
+                        updated_at_ms,
+                        completed_at_ms,
+                        primary_artifact_id,
+                        termination_reason
+                    FROM workflow_task_attempts
+                    WHERE orchestration_id = ?1 AND task_id = ?2 AND attempt = ?3
+                    "#,
                 params![orchestration_id, task_id, attempt],
                 |row| {
                     Ok(StoredWorkflowTaskAttempt {
@@ -498,6 +510,7 @@ impl StorageService {
                         updated_at_ms: row.get(11)?,
                         completed_at_ms: row.get(12)?,
                         primary_artifact_id: row.get(13)?,
+                        termination_reason: row.get(14)?,
                     })
                 },
             )

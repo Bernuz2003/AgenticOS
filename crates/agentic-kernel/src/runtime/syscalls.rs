@@ -1,6 +1,7 @@
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;
+use crate::orchestrator::Orchestrator;
 use crate::process::{ProcessLifecyclePolicy, ProcessState};
 use crate::scheduler::ProcessPriority;
 use crate::scheduler::ProcessScheduler;
@@ -46,10 +47,16 @@ pub(crate) struct SyscallCompletion {
 }
 
 static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(1);
+static IPC_MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_tool_call_id(pid: u64) -> String {
     let seq = TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("tool-{pid}-{seq}")
+}
+
+fn next_ipc_message_id() -> String {
+    let seq = IPC_MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("ipc-{}-{seq}", crate::storage::current_timestamp_ms())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +205,7 @@ pub(super) fn dispatch_process_syscall(
     engine: &mut LLMEngine,
     memory: &mut NeuralMemory,
     scheduler: &mut ProcessScheduler,
+    orchestrator: &Orchestrator,
     pid: u64,
     content: &str,
     syscall_cmd_tx: &mpsc::Sender<SyscallCmd>,
@@ -286,6 +294,7 @@ pub(super) fn dispatch_process_syscall(
                     engine,
                     memory,
                     scheduler,
+                    orchestrator,
                     pid,
                     invocation,
                     session_registry,
@@ -550,6 +559,7 @@ fn dispatch_action_invocation(
     engine: &mut LLMEngine,
     memory: &mut NeuralMemory,
     scheduler: &mut ProcessScheduler,
+    orchestrator: &Orchestrator,
     pid: u64,
     invocation: ActionInvocation,
     session_registry: &mut SessionRegistry,
@@ -617,15 +627,26 @@ fn dispatch_action_invocation(
                 );
                 return SyscallDispatchOutcome::None;
             };
-            let Some(message) = invocation
+            let message = invocation
                 .input
                 .get("message")
                 .and_then(|value| value.as_str())
-            else {
+                .map(str::to_string);
+            let payload = invocation.input.get("payload").cloned();
+            let message_type = invocation
+                .input
+                .get("message_type")
+                .and_then(|value| value.as_str())
+                .unwrap_or("notification");
+            let channel = invocation
+                .input
+                .get("channel")
+                .and_then(|value| value.as_str());
+            if message.is_none() && payload.is_none() {
                 audit::record(
                     storage,
                     audit::ACTION_DENIED,
-                    "action=send reason=missing_message",
+                    "action=send reason=missing_payload",
                     AuditContext::for_process(
                         session_registry.session_id_for_pid(pid),
                         pid,
@@ -635,17 +656,21 @@ fn dispatch_action_invocation(
                 let _ = engine.inject_context(
                     pid,
                     &engine.format_system_message(
-                        "ACTION Error: ACTION:send requires string field 'message'.",
+                        "ACTION Error: ACTION:send requires 'message' or 'payload'.",
                     ),
                 );
                 return SyscallDispatchOutcome::None;
-            };
+            }
             dispatch_send_action(
                 runtime_id,
                 engine,
+                orchestrator,
                 pid,
                 target_pid,
-                message,
+                message.as_deref(),
+                payload.as_ref(),
+                message_type,
+                channel,
                 session_registry,
                 storage,
             );
@@ -937,18 +962,26 @@ pub(super) fn drain_syscall_results(
 fn dispatch_send_action(
     runtime_id: &str,
     engine: &mut LLMEngine,
+    orchestrator: &Orchestrator,
     pid: u64,
     target_pid: u64,
-    message: &str,
+    message: Option<&str>,
+    payload: Option<&serde_json::Value>,
+    message_type: &str,
+    channel: Option<&str>,
     session_registry: &SessionRegistry,
     storage: &mut StorageService,
 ) {
-    let message = message.trim();
-    if message.is_empty() {
+    let normalized_message = message.map(str::trim).filter(|value| !value.is_empty());
+    let payload_text = normalized_message
+        .map(ToString::to_string)
+        .or_else(|| payload.map(|value| value.to_string()))
+        .unwrap_or_default();
+    if payload_text.is_empty() {
         audit::record(
             storage,
             audit::ACTION_DENIED,
-            "action=send reason=empty_message",
+            "action=send reason=empty_payload",
             AuditContext::for_process(
                 session_registry.session_id_for_pid(pid),
                 pid,
@@ -958,21 +991,64 @@ fn dispatch_send_action(
         let _ = engine.inject_context(
             pid,
             &engine
-                .format_system_message("ACTION Error: ACTION:send requires a non-empty 'message'."),
+                .format_system_message(
+                    "ACTION Error: ACTION:send requires a non-empty message or payload.",
+                ),
         );
         return;
     }
 
-    let msg_target = engine.format_interprocess_message(pid, message);
+    let sender_binding = orchestrator.task_binding_for_pid(pid);
+    let receiver_binding = orchestrator.task_binding_for_pid(target_pid);
+    let orchestration_id = match (sender_binding.as_ref(), receiver_binding.as_ref()) {
+        (Some(sender), Some(receiver)) if sender.orch_id == receiver.orch_id => Some(sender.orch_id),
+        (Some(sender), _) => Some(sender.orch_id),
+        (_, Some(receiver)) => Some(receiver.orch_id),
+        _ => None,
+    };
+    let message_id = next_ipc_message_id();
+    let preview = if payload_text.chars().count() > 240 {
+        let mut preview = payload_text.chars().take(240).collect::<String>();
+        preview.push_str("...");
+        preview
+    } else {
+        payload_text.clone()
+    };
+    let _ = storage.record_ipc_message(&crate::storage::NewIpcMessage {
+        message_id: message_id.clone(),
+        orchestration_id,
+        sender_pid: Some(pid),
+        sender_task_id: sender_binding.as_ref().map(|binding| binding.task_id.clone()),
+        sender_attempt: sender_binding.as_ref().map(|binding| binding.attempt),
+        receiver_pid: Some(target_pid),
+        receiver_task_id: receiver_binding.as_ref().map(|binding| binding.task_id.clone()),
+        receiver_attempt: receiver_binding.as_ref().map(|binding| binding.attempt),
+        message_type: message_type.to_string(),
+        channel: channel.map(ToString::to_string),
+        payload_preview: preview.clone(),
+        payload_text: payload_text.clone(),
+        status: "pending".to_string(),
+    });
+
+    let msg_target = engine.format_interprocess_message(pid, &payload_text);
     match engine.inject_context(target_pid, &msg_target) {
         Ok(_) => {
+            let _ = storage.update_ipc_message_delivery(
+                &message_id,
+                "delivered",
+                Some(crate::storage::current_timestamp_ms()),
+                None,
+            );
             audit::record(
                 storage,
                 audit::ACTION_COMPLETED,
                 format!(
-                    "action=send target_pid={} chars={}",
+                    "action=send message_id={} type={} channel={} target_pid={} chars={}",
+                    message_id,
+                    message_type,
+                    channel.unwrap_or("-"),
                     target_pid,
-                    message.chars().count()
+                    payload_text.chars().count()
                 ),
                 AuditContext::for_process(
                     session_registry.session_id_for_pid(pid),
@@ -988,12 +1064,13 @@ fn dispatch_send_action(
             );
         }
         Err(_) => {
+            let _ = storage.update_ipc_message_delivery(&message_id, "failed", None, None);
             audit::record(
                 storage,
                 audit::ACTION_DENIED,
                 format!(
-                    "action=send reason=target_not_found target_pid={}",
-                    target_pid
+                    "action=send message_id={} type={} reason=target_not_found target_pid={}",
+                    message_id, message_type, target_pid
                 ),
                 AuditContext::for_process(
                     session_registry.session_id_for_pid(pid),

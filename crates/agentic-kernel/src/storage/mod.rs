@@ -12,6 +12,7 @@
 
 mod accounting;
 mod audit;
+mod ipc_messages;
 mod kernel_repo;
 mod migrations;
 mod recovery;
@@ -25,6 +26,7 @@ mod workflow_artifacts;
 
 pub(crate) use accounting::StoredAccountingEvent;
 pub(crate) use audit::NewAuditEvent;
+pub(crate) use ipc_messages::NewIpcMessage;
 pub(crate) use recovery::BootRecoveryReport;
 pub(crate) use runtime::StoredRuntimeRecord;
 pub(crate) use runtime_queue::StoredRuntimeLoadQueueEntry;

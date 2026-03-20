@@ -42,13 +42,20 @@ pub(super) fn handle_finished_processes(
     let mut finished_count = 0usize;
     for pid in finished_pids {
         finished_count = finished_count.saturating_add(1);
-        if let Some(finalized) = orchestrator.mark_completed(pid) {
+        let termination_reason = runtime_registry
+            .runtime_id_for_pid(pid)
+            .and_then(|runtime_id| runtime_registry.engine(runtime_id))
+            .and_then(|engine| engine.processes.get(&pid))
+            .and_then(|process| process.termination_reason.clone())
+            .unwrap_or_else(|| "completed".to_string());
+        if let Some(finalized) = orchestrator.mark_completed(pid, Some(&termination_reason)) {
             match storage.finalize_workflow_task_attempt(
                 finalized.orch_id,
                 &finalized.task_id,
                 finalized.attempt,
                 &finalized.status,
                 finalized.error.as_deref(),
+                finalized.termination_reason.as_deref(),
                 &finalized.output_text,
                 finalized.truncated,
                 current_timestamp_ms(),
@@ -102,7 +109,7 @@ pub(super) fn handle_finished_processes(
             pid,
             tokens_generated: sched.as_ref().map(|s| s.tokens_generated as u64),
             elapsed_secs: sched.as_ref().map(|s| s.elapsed_secs),
-            reason: "completed".to_string(),
+            reason: termination_reason.clone(),
         });
         pending_events.push(KernelEvent::WorkspaceChanged {
             pid,
@@ -116,7 +123,8 @@ pub(super) fn handle_finished_processes(
             storage,
             audit::PROCESS_FINISHED,
             format!(
-                "reason=completed tokens={} elapsed={:.3}s",
+                "reason={} tokens={} elapsed={:.3}s",
+                termination_reason,
                 sched
                     .as_ref()
                     .map(|snapshot| snapshot.tokens_generated)

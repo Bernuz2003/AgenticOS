@@ -1,17 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowRight,
   CalendarClock,
   Layers3,
-  Plus,
   Search,
   Sparkles,
-  Trash2,
   Waypoints,
 } from "lucide-react";
 import { orchestrate, scheduleWorkflowJob } from "../lib/api";
 import { useSessionsStore } from "../store/sessions-store";
+import { WorkflowCanvasBuilder } from "../components/workflows/workflow-canvas-builder";
 import {
   backendOptions,
   buildSchedulePayload,
@@ -29,6 +28,7 @@ import {
   type SchedulerDraft,
   workloadOptions,
 } from "../lib/workflow-builder";
+import { taskDisplayId, validateWorkflowDraft } from "../lib/workflow-graph";
 import {
   instantiateTemplateDraft,
   workflowTemplateCategories,
@@ -81,6 +81,7 @@ export function WorkflowsPage() {
   const [draftSourceTemplateId, setDraftSourceTemplateId] = useState<string | null>(null);
   const [failurePolicy, setFailurePolicy] = useState<FailurePolicy>("fail_fast");
   const [tasks, setTasks] = useState<DraftTask[]>(() => initialTasks());
+  const [selectedTaskIndex, setSelectedTaskIndex] = useState<number | null>(0);
   const [schedulerDraft, setSchedulerDraft] = useState<SchedulerDraft>(() =>
     initialSchedulerDraft(),
   );
@@ -114,6 +115,23 @@ export function WorkflowsPage() {
     workflowTemplates[0] ??
     null;
   const rootTasks = tasks.filter((task) => task.depsText.trim() === "");
+  const selectedTask =
+    (selectedTaskIndex !== null ? tasks[selectedTaskIndex] : null) ?? tasks[0] ?? null;
+  const validation = useMemo(() => validateWorkflowDraft(tasks), [tasks]);
+
+  useEffect(() => {
+    if (tasks.length === 0) {
+      setSelectedTaskIndex(null);
+      return;
+    }
+    if (
+      selectedTaskIndex === null ||
+      selectedTaskIndex < 0 ||
+      selectedTaskIndex >= tasks.length
+    ) {
+      setSelectedTaskIndex(0);
+    }
+  }, [selectedTaskIndex, tasks.length]);
 
   function updateTask(index: number, patch: Partial<DraftTask>) {
     setTasks((current) =>
@@ -124,17 +142,34 @@ export function WorkflowsPage() {
   }
 
   function addTask() {
-    setTasks((current) => [...current, createTask(current.length + 1)]);
+    setTasks((current) => {
+      const next = [...current, createTask(current.length + 1)];
+      setSelectedTaskIndex(next.length - 1);
+      return next;
+    });
   }
 
   function removeTask(index: number) {
     setTasks((current) => current.filter((_, taskIndex) => taskIndex !== index));
+    setSelectedTaskIndex((current) => {
+      if (current === null) {
+        return 0;
+      }
+      if (current === index) {
+        return Math.max(0, index - 1);
+      }
+      if (current > index) {
+        return current - 1;
+      }
+      return current;
+    });
   }
 
   function resetBuilder() {
     setDraftSourceTemplateId(null);
     setFailurePolicy("fail_fast");
     setTasks(initialTasks());
+    setSelectedTaskIndex(0);
     setSchedulerDraft(initialSchedulerDraft());
     setSubmitError(null);
   }
@@ -149,6 +184,7 @@ export function WorkflowsPage() {
     setDraftSourceTemplateId(template.id);
     setFailurePolicy(draft.failurePolicy);
     setTasks(draft.tasks);
+    setSelectedTaskIndex(0);
     setSchedulerDraft(draft.schedulerDraft);
     setSubmitError(null);
     setView("builder");
@@ -505,174 +541,15 @@ export function WorkflowsPage() {
               </div>
             )}
 
-            <div className="mt-6 space-y-4">
-              {tasks.map((task, index) => (
-                <article
-                  key={`${task.id}-${index}`}
-                  className="rounded-3xl border border-slate-200 bg-slate-50 p-5"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
-                        Task {index + 1}
-                      </div>
-                      <div className="mt-1 text-base font-semibold text-slate-900">
-                        {task.id || `task_${index + 1}`}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => removeTask(index)}
-                      disabled={tasks.length === 1}
-                      className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 hover:text-rose-600 disabled:opacity-40"
-                      title="Remove task"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-
-                  <div className="mt-4 grid gap-4 md:grid-cols-2">
-                    <div>
-                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                        Task ID
-                      </label>
-                      <input
-                        value={task.id}
-                        onChange={(event) => updateTask(index, { id: event.target.value })}
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                        Role
-                      </label>
-                      <input
-                        value={task.role}
-                        onChange={(event) => updateTask(index, { role: event.target.value })}
-                        placeholder="Analyst, Reviewer, Synthesizer"
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                        Workload
-                      </label>
-                      <select
-                        value={task.workload}
-                        onChange={(event) =>
-                          updateTask(index, {
-                            workload: event.target.value as DraftWorkload,
-                          })
-                        }
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
-                      >
-                        {workloadOptions.map((option) => (
-                          <option key={option.value || "default"} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                        Runtime Target
-                      </label>
-                      <select
-                        value={task.backendClass}
-                        onChange={(event) =>
-                          updateTask(index, {
-                            backendClass: event.target.value as DraftBackendClass,
-                          })
-                        }
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
-                      >
-                        {backendOptions.map((option) => (
-                          <option key={option.value || "auto"} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                        Context Strategy
-                      </label>
-                      <select
-                        value={task.contextStrategy}
-                        onChange={(event) =>
-                          updateTask(index, {
-                            contextStrategy: event.target.value as DraftContextStrategy,
-                          })
-                        }
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
-                      >
-                        {contextOptions.map((option) => (
-                          <option
-                            key={option.value || "kernel_default"}
-                            value={option.value}
-                          >
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                        Context Window
-                      </label>
-                      <input
-                        value={task.contextWindowSize}
-                        onChange={(event) =>
-                          updateTask(index, { contextWindowSize: event.target.value })
-                        }
-                        placeholder="Optional token budget"
-                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Dependencies
-                    </label>
-                    <input
-                      value={task.depsText}
-                      onChange={(event) =>
-                        updateTask(index, { depsText: event.target.value })
-                      }
-                      placeholder="Comma-separated task ids"
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
-                    />
-                  </div>
-
-                  <div className="mt-4">
-                    <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Prompt
-                    </label>
-                    <textarea
-                      value={task.prompt}
-                      onChange={(event) =>
-                        updateTask(index, { prompt: event.target.value })
-                      }
-                      className="min-h-[140px] w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-relaxed text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
-                    />
-                  </div>
-                </article>
-              ))}
-            </div>
-
-            <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={addTask}
-                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-              >
-                <Plus className="h-4 w-4" />
-                Add task
-              </button>
-              <div className="text-xs text-slate-400">
-                Root tasks are the ones without dependencies.
-              </div>
+            <div className="mt-6">
+              <WorkflowCanvasBuilder
+                tasks={tasks}
+                selectedTaskIndex={selectedTaskIndex}
+                onSelectTask={setSelectedTaskIndex}
+                onTasksChange={setTasks}
+                onAddTask={addTask}
+                onRemoveTask={removeTask}
+              />
             </div>
 
             <section className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-5">
@@ -918,45 +795,205 @@ export function WorkflowsPage() {
 
               <div className="mt-5">
                 <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                  Task flow
+                  Validation
                 </div>
-                <div className="mt-3 space-y-3">
-                  {tasks.map((task, index) => (
-                    <div
-                      key={`${task.id}-${index}`}
-                      className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-semibold text-slate-900">
-                            {task.id || `task_${index + 1}`}
-                          </div>
-                          <div className="text-xs text-slate-500">
-                            {task.role || "Unassigned role"}
-                          </div>
-                        </div>
-                        <div className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                          {index + 1}
-                        </div>
+                {validation.errors.length === 0 && validation.warnings.length === 0 ? (
+                  <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                    Visual graph and workflow payload are aligned.
+                  </div>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    {validation.errors.map((message) => (
+                      <div
+                        key={`error:${message}`}
+                        className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
+                      >
+                        {message}
                       </div>
-                      <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
-                          workload {task.workload || "default"}
-                        </span>
-                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
-                          deps {task.depsText.trim() || "root"}
-                        </span>
+                    ))}
+                    {validation.warnings.map((message) => (
+                      <div
+                        key={`warning:${message}`}
+                        className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
+                      >
+                        {message}
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
+            </section>
 
-              <div className="mt-6 flex flex-col gap-3">
+            <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
+                Task Inspector
+              </div>
+              <h2 className="mt-2 text-xl font-bold text-slate-900">
+                {selectedTask && selectedTaskIndex !== null
+                  ? taskDisplayId(selectedTask, selectedTaskIndex)
+                  : "No task selected"}
+              </h2>
+
+              {selectedTask && selectedTaskIndex !== null ? (
+                <div className="mt-5 space-y-4">
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Task ID
+                    </label>
+                    <input
+                      value={selectedTask.id}
+                      onChange={(event) =>
+                        updateTask(selectedTaskIndex, { id: event.target.value })
+                      }
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Role
+                    </label>
+                    <input
+                      value={selectedTask.role}
+                      onChange={(event) =>
+                        updateTask(selectedTaskIndex, { role: event.target.value })
+                      }
+                      placeholder="Analyst, Reviewer, Synthesizer"
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                    />
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        Workload
+                      </label>
+                      <select
+                        value={selectedTask.workload}
+                        onChange={(event) =>
+                          updateTask(selectedTaskIndex, {
+                            workload: event.target.value as DraftWorkload,
+                          })
+                        }
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                      >
+                        {workloadOptions.map((option) => (
+                          <option key={option.value || "default"} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        Runtime Target
+                      </label>
+                      <select
+                        value={selectedTask.backendClass}
+                        onChange={(event) =>
+                          updateTask(selectedTaskIndex, {
+                            backendClass: event.target.value as DraftBackendClass,
+                          })
+                        }
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                      >
+                        {backendOptions.map((option) => (
+                          <option key={option.value || "auto"} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        Context Strategy
+                      </label>
+                      <select
+                        value={selectedTask.contextStrategy}
+                        onChange={(event) =>
+                          updateTask(selectedTaskIndex, {
+                            contextStrategy: event.target.value as DraftContextStrategy,
+                          })
+                        }
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                      >
+                        {contextOptions.map((option) => (
+                          <option
+                            key={option.value || "kernel_default"}
+                            value={option.value}
+                          >
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        Context Window
+                      </label>
+                      <input
+                        value={selectedTask.contextWindowSize}
+                        onChange={(event) =>
+                          updateTask(selectedTaskIndex, {
+                            contextWindowSize: event.target.value,
+                          })
+                        }
+                        placeholder="Optional token budget"
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Dependencies
+                    </label>
+                    <input
+                      value={selectedTask.depsText}
+                      onChange={(event) =>
+                        updateTask(selectedTaskIndex, { depsText: event.target.value })
+                      }
+                      placeholder="Comma-separated task ids"
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Prompt
+                    </label>
+                    <textarea
+                      value={selectedTask.prompt}
+                      onChange={(event) =>
+                        updateTask(selectedTaskIndex, { prompt: event.target.value })
+                      }
+                      className="min-h-[180px] w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-relaxed text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                  Select a node from the visual builder to edit its details.
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
+                Actions
+              </div>
+              <h2 className="mt-2 text-lg font-bold text-slate-900">
+                Launch or schedule this graph
+              </h2>
+
+              <div className="mt-5 flex flex-col gap-3">
                 <button
                   type="button"
                   onClick={handleLaunchWorkflow}
-                  disabled={submittingMode !== null}
+                  disabled={submittingMode !== null || validation.errors.length > 0}
                   className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-40"
                 >
                   <Waypoints className="h-4 w-4" />
@@ -965,7 +1002,7 @@ export function WorkflowsPage() {
                 <button
                   type="button"
                   onClick={handleScheduleWorkflow}
-                  disabled={submittingMode !== null}
+                  disabled={submittingMode !== null || validation.errors.length > 0}
                   className="inline-flex items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-5 py-3 text-sm font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-40"
                 >
                   <CalendarClock className="h-4 w-4" />
@@ -980,6 +1017,12 @@ export function WorkflowsPage() {
                   Reset draft
                 </button>
               </div>
+
+              {validation.errors.length > 0 && (
+                <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  Resolve validation errors before launch or scheduling.
+                </div>
+              )}
             </section>
 
             <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -997,9 +1040,8 @@ export function WorkflowsPage() {
                 </div>
               </div>
               <p className="mt-4 text-sm leading-6 text-slate-600">
-                Live orchestrations, scheduled jobs, run history and destructive controls
-                no longer crowd the builder. Open the dedicated runtime surface when you
-                want to observe or control execution.
+                Workflows is now the design surface. Live orchestrations, scheduled jobs
+                and destructive controls stay in the dedicated runtime view.
               </p>
               <Link
                 to="/jobs"

@@ -77,7 +77,8 @@
         "truncated",
         "started_at_ms",
         "completed_at_ms",
-        "primary_artifact_id"
+        "primary_artifact_id",
+        "termination_reason"
       ],
       "properties": {
         "attempt": {"type": "integer", "minimum": 1},
@@ -90,7 +91,47 @@
         "truncated": {"type": "boolean"},
         "started_at_ms": {"type": "integer"},
         "completed_at_ms": {"type": ["integer", "null"]},
-        "primary_artifact_id": {"type": ["string", "null"]}
+        "primary_artifact_id": {"type": ["string", "null"]},
+        "termination_reason": {"type": ["string", "null"]}
+      }
+    },
+    "ipcMessage": {
+      "type": "object",
+      "required": [
+        "message_id",
+        "orchestration_id",
+        "sender_pid",
+        "sender_task",
+        "sender_attempt",
+        "receiver_pid",
+        "receiver_task",
+        "receiver_attempt",
+        "message_type",
+        "channel",
+        "payload_preview",
+        "payload_text",
+        "status",
+        "created_at_ms",
+        "delivered_at_ms",
+        "consumed_at_ms"
+      ],
+      "properties": {
+        "message_id": {"type": "string", "minLength": 1},
+        "orchestration_id": {"type": ["integer", "null"]},
+        "sender_pid": {"type": ["integer", "null"]},
+        "sender_task": {"type": ["string", "null"]},
+        "sender_attempt": {"type": ["integer", "null"], "minimum": 1},
+        "receiver_pid": {"type": ["integer", "null"]},
+        "receiver_task": {"type": ["string", "null"]},
+        "receiver_attempt": {"type": ["integer", "null"], "minimum": 1},
+        "message_type": {"type": "string", "minLength": 1},
+        "channel": {"type": ["string", "null"]},
+        "payload_preview": {"type": "string"},
+        "payload_text": {"type": "string"},
+        "status": {"type": "string", "minLength": 1},
+        "created_at_ms": {"type": "integer"},
+        "delivered_at_ms": {"type": ["integer", "null"]},
+        "consumed_at_ms": {"type": ["integer", "null"]}
       }
     },
     "taskEntry": {
@@ -107,7 +148,8 @@
         "latest_output_truncated",
         "input_artifacts",
         "output_artifacts",
-        "attempts"
+        "attempts",
+        "termination_reason"
       ],
       "properties": {
         "task": {"type": "string", "minLength": 1},
@@ -143,7 +185,8 @@
         "attempts": {
           "type": "array",
           "items": {"$ref": "#/$defs/taskAttempt"}
-        }
+        },
+        "termination_reason": {"type": ["string", "null"]}
       }
     }
   },
@@ -167,7 +210,8 @@
             "policy",
             "truncations",
             "output_chars_stored",
-            "tasks"
+            "tasks",
+            "ipc_messages"
           ],
           "properties": {
             "orchestration_id": {"type": "integer", "minimum": 1},
@@ -185,6 +229,10 @@
             "tasks": {
               "type": "array",
               "items": {"$ref": "#/$defs/taskEntry"}
+            },
+            "ipc_messages": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/ipcMessage"}
             }
           }
         }

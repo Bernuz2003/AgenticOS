@@ -66,6 +66,20 @@ function statusTone(status: string): string {
   }
 }
 
+function primaryTerminationReason(detail: OrchestrationStatus | undefined): string | null {
+  if (!detail) {
+    return null;
+  }
+  const reasons = detail.tasks
+    .flatMap((task) => task.attempts.map((attempt) => attempt.terminationReason))
+    .filter((reason): reason is string => Boolean(reason));
+  return reasons[0] ?? null;
+}
+
+function formatReasonLabel(reason: string | null): string {
+  return reason ? reason.split("_").join(" ") : "n/a";
+}
+
 export function JobsPage() {
   const orchestrations = useSessionsStore((state) => state.orchestrations);
   const scheduledJobs = useSessionsStore((state) => state.scheduledJobs);
@@ -307,6 +321,7 @@ export function JobsPage() {
                 workflow.failed,
                 workflow.skipped,
               );
+              const terminationReason = primaryTerminationReason(detail);
               const runningTasks =
                 detail?.tasks.filter((task) => task.status === "running").map((task) => task.task) ??
                 [];
@@ -330,6 +345,11 @@ export function JobsPage() {
                         <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
                           elapsed {workflow.elapsedLabel}
                         </span>
+                        {terminationReason && (
+                          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                            {formatReasonLabel(terminationReason)}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-right">
@@ -439,6 +459,7 @@ export function JobsPage() {
             <div className="mt-6 space-y-3">
               {finishedRuns.map((workflow) => {
                 const detail = workflowDetails[workflow.orchestrationId];
+                const terminationReason = primaryTerminationReason(detail);
                 return (
                   <article
                     key={workflow.orchestrationId}
@@ -468,6 +489,11 @@ export function JobsPage() {
                           {detail && (
                             <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
                               stored chars {detail.outputCharsStored.toLocaleString()}
+                            </span>
+                          )}
+                          {terminationReason && (
+                            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                              {formatReasonLabel(terminationReason)}
                             </span>
                           )}
                         </div>

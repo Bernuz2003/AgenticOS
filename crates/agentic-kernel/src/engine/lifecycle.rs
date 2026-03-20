@@ -566,6 +566,14 @@ impl LLMEngine {
         self.processes.get(&pid).map(|p| p.max_tokens)
     }
 
+    pub fn set_process_max_tokens(&mut self, pid: u64, max_tokens: usize) -> bool {
+        if let Some(process) = self.processes.get_mut(&pid) {
+            process.max_tokens = max_tokens;
+            return true;
+        }
+        false
+    }
+
     pub fn set_generation_config(&mut self, cfg: GenerationConfig) {
         self.generation = cfg;
     }

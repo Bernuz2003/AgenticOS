@@ -185,6 +185,7 @@ pub fn stop_orchestration(
                 finalized.attempt,
                 &finalized.status,
                 finalized.error.as_deref(),
+                finalized.termination_reason.as_deref(),
                 &finalized.output_text,
                 finalized.truncated,
                 current_timestamp_ms(),
@@ -261,6 +262,9 @@ pub fn delete_orchestration(
 
     storage
         .delete_workflow_io(orch_id)
+        .map_err(|err| OrchestrationControlError::ControlFailed(err.to_string()))?;
+    storage
+        .delete_ipc_messages_for_orchestration(orch_id)
         .map_err(|err| OrchestrationControlError::ControlFailed(err.to_string()))?;
 
     for session_id in session_ids {

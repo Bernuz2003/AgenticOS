@@ -21,7 +21,7 @@ use output::{append_with_cap, build_task_prompt};
 pub use types::{
     FailurePolicy, Orchestration, Orchestrator, RetryPlan, RunningTaskOutput, SpawnRequest,
     TaskArtifact, TaskAttemptFinalization, TaskGraphDef, TaskInputArtifact, TaskNodeDef,
-    TaskStatus,
+    TaskPidBinding, TaskStatus,
 };
 use validation::validate_and_sort;
 
@@ -119,6 +119,15 @@ impl Orchestrator {
         }
     }
 
+    pub fn task_binding_for_pid(&self, pid: u64) -> Option<TaskPidBinding> {
+        let (orch_id, task_id, attempt) = self.pid_to_task.get(&pid)?.clone();
+        Some(TaskPidBinding {
+            orch_id,
+            task_id,
+            attempt,
+        })
+    }
+
     /// Mark a task whose spawn failed (routing/admission/spawn).
     pub fn mark_spawn_failed(
         &mut self,
@@ -144,6 +153,7 @@ impl Orchestrator {
             attempt,
             status: "failed".to_string(),
             error: Some(error.to_string()),
+            termination_reason: Some("spawn_failed".to_string()),
             output_text: String::new(),
             truncated: false,
         })
@@ -194,7 +204,11 @@ impl Orchestrator {
     }
 
     /// Mark a task as completed and return the finalized attempt payload.
-    pub fn mark_completed(&mut self, pid: u64) -> Option<TaskAttemptFinalization> {
+    pub fn mark_completed(
+        &mut self,
+        pid: u64,
+        termination_reason: Option<&str>,
+    ) -> Option<TaskAttemptFinalization> {
         let (orch_id, task_id, attempt) = self.pid_to_task.remove(&pid)?;
         let orch = self.orchestrations.get_mut(&orch_id)?;
         let output = orch.running_output.remove(&task_id);
@@ -207,6 +221,7 @@ impl Orchestrator {
             attempt,
             status: "completed".to_string(),
             error: None,
+            termination_reason: termination_reason.map(ToString::to_string),
             output_text: output
                 .as_ref()
                 .map(|item| item.text.clone())
@@ -216,7 +231,12 @@ impl Orchestrator {
     }
 
     /// Mark a task as failed and return the finalized attempt payload.
-    pub fn mark_failed(&mut self, pid: u64, error: &str) -> Option<TaskAttemptFinalization> {
+    pub fn mark_failed(
+        &mut self,
+        pid: u64,
+        error: &str,
+        termination_reason: Option<&str>,
+    ) -> Option<TaskAttemptFinalization> {
         let (orch_id, task_id, attempt) = self.pid_to_task.remove(&pid)?;
         let orch = self.orchestrations.get_mut(&orch_id)?;
         let output = orch.running_output.remove(&task_id);
@@ -234,6 +254,9 @@ impl Orchestrator {
             attempt,
             status: "failed".to_string(),
             error: Some(error.to_string()),
+            termination_reason: termination_reason
+                .map(ToString::to_string)
+                .or_else(|| Some("worker_error".to_string())),
             output_text: output
                 .as_ref()
                 .map(|item| item.text.clone())
@@ -439,6 +462,7 @@ impl Orchestrator {
                         attempt,
                         status: "skipped".to_string(),
                         error: Some("orchestration_stopped".to_string()),
+                        termination_reason: Some("orchestration_stopped".to_string()),
                         output_text: output
                             .as_ref()
                             .map(|item| item.text.clone())

@@ -143,7 +143,7 @@ fn linear_graph_advances_step_by_step() {
     let pid_a = 100;
     orch.register_pid(pid_a, id, &spawns[0].task_id, spawns[0].attempt);
     orch.append_output(pid_a, "result of A");
-    orch.mark_completed(pid_a);
+    orch.mark_completed(pid_a, None);
     orch.record_completed_artifact(
         id,
         "A",
@@ -166,7 +166,7 @@ fn linear_graph_advances_step_by_step() {
     let pid_b = 101;
     orch.register_pid(pid_b, id, &ready[0].task_id, ready[0].attempt);
     orch.append_output(pid_b, "result of B");
-    orch.mark_completed(pid_b);
+    orch.mark_completed(pid_b, None);
     orch.record_completed_artifact(
         id,
         "B",
@@ -186,7 +186,7 @@ fn linear_graph_advances_step_by_step() {
 
     let pid_c = 102;
     orch.register_pid(pid_c, id, &ready[0].task_id, ready[0].attempt);
-    orch.mark_completed(pid_c);
+    orch.mark_completed(pid_c, None);
 
     let (ready, _) = orch.advance();
     assert!(ready.is_empty());
@@ -201,7 +201,7 @@ fn parallel_graph_spawns_b_and_c_after_a() {
     let pid_a = 100;
     orch.register_pid(pid_a, id, "A", 1);
     orch.append_output(pid_a, "A output");
-    orch.mark_completed(pid_a);
+    orch.mark_completed(pid_a, None);
     orch.record_completed_artifact(
         id,
         "A",
@@ -234,8 +234,8 @@ fn parallel_graph_spawns_b_and_c_after_a() {
     orch.register_pid(pid_c, id, "C", req_c.attempt);
     orch.append_output(pid_b, "B output");
     orch.append_output(pid_c, "C output");
-    orch.mark_completed(pid_b);
-    orch.mark_completed(pid_c);
+    orch.mark_completed(pid_b, None);
+    orch.mark_completed(pid_c, None);
     orch.record_completed_artifact(
         id,
         "B",
@@ -273,7 +273,7 @@ fn fail_fast_skips_pending_on_failure() {
 
     let pid_a = 100;
     orch.register_pid(pid_a, id, &spawns[0].task_id, spawns[0].attempt);
-    orch.mark_failed(pid_a, "process error");
+    orch.mark_failed(pid_a, "process error", None);
 
     let (ready, kill_pids) = orch.advance();
     assert!(ready.is_empty());
@@ -300,7 +300,7 @@ fn fail_fast_kills_running_tasks() {
 
     let pid_a = 100;
     orch.register_pid(pid_a, id, "A", 1);
-    orch.mark_completed(pid_a);
+    orch.mark_completed(pid_a, None);
     orch.record_completed_artifact(
         id,
         "A",
@@ -327,7 +327,7 @@ fn fail_fast_kills_running_tasks() {
         .expect("C ready");
     orch.register_pid(pid_b, id, "B", req_b.attempt);
     orch.register_pid(pid_c, id, "C", req_c.attempt);
-    orch.mark_failed(pid_b, "oops");
+    orch.mark_failed(pid_b, "oops", None);
 
     let (ready, kill_pids) = orch.advance();
     assert!(ready.is_empty());
@@ -343,7 +343,7 @@ fn best_effort_skips_dependents_of_failed() {
     let pid_a = 100;
     orch.register_pid(pid_a, id, "A", 1);
     orch.append_output(pid_a, "A done");
-    orch.mark_completed(pid_a);
+    orch.mark_completed(pid_a, None);
     orch.record_completed_artifact(
         id,
         "A",
@@ -371,9 +371,9 @@ fn best_effort_skips_dependents_of_failed() {
         .expect("C ready");
     orch.register_pid(pid_b, id, "B", req_b.attempt);
     orch.register_pid(pid_c, id, "C", req_c.attempt);
-    orch.mark_failed(pid_b, "B error");
+    orch.mark_failed(pid_b, "B error", None);
     orch.append_output(pid_c, "C output");
-    orch.mark_completed(pid_c);
+    orch.mark_completed(pid_c, None);
     orch.record_completed_artifact(
         id,
         "C",
@@ -404,7 +404,7 @@ fn retry_resets_subtree_and_increments_attempt() {
     let pid_a = 100;
     orch.register_pid(pid_a, id, &spawns[0].task_id, spawns[0].attempt);
     orch.append_output(pid_a, "A output");
-    orch.mark_completed(pid_a);
+    orch.mark_completed(pid_a, None);
     orch.record_completed_artifact(
         id,
         "A",
@@ -422,7 +422,7 @@ fn retry_resets_subtree_and_increments_attempt() {
     let pid_b = 101;
     orch.register_pid(pid_b, id, "B", task_b.attempt);
     orch.append_output(pid_b, "B output");
-    orch.mark_completed(pid_b);
+    orch.mark_completed(pid_b, None);
     orch.record_completed_artifact(
         id,
         "B",

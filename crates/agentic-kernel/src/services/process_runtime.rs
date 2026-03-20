@@ -335,6 +335,8 @@ fn attach_process_resources(
     workload: WorkloadClass,
     priority: ProcessPriority,
 ) -> Result<(), String> {
+    let quota = crate::scheduler::ProcessQuota::defaults_for(workload);
+    let _ = engine.set_process_max_tokens(pid, quota.max_tokens);
     let backend_capabilities = engine.loaded_backend_capabilities();
     let should_bind_resident_slot = backend_capabilities.resident_kv
         || backend_capabilities.persistent_slots

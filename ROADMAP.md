@@ -308,7 +308,7 @@ Perché rende immediatamente sfruttabile il motore di orchestrazione e abbassa e
 
 ## M40) IPC evoluto / Message Bus tipizzato
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 ### Obiettivo
 
@@ -324,6 +324,13 @@ Evolvere la semplice `ACTION:send` in un meccanismo di comunicazione più robust
 ### Perché viene dopo artifacts
 
 Perché prima vogliamo una base artifact-first; l’IPC avanzato va aggiunto solo dopo.
+
+### DONE
+
+* `ACTION:send` converge sul nuovo bus senza rompere la compatibilità outward
+* persistenza tipizzata dei messaggi con sender/receiver, scope workflow/task, payload e stato di delivery
+* osservabilità dei messaggi nel dettaglio del workflow run con tab dedicata `Messages`
+* integrazione del bus con `ORCHESTRATION_STATUS`, audit e diagnostica runtime
 
 ---
 
@@ -370,7 +377,7 @@ Perché apre il sistema al “mondo reale”, ma solo dopo che tool permissions,
 
 ## M43) Visual Workflow Builder
 
-**Status:** `TODO`
+**Status:** `DONE`
 
 ### Obiettivo
 
@@ -388,17 +395,14 @@ Perché prima bisogna stabilizzare:
 
 Il visual builder ha senso solo sopra primitive già solide.
 
-### Slice implemented (DONE)
+### DONE
 
 * separazione netta tra `Workflows` design surface e `Jobs` runtime surface
-* pagina di dettaglio del run con inspector dedicato per task, artifacts, transcript ed events
+* pagina di dettaglio del run con inspector dedicato per task, artifacts, transcript, events e messaggi IPC
 * controllo operativo dei run e dei job dalla GUI (`stop`, `delete`, `enable/disable`)
-
-### Resta aperto
-
-* canvas visuale vero e proprio per comporre e modificare il DAG
-* editing drag-and-drop del grafo
-* visual graph builder completo sopra le primitive ora stabilizzate
+* canvas visuale reale per comporre e modificare il DAG sopra il modello `DraftTask[]` esistente
+* editing visuale drag-and-drop del grafo con aggiunta/rimozione dipendenze e validazioni anti-ciclo
+* inspector laterale strutturato per il task selezionato, senza introdurre una seconda source of truth
 
 ---
 

@@ -1750,6 +1750,7 @@ fn workflow_control_schema_files_validate_examples() {
                         "current_attempt": 1,
                         "pid": null,
                         "error": null,
+                        "termination_reason": "completed",
                         "context": null,
                         "latest_output_preview": "Plan output",
                         "latest_output_text": "Plan output",
@@ -1779,13 +1780,15 @@ fn workflow_control_schema_files_validate_examples() {
                                 "output_preview": "Plan output",
                                 "output_chars": 11,
                                 "truncated": false,
+                                "termination_reason": "completed",
                                 "started_at_ms": 900,
                                 "completed_at_ms": 1000,
                                 "primary_artifact_id": "art-1"
                             }
                         ]
                     }
-                ]
+                ],
+                "ipc_messages": []
             },
             "error": null,
             "warnings": []

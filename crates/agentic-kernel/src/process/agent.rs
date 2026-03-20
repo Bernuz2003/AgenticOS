@@ -31,6 +31,7 @@ pub struct AgentProcess {
     pub context_policy: ContextPolicy,
     pub context_state: ContextState,
     pub pending_human_request: Option<HumanInputRequest>,
+    pub termination_reason: Option<String>,
     rendered_prompt_cache: String,
     resident_prompt_checkpoint_bytes: usize,
 }
@@ -92,6 +93,7 @@ impl AgentProcess {
                 episodic_segments: Vec::new(),
             },
             pending_human_request: None,
+            termination_reason: None,
             rendered_prompt_cache: initial_segment_text,
             resident_prompt_checkpoint_bytes: 0,
         }

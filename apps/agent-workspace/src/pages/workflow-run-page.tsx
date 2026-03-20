@@ -27,7 +27,7 @@ import {
 } from "../lib/api";
 import { useSessionsStore } from "../store/sessions-store";
 
-type InspectorTab = "details" | "transcript" | "artifacts" | "events";
+type InspectorTab = "details" | "transcript" | "artifacts" | "events" | "messages";
 
 function formatTimestamp(timestampMs: number | null): string {
   if (!timestampMs) {
@@ -60,6 +60,13 @@ function formatBytes(bytes: number): string {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatReasonLabel(reason: string | null | undefined): string {
+  if (!reason) {
+    return "n/a";
+  }
+  return reason.split("_").join(" ");
 }
 
 function taskTone(status: string): string {
@@ -187,6 +194,32 @@ export function WorkflowRunPage() {
       null
     );
   }, [selectedTask]);
+  const selectedMessages = useMemo(() => {
+    if (!detail) {
+      return [];
+    }
+    if (!selectedTask) {
+      return detail.ipcMessages;
+    }
+    return detail.ipcMessages.filter(
+      (message) =>
+        message.senderTask === selectedTask.task ||
+        message.receiverTask === selectedTask.task,
+    );
+  }, [detail, selectedTask]);
+  const runTerminationReasons = useMemo(
+    () =>
+      detail
+        ? [
+            ...new Set(
+              detail.tasks
+                .flatMap((task) => task.attempts.map((attempt) => attempt.terminationReason))
+                .filter((value): value is string => Boolean(value)),
+            ),
+          ]
+        : [],
+    [detail],
+  );
 
   useEffect(() => {
     if (!selectedAttempt?.sessionId) {
@@ -432,6 +465,17 @@ export function WorkflowRunPage() {
           <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
             truncations {detail.truncations}
           </span>
+          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+            ipc messages {detail.ipcMessages.length}
+          </span>
+          {runTerminationReasons.map((reason) => (
+            <span
+              key={reason}
+              className="rounded-full border border-slate-200 bg-white px-2.5 py-1"
+            >
+              {formatReasonLabel(reason)}
+            </span>
+          ))}
         </div>
       </header>
 
@@ -511,6 +555,11 @@ export function WorkflowRunPage() {
                     <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
                       artifacts {task.outputArtifacts.length}
                     </span>
+                    {task.terminationReason && (
+                      <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                        {formatReasonLabel(task.terminationReason)}
+                      </span>
+                    )}
                     {task.currentAttempt !== null && (
                       <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
                         current {task.currentAttempt}
@@ -554,7 +603,7 @@ export function WorkflowRunPage() {
             </div>
           </div>
 
-          <div className="mt-5 grid grid-cols-4 gap-2">
+          <div className="mt-5 grid grid-cols-5 gap-2">
             {[
               { id: "details" as InspectorTab, label: "Details", icon: FileStack },
               {
@@ -564,6 +613,7 @@ export function WorkflowRunPage() {
               },
               { id: "artifacts" as InspectorTab, label: "Artifacts", icon: Layers3 },
               { id: "events" as InspectorTab, label: "Events", icon: Clock3 },
+              { id: "messages" as InspectorTab, label: "IPC", icon: Waypoints },
             ].map((entry) => {
               const Icon = entry.icon;
               return (
@@ -624,6 +674,15 @@ export function WorkflowRunPage() {
               {selectedTask.error && (
                 <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                   {selectedTask.error}
+                </div>
+              )}
+
+              {selectedTask.terminationReason && (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                  Termination reason:{" "}
+                  <span className="font-semibold">
+                    {formatReasonLabel(selectedTask.terminationReason)}
+                  </span>
                 </div>
               )}
 
@@ -746,6 +805,11 @@ export function WorkflowRunPage() {
                             completed {formatTimestamp(attempt.completedAtMs)}
                           </span>
                         )}
+                        {attempt.terminationReason && (
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
+                            reason {formatReasonLabel(attempt.terminationReason)}
+                          </span>
+                        )}
                         {attempt.pid && (
                           <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1">
                             pid {attempt.pid}
@@ -801,6 +865,74 @@ export function WorkflowRunPage() {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {selectedTask && inspectorTab === "messages" && (
+            <div className="mt-6 space-y-4">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                  IPC / Message Bus
+                </div>
+                <div className="mt-2 text-sm text-slate-500">
+                  Structured process-to-process messages for this task and run.
+                </div>
+              </div>
+
+              {selectedMessages.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-5 py-8 text-sm text-slate-500">
+                  No IPC messages captured for the selected task yet.
+                </div>
+              ) : (
+                selectedMessages.map((message) => (
+                  <article
+                    key={message.messageId}
+                    className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-indigo-700">
+                          {message.messageType}
+                        </span>
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                          {message.status}
+                        </span>
+                        {message.channel && (
+                          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                            {message.channel}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {formatTimestamp(message.createdAtMs)}
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                      <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                        from {message.senderTask ?? `pid ${message.senderPid ?? "?"}`}
+                      </span>
+                      <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                        to {message.receiverTask ?? `pid ${message.receiverPid ?? "?"}`}
+                      </span>
+                      {message.senderAttempt !== null && (
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                          sender attempt {message.senderAttempt}
+                        </span>
+                      )}
+                      {message.receiverAttempt !== null && (
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                          receiver attempt {message.receiverAttempt}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="mt-3 whitespace-pre-wrap break-words rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-700">
+                      {message.payloadText || message.payloadPreview}
+                    </div>
+                  </article>
+                ))
+              )}
             </div>
           )}
 

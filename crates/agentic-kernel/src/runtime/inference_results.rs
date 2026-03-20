@@ -6,6 +6,7 @@ use agentic_control_models::KernelEvent;
 
 use crate::accounting::BackendAccountingEvent;
 use crate::audit::{self, AuditContext};
+use crate::backend::InferenceFinishReason;
 use crate::inference_worker::InferenceResult;
 use crate::memory::NeuralMemory;
 use crate::orchestrator::Orchestrator;
@@ -114,6 +115,7 @@ pub(super) fn drain_worker_results(
                 text_output,
                 generated_tokens,
                 finished,
+                finish_reason,
                 accounting_event,
             } => {
                 let mut process = *process;
@@ -170,6 +172,15 @@ pub(super) fn drain_worker_results(
                         } else {
                             ProcessState::Finished
                         };
+                        process.termination_reason =
+                            Some("stop_marker_detected".to_string());
+                    } else if finished {
+                        process.termination_reason = Some(
+                            finish_reason
+                                .unwrap_or(InferenceFinishReason::ModelStop)
+                                .as_str()
+                                .to_string(),
+                        );
                     }
 
                     process.mark_resident_prompt_checkpoint();
@@ -212,6 +223,7 @@ pub(super) fn drain_worker_results(
                                 engine,
                                 memory,
                                 scheduler,
+                                orchestrator,
                                 pid,
                                 &content,
                                 syscall_cmd_tx,
@@ -284,6 +296,8 @@ pub(super) fn drain_worker_results(
                     if let Some(engine) = runtime_registry.engine_mut(&runtime_id) {
                         if let Some(proc) = engine.processes.get_mut(&pid) {
                             proc.state = ProcessState::Finished;
+                            proc.termination_reason =
+                                Some("token_quota_reached".to_string());
                         }
                     }
                 }
@@ -352,13 +366,16 @@ pub(super) fn drain_worker_results(
                     accounting_event,
                 );
                 tracing::error!(pid, %error, "Process error from worker, killing");
-                if let Some(finalized) = orchestrator.mark_failed(pid, &error) {
+                if let Some(finalized) =
+                    orchestrator.mark_failed(pid, &error, Some("worker_error"))
+                {
                     match storage.finalize_workflow_task_attempt(
                         finalized.orch_id,
                         &finalized.task_id,
                         finalized.attempt,
                         &finalized.status,
                         finalized.error.as_deref(),
+                        finalized.termination_reason.as_deref(),
                         &finalized.output_text,
                         finalized.truncated,
                         current_timestamp_ms(),
