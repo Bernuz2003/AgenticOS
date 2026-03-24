@@ -929,22 +929,6 @@ export function WorkflowsPage() {
                         ))}
                       </select>
                     </div>
-
-                    <div>
-                      <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">
-                        Context Window
-                      </label>
-                      <input
-                        value={selectedTask.contextWindowSize}
-                        onChange={(event) =>
-                          updateTask(selectedTaskIndex, {
-                            contextWindowSize: event.target.value,
-                          })
-                        }
-                        placeholder="Optional token budget"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10"
-                      />
-                    </div>
                   </div>
 
                   <div>

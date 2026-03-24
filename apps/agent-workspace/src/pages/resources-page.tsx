@@ -16,6 +16,8 @@ import {
   type OrchestrationStatus,
 } from "../lib/api";
 import {
+  localRuntimeStateLabel,
+  localRuntimeStateTone,
   runtimeStateLabel,
   runtimeStateTone,
   statusTone,
@@ -161,6 +163,7 @@ export function ControlCenterPage() {
     globalAccounting,
     memory,
     runtimeInstances,
+    managedLocalRuntimes,
     resourceGovernor,
     runtimeLoadQueue,
     globalAuditEvents,
@@ -504,6 +507,72 @@ export function ControlCenterPage() {
               <div className="text-sm text-slate-500">
                 No backend capability snapshot available.
               </div>
+            )}
+          </div>
+
+          <div className="mt-6 space-y-3">
+            <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
+              Local Runtime Manager
+            </div>
+            {managedLocalRuntimes.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-5 py-6 text-sm text-slate-500">
+                No managed local family runtime is active yet.
+              </div>
+            ) : (
+              managedLocalRuntimes.map((runtime) => (
+                <div
+                  key={`${runtime.family}:${runtime.logicalModelId}`}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-4"
+                >
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-sm font-semibold text-slate-900">
+                          {runtime.family} runtime
+                        </div>
+                        <span
+                          className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${localRuntimeStateTone(runtime.state)}`}
+                        >
+                          {localRuntimeStateLabel(runtime.state)}
+                        </span>
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-600">
+                          {runtime.managedByKernel ? "managed" : "external"}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        {friendlyModelLabel(runtime.logicalModelId)} · port {runtime.port}
+                      </div>
+                      {runtime.lastError ? (
+                        <div className="mt-1 text-xs text-rose-600">
+                          {runtime.lastError}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 text-right text-xs lg:grid-cols-3">
+                      <div>
+                        <div className="text-slate-500">Context</div>
+                        <div className="font-medium text-slate-900">
+                          {runtime.contextWindowTokens
+                            ? runtime.contextWindowTokens.toLocaleString()
+                            : "n/a"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Endpoint</div>
+                        <div className="font-medium text-slate-900">
+                          127.0.0.1:{runtime.port}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Slots</div>
+                        <div className="font-medium text-slate-900">
+                          {runtime.slotSaveDir.split("/").slice(-2).join("/")}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))
             )}
           </div>
 

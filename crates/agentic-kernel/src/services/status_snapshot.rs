@@ -3,14 +3,17 @@ use std::collections::{HashMap, HashSet};
 use agentic_control_models::{
     ArtifactListResponse, BackendCapabilitiesView, BackendTelemetryView,
     ContextStatusSnapshot as ControlContextStatusSnapshot, GenerationStatus, HumanInputRequestView,
-    IpcMessageView, JobsStatus, MemoryStatus, ModelStatus, OrchArtifactRefView, OrchArtifactView,
-    OrchStatusResponse, OrchSummaryResponse, OrchTaskAttemptView, OrchTaskEntry,
-    OrchestrationListResponse, OrchestrationsStatus, PidStatusResponse, ProcessPermissionsView,
-    ProcessesStatus, ResourceGovernorStatusView, RuntimeInstanceView, RuntimeLoadQueueEntryView,
-    ScheduledJobListResponse, SchedulerStatus, StatusResponse,
+    IpcMessageView, JobsStatus, ManagedLocalRuntimeView, MemoryStatus, ModelStatus,
+    OrchArtifactRefView, OrchArtifactView, OrchStatusResponse, OrchSummaryResponse,
+    OrchTaskAttemptView, OrchTaskEntry, OrchestrationListResponse, OrchestrationsStatus,
+    PidStatusResponse, ProcessPermissionsView, ProcessesStatus, ResourceGovernorStatusView,
+    RuntimeInstanceView, RuntimeLoadQueueEntryView, ScheduledJobListResponse, SchedulerStatus,
+    StatusResponse,
 };
 
-use crate::backend::{runtime_backend_telemetry, BackendCapabilities, RuntimeModel};
+use crate::backend::{
+    managed_runtime_views, runtime_backend_telemetry, BackendCapabilities, RuntimeModel,
+};
 use crate::commands::MetricsState;
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
@@ -100,6 +103,21 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
             updated_at_ms: entry.updated_at_ms,
         })
         .collect();
+    let managed_local_runtimes: Vec<ManagedLocalRuntimeView> = managed_runtime_views()
+        .into_iter()
+        .map(|runtime| ManagedLocalRuntimeView {
+            family: runtime.family,
+            logical_model_id: runtime.logical_model_id,
+            display_path: runtime.display_path,
+            state: runtime.state,
+            endpoint: runtime.endpoint,
+            port: runtime.port,
+            context_window_tokens: runtime.context_window_tokens,
+            slot_save_dir: runtime.slot_save_dir,
+            managed_by_kernel: runtime.managed_by_kernel,
+            last_error: runtime.last_error,
+        })
+        .collect();
     let global_accounting = deps
         .storage
         .global_accounting_summary()
@@ -150,6 +168,7 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                         .or_else(|| runtime_backend_telemetry(&engine.backend_id)),
                     loaded_remote_model,
                     runtime_instances: runtime_instances.clone(),
+                    managed_local_runtimes: managed_local_runtimes.clone(),
                     resource_governor: Some(governor_view.clone()),
                     runtime_load_queue: runtime_load_queue.clone(),
                 },
@@ -227,6 +246,7 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
                     loaded_backend_telemetry: None,
                     loaded_remote_model: None,
                     runtime_instances: runtime_instances.clone(),
+                    managed_local_runtimes: managed_local_runtimes.clone(),
                     resource_governor: Some(governor_view.clone()),
                     runtime_load_queue: runtime_load_queue.clone(),
                 },
@@ -410,7 +430,7 @@ pub fn build_orchestration_status(
                         attempt: input.producer_attempt,
                         kind: source
                             .map(|artifact| artifact.kind.clone())
-                            .unwrap_or_else(|| "task_output".to_string()),
+                            .unwrap_or_else(|| "task_result".to_string()),
                         label: source
                             .map(|artifact| artifact.label.clone())
                             .unwrap_or_else(|| "task artifact".to_string()),
@@ -579,6 +599,7 @@ pub fn build_orchestration_status(
                 receiver_pid: message.receiver_pid,
                 receiver_task: message.receiver_task_id,
                 receiver_attempt: message.receiver_attempt,
+                receiver_role: message.receiver_role,
                 message_type: message.message_type,
                 channel: message.channel,
                 payload_preview: message.payload_preview,
@@ -587,6 +608,7 @@ pub fn build_orchestration_status(
                 created_at_ms: message.created_at_ms,
                 delivered_at_ms: message.delivered_at_ms,
                 consumed_at_ms: message.consumed_at_ms,
+                failed_at_ms: message.failed_at_ms,
             })
             .collect(),
     })
@@ -959,6 +981,7 @@ fn map_context_snapshot(
 
 fn map_human_input_request(request: &crate::process::HumanInputRequest) -> HumanInputRequestView {
     HumanInputRequestView {
+        request_id: request.request_id.clone(),
         kind: request.kind.as_str().to_string(),
         question: request.question.clone(),
         details: request.details.clone(),

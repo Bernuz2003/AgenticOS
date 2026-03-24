@@ -233,7 +233,7 @@ mod tests {
             build_agent_capability_manifest(&registry, ToolCaller::Programmatic);
 
         assert!(agent_text_manifest.actions.is_empty());
-        assert_eq!(supervisor_manifest.actions.len(), 2);
+        assert_eq!(supervisor_manifest.actions.len(), 4);
         assert!(programmatic_manifest.actions.is_empty());
     }
 }

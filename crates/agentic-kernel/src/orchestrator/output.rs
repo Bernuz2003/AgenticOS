@@ -1,28 +1,42 @@
 use super::{TaskInputArtifact, TaskNodeDef};
 
 const TRUNCATION_MARKER: &str = "\n[TRUNCATED]\n";
+const WORKFLOW_TASK_CONTRACT: &str = "\
+You are executing one task inside a structured workflow pipeline.
+- Treat upstream artifacts as authoritative inputs from previous tasks.
+- Use tools only when necessary to complete the task.
+- Do not include planning chatter, repeated tool intentions, or transcript-style narration in the durable result.
+- Your final answer must contain a section titled [Result Artifact] with the clean result that downstream tasks should consume.
+- Keep extra notes short and place them after the result artifact.";
 
 pub(crate) fn build_task_prompt(
     task: &TaskNodeDef,
     input_artifacts: &[TaskInputArtifact],
 ) -> String {
-    let base_prompt = match task
+    let task_prompt = match task
         .role
         .as_deref()
         .map(str::trim)
         .filter(|role| !role.is_empty())
     {
-        Some(role) => format!("[Task role]\n{}\n\n[Task]\n{}", role, task.prompt),
-        None => task.prompt.clone(),
+        Some(role) => format!(
+            "[Task role]\n{}\n\n[Task instructions]\n{}",
+            role, task.prompt
+        ),
+        None => format!("[Task instructions]\n{}", task.prompt),
     };
-    let mut context_parts = Vec::new();
+    let mut sections = vec![format!(
+        "[Workflow task contract]\n{}",
+        WORKFLOW_TASK_CONTRACT
+    )];
+    let mut artifact_sections = Vec::new();
     for artifact in input_artifacts {
         if artifact.content_text.trim().is_empty() {
             continue;
         }
 
-        context_parts.push(format!(
-            "[Artifact from task \"{}\" attempt {} | id={} | type={}]:\n{}",
+        artifact_sections.push(format!(
+            "[Result artifact from task \"{}\" attempt {} | id={} | type={}]\n{}",
             artifact.producer_task_id,
             artifact.producer_attempt,
             artifact.artifact_id,
@@ -31,15 +45,15 @@ pub(crate) fn build_task_prompt(
         ));
     }
 
-    if context_parts.is_empty() {
-        base_prompt
-    } else {
-        format!(
-            "{}\n\n[Your task]:\n{}",
-            context_parts.join("\n\n"),
-            base_prompt,
-        )
+    if !artifact_sections.is_empty() {
+        sections.push(format!(
+            "[Upstream result artifacts]\n{}",
+            artifact_sections.join("\n\n")
+        ));
     }
+
+    sections.push(task_prompt);
+    sections.join("\n\n")
 }
 
 pub(crate) fn append_with_cap(

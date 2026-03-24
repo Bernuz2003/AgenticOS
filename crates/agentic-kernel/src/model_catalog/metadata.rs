@@ -13,6 +13,8 @@ pub struct ModelMetadata {
     #[serde(default)]
     pub architecture: Option<String>,
     #[serde(default)]
+    pub max_context_tokens: Option<usize>,
+    #[serde(default)]
     pub backend_preference: Option<String>,
     #[serde(default)]
     pub chat_template: Option<String>,
@@ -32,7 +34,7 @@ impl ModelMetadata {
     }
 }
 
-pub(super) fn infer_metadata_path(model_path: &Path) -> Option<PathBuf> {
+pub(crate) fn infer_metadata_path(model_path: &Path) -> Option<PathBuf> {
     let parent = model_path.parent()?;
     let sidecar = parent.join("metadata.json");
     if sidecar.exists() {
@@ -48,7 +50,7 @@ pub(super) fn infer_metadata_path(model_path: &Path) -> Option<PathBuf> {
     None
 }
 
-pub(super) fn load_model_metadata(path: &Path) -> Option<ModelMetadata> {
+pub(crate) fn load_model_metadata(path: &Path) -> Option<ModelMetadata> {
     let raw = fs::read_to_string(path).ok()?;
     serde_json::from_str::<ModelMetadata>(&raw).ok()
 }
@@ -150,6 +152,9 @@ pub(super) fn merge_model_metadata(
             }
             if overlay.architecture.is_some() {
                 base.architecture = overlay.architecture;
+            }
+            if overlay.max_context_tokens.is_some() {
+                base.max_context_tokens = overlay.max_context_tokens;
             }
             if overlay.backend_preference.is_some() {
                 base.backend_preference = overlay.backend_preference;

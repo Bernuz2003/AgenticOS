@@ -1,0 +1,6 @@
+{
+  "family": "Qwen",
+  "architecture": "qwen3",
+  "backend_preference": "external-llamacpp",
+  "max_context_tokens": 262144
+}

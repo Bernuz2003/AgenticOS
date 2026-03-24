@@ -17,6 +17,7 @@ mod tests;
 mod workload;
 
 pub use metadata::ModelMetadata;
+pub(crate) use metadata::{infer_metadata_path, load_model_metadata};
 pub use remote_catalog::{RemoteModelEntry, RemoteProviderEntry};
 pub use workload::{infer_workload_class, parse_workload_label, WorkloadClass};
 

@@ -15,7 +15,10 @@ mod remote;
 mod remote_adapter;
 
 pub(crate) use local::diagnose_external_backend;
-use local::ExternalLlamaCppBackend;
+pub(crate) use local::managed_runtime_views;
+pub(crate) use local::shutdown_managed_runtimes;
+#[allow(unused_imports)]
+pub(crate) use local::ExternalLlamaCppBackend;
 use remote::RemoteOpenAICompatibleBackend;
 
 #[cfg(test)]
@@ -175,16 +178,26 @@ pub fn driver_descriptor(backend_id: &str) -> Option<&'static DriverDescriptor> 
         .find(|driver| driver.id == backend_id)
 }
 
-pub(crate) fn ensure_runtime_backend_ready(backend_id: &str) -> Result<(), String> {
+pub(crate) fn ensure_runtime_backend_ready_for_target(
+    backend_id: &str,
+    family: PromptFamily,
+    _reference: &str,
+) -> Result<(), String> {
     match backend_id {
-        "external-llamacpp" => local::ensure_runtime_ready(),
+        "external-llamacpp" => local::runtime_manager::ensure_runtime_ready_for_family(family)
+            .map_err(|err| {
+                format!(
+                    "external-llamacpp is unavailable for family '{:?}': {}",
+                    family, err
+                )
+            }),
         _ => Ok(()),
     }
 }
 
 fn is_driver_runtime_loadable(driver: &DriverDescriptor) -> bool {
     match driver.id {
-        "external-llamacpp" => local::runtime_ready(),
+        "external-llamacpp" => local::runtime_manager::runtime_driver_available(),
         "openai-responses" | "groq-responses" | "openrouter" => remote::runtime_ready(driver.id),
         _ => driver.available && driver.load_supported,
     }
@@ -193,7 +206,7 @@ fn is_driver_runtime_loadable(driver: &DriverDescriptor) -> bool {
 fn runtime_driver_flags(driver: &DriverDescriptor) -> (bool, bool) {
     match driver.id {
         "external-llamacpp" => {
-            let ready = local::runtime_ready();
+            let ready = local::runtime_manager::runtime_driver_available();
             (ready, ready)
         }
         "openai-responses" | "groq-responses" | "openrouter" => {
@@ -201,6 +214,14 @@ fn runtime_driver_flags(driver: &DriverDescriptor) -> (bool, bool) {
             (ready, ready)
         }
         _ => (driver.available, driver.load_supported),
+    }
+}
+
+fn driver_loadability_detail(driver: &DriverDescriptor) -> String {
+    match driver.id {
+        "external-llamacpp" => local::runtime_driver_unavailability_reason()
+            .unwrap_or_else(|| driver.note.to_string()),
+        _ => driver.note.to_string(),
     }
 }
 
@@ -226,10 +247,11 @@ fn default_runtime_driver_for_model(
 
 pub(crate) fn persist_context_slot_payload_for_backend(
     backend_id: &str,
+    family: PromptFamily,
     slot_id: ContextSlotId,
     final_path: &Path,
 ) -> Result<SlotPersistenceKind, String> {
-    local::persist_context_slot_payload_for_backend(backend_id, slot_id, final_path)
+    local::persist_context_slot_payload_for_backend(backend_id, family, slot_id, final_path)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -299,7 +321,11 @@ pub fn resolve_driver_for_model(
                     resolution_source: "metadata-preference-fallback",
                     resolution_rationale: format!(
                         "preferred driver '{}' is registered but not loadable yet for family {:?}{}; falling back to '{}': {}",
-                        preferred_id, family, architecture_label, fallback_driver.id, driver.note
+                        preferred_id,
+                        family,
+                        architecture_label,
+                        fallback_driver.id,
+                        driver_loadability_detail(driver)
                     ),
                     available,
                     load_supported,
@@ -307,8 +333,11 @@ pub fn resolve_driver_for_model(
             }
 
             return Err(format!(
-                "Preferred driver '{}' is registered but not loadable, and no compatible fallback is available for family {:?}{}.",
-                preferred_id, family, architecture_label
+                "Preferred driver '{}' is registered but not loadable, and no compatible fallback is available for family {:?}{}: {}",
+                preferred_id,
+                family,
+                architecture_label,
+                driver_loadability_detail(driver)
             ));
         }
 
@@ -348,6 +377,17 @@ pub fn resolve_driver_for_model(
             available,
             load_supported,
         });
+    }
+
+    if let Some(driver) = DRIVER_REGISTRY.iter().find(|driver| {
+        driver.supports_model(family, architecture) && !is_driver_runtime_loadable(driver)
+    }) {
+        return Err(format!(
+            "No registered loadable driver can satisfy family {:?}{}: {}",
+            family,
+            architecture_label,
+            driver_loadability_detail(driver)
+        ));
     }
 
     Err(format!(
@@ -449,7 +489,7 @@ impl RuntimeModel {
 
         let backend: Box<dyn ModelBackend> = match target {
             ResolvedModelTarget::Local(local) => match descriptor.id {
-                "external-llamacpp" => Box::new(ExternalLlamaCppBackend::from_env(local.family)?),
+                "external-llamacpp" => Box::new(local::backend_for_target(local).map_err(E::msg)?),
                 _ => {
                     return Err(E::msg(format!(
                         "Backend '{}' is registered but has no typed local loader implementation.",
@@ -486,7 +526,9 @@ impl RuntimeModel {
         let descriptor = resolve_loadable_driver_descriptor(backend_id, family)?;
 
         let backend: Box<dyn ModelBackend> = match descriptor.id {
-            "external-llamacpp" => Box::new(ExternalLlamaCppBackend::from_env(family)?),
+            "external-llamacpp" => Box::new(
+                local::backend_for_reference(reference, family).map_err(E::msg)?,
+            ),
             "openai-responses" | "groq-responses" | "openrouter" => Box::new(
                 RemoteOpenAICompatibleBackend::from_env(family, descriptor.id, reference)?,
             ),

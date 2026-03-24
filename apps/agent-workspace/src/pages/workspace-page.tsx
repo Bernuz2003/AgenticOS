@@ -144,7 +144,8 @@ export function WorkspacePage() {
   const canSendInput =
     canResumeFromHistory ||
     (!!activePid &&
-      snapshot?.state === "WaitingForInput" &&
+      (snapshot?.state === "WaitingForInput" ||
+        snapshot?.state === "WaitingForHumanInput") &&
       !timeline?.running &&
       !composerLoading &&
       !turnActionLoading);

@@ -87,6 +87,7 @@ impl KernelBridge {
                     loaded_remote_model: status.model.loaded_remote_model,
                     memory: Some(status.memory),
                     runtime_instances: status.model.runtime_instances,
+                    managed_local_runtimes: status.model.managed_local_runtimes,
                     resource_governor: status.model.resource_governor,
                     runtime_load_queue: status.model.runtime_load_queue,
                     global_audit_events,
@@ -119,6 +120,7 @@ impl KernelBridge {
                 loaded_remote_model: None,
                 memory: None,
                 runtime_instances: persisted_runtime_instances,
+                managed_local_runtimes: Vec::new(),
                 resource_governor: None,
                 runtime_load_queue: persisted_runtime_load_queue,
                 global_audit_events,
@@ -345,10 +347,8 @@ impl KernelBridge {
         orch_id: u64,
     ) -> KernelBridgeResult<OrchestrationControlResult> {
         let payload = serde_json::json!({ "orchestration_id": orch_id });
-        let response = self.send_control_command(
-            OpCode::StopOrchestration,
-            payload.to_string().as_bytes(),
-        )?;
+        let response =
+            self.send_control_command(OpCode::StopOrchestration, payload.to_string().as_bytes())?;
         if response.kind != "+OK" {
             self.drop_connection();
             return Err(protocol::decode_protocol_error(
@@ -368,10 +368,8 @@ impl KernelBridge {
         orch_id: u64,
     ) -> KernelBridgeResult<OrchestrationControlResult> {
         let payload = serde_json::json!({ "orchestration_id": orch_id });
-        let response = self.send_control_command(
-            OpCode::DeleteOrchestration,
-            payload.to_string().as_bytes(),
-        )?;
+        let response =
+            self.send_control_command(OpCode::DeleteOrchestration, payload.to_string().as_bytes())?;
         if response.kind != "+OK" {
             self.drop_connection();
             return Err(protocol::decode_protocol_error(
@@ -410,7 +408,8 @@ impl KernelBridge {
 
     pub fn delete_job(&mut self, job_id: u64) -> KernelBridgeResult<ScheduledJobControlResult> {
         let payload = serde_json::json!({ "job_id": job_id });
-        let response = self.send_control_command(OpCode::DeleteJob, payload.to_string().as_bytes())?;
+        let response =
+            self.send_control_command(OpCode::DeleteJob, payload.to_string().as_bytes())?;
         if response.kind != "+OK" {
             self.drop_connection();
             return Err(protocol::decode_protocol_error(
@@ -856,6 +855,7 @@ fn map_pid_status_to_workspace_snapshot(
         context,
         pending_human_request: process.pending_human_request.map(|request| {
             WorkspaceHumanInputRequest {
+                request_id: request.request_id,
                 kind: request.kind,
                 question: request.question,
                 details: request.details,

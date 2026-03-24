@@ -34,6 +34,8 @@ export function runtimeStateTone(runtimeState?: string | null): string {
     case "WaitingForSyscall":
     case "AwaitingTurnDecision":
       return "border-sky-600/20 bg-sky-50 text-sky-700";
+    case "WaitingForHumanInput":
+      return "border-cyan-600/20 bg-cyan-50 text-cyan-700";
     case "Parked":
       return "border-amber-600/20 bg-amber-50 text-amber-700";
     case "Killed":
@@ -47,6 +49,31 @@ export function runtimeStateTone(runtimeState?: string | null): string {
       return "border-slate-900/10 bg-slate-100 text-slate-700";
     default:
       return "border-violet-600/20 bg-violet-50 text-violet-700";
+  }
+}
+
+export function localRuntimeStateLabel(state?: string | null): string {
+  const value = state?.trim();
+  if (!value) {
+    return "unknown";
+  }
+  return value.replace(/_/g, " ");
+}
+
+export function localRuntimeStateTone(state?: string | null): string {
+  switch (state) {
+    case "ready":
+      return "border-emerald-600/20 bg-emerald-50 text-emerald-700";
+    case "starting":
+    case "restarting":
+      return "border-sky-600/20 bg-sky-50 text-sky-700";
+    case "unhealthy":
+    case "failed":
+      return "border-rose-600/20 bg-rose-50 text-rose-700";
+    case "external_override":
+      return "border-amber-600/20 bg-amber-50 text-amber-700";
+    default:
+      return "border-slate-900/10 bg-slate-100 text-slate-700";
   }
 }
 

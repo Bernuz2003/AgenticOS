@@ -57,7 +57,8 @@ fn linear_graph_registers_and_spawns_root() {
     assert_eq!(id, 1);
     assert_eq!(spawns.len(), 1);
     assert_eq!(spawns[0].task_id, "A");
-    assert_eq!(spawns[0].prompt, "Task A");
+    assert!(spawns[0].prompt.contains("Task A"));
+    assert!(spawns[0].prompt.contains("[Workflow task contract]"));
     assert_eq!(spawns[0].context_policy.strategy.label(), "sliding_window");
 }
 
@@ -616,16 +617,21 @@ fn build_prompt_injects_dependency_output() {
     ];
 
     let prompt = build_task_prompt(&task, &artifacts);
+    assert!(prompt.contains("[Workflow task contract]"));
+    assert!(prompt.contains("[Upstream result artifacts]"));
+    assert!(prompt.contains("[Result Artifact]"));
     assert!(prompt.contains("output A"));
     assert!(prompt.contains("output B"));
     assert!(prompt.contains("Summarise everything"));
 }
 
 #[test]
-fn build_prompt_without_deps_returns_raw() {
+fn build_prompt_without_deps_includes_task_contract() {
     let task = task_node("root", "do it", None, vec![]);
     let prompt = build_task_prompt(&task, &[]);
-    assert_eq!(prompt, "do it");
+    assert!(prompt.contains("[Workflow task contract]"));
+    assert!(prompt.contains("[Task instructions]"));
+    assert!(prompt.contains("do it"));
 }
 
 #[test]

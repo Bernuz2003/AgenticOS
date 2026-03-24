@@ -175,7 +175,12 @@ fn async_swap_queue_marks_parked_and_completes() {
     let payload = vec![1_u8; 300_000];
 
     let msg = mem
-        .write_for_pid_bytes_with_backend(1, &payload, Some("external-llamacpp"))
+        .write_for_pid_bytes_with_backend(
+            1,
+            &payload,
+            Some("external-llamacpp"),
+            Some(crate::prompting::PromptFamily::Unknown),
+        )
         .expect("should enqueue resident slot park");
     assert!(msg.contains("queued for async parking"));
     assert!(msg.contains("slot"));

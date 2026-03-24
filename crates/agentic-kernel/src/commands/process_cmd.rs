@@ -330,7 +330,11 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
 
     let had_pending_human_request = process.pending_human_request.is_some();
 
-    if process.state != crate::process::ProcessState::WaitingForInput {
+    if !matches!(
+        process.state,
+        crate::process::ProcessState::WaitingForInput
+            | crate::process::ProcessState::WaitingForHumanInput
+    ) {
         return protocol::response_protocol_err_typed(
             ctx.client,
             ctx.request_id,

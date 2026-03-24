@@ -306,8 +306,20 @@ pub(crate) fn apply_env_overrides(config: &mut KernelConfig) {
     if let Some(value) = env_bool_opt("AGENTIC_AUTH_DISABLED") {
         config.auth.disabled = value;
     }
+    if let Some(value) = env_string("AGENTIC_LLAMACPP_EXECUTABLE") {
+        config.external_llamacpp.executable = value;
+    }
+    if let Some(value) = env_u16("AGENTIC_LLAMACPP_PORT_BASE") {
+        config.external_llamacpp.port_base = value;
+    }
+    if let Some(value) = env_u64_opt("AGENTIC_LLAMACPP_STARTUP_TIMEOUT_MS") {
+        config.external_llamacpp.startup_timeout_ms = value.max(1);
+    }
+    if let Some(value) = env_u64_opt("AGENTIC_LLAMACPP_HEALTH_POLL_MS") {
+        config.external_llamacpp.health_poll_ms = value.max(10);
+    }
     if let Some(value) = env_string("AGENTIC_LLAMACPP_ENDPOINT") {
-        config.external_llamacpp.endpoint = value;
+        config.external_llamacpp.legacy_endpoint_override = value;
     }
     if let Some(value) = env_u64_opt("AGENTIC_LLAMACPP_TIMEOUT_MS") {
         config.external_llamacpp.timeout_ms = value;

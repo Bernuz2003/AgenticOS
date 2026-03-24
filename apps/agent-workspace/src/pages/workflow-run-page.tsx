@@ -20,6 +20,7 @@ import {
   fetchTimelineSnapshot,
   fetchWorkspaceSnapshot,
   retryWorkflowTask,
+  sendSessionInput,
   stopWorkflowRun,
   type OrchestrationStatus,
   type TimelineSnapshot,
@@ -110,6 +111,9 @@ export function WorkflowRunPage() {
   const [timelineError, setTimelineError] = useState<string | null>(null);
   const [selectedWorkspace, setSelectedWorkspace] = useState<WorkspaceSnapshot | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [humanReply, setHumanReply] = useState("");
+  const [humanReplyBusy, setHumanReplyBusy] = useState(false);
+  const [humanReplyError, setHumanReplyError] = useState<string | null>(null);
 
   const orchestrationSignature = useMemo(
     () =>
@@ -204,7 +208,8 @@ export function WorkflowRunPage() {
     return detail.ipcMessages.filter(
       (message) =>
         message.senderTask === selectedTask.task ||
-        message.receiverTask === selectedTask.task,
+        message.receiverTask === selectedTask.task ||
+        (selectedTask.role !== null && message.receiverRole === selectedTask.role),
     );
   }, [detail, selectedTask]);
   const runTerminationReasons = useMemo(
@@ -220,6 +225,12 @@ export function WorkflowRunPage() {
         : [],
     [detail],
   );
+
+  useEffect(() => {
+    setHumanReply("");
+    setHumanReplyError(null);
+    setHumanReplyBusy(false);
+  }, [selectedAttempt?.pid, selectedWorkspace?.pendingHumanRequest?.requestId]);
 
   useEffect(() => {
     if (!selectedAttempt?.sessionId) {
@@ -336,6 +347,45 @@ export function WorkflowRunPage() {
       );
     } finally {
       setBusyKey(null);
+    }
+  }
+
+  async function refreshSelectedAttempt() {
+    if (!selectedAttempt?.sessionId || !selectedAttempt.pid) {
+      return;
+    }
+    const [timeline, workspace] = await Promise.all([
+      fetchTimelineSnapshot(selectedAttempt.sessionId, selectedAttempt.pid),
+      fetchWorkspaceSnapshot(selectedAttempt.sessionId, selectedAttempt.pid),
+    ]);
+    setSelectedTimeline(timeline);
+    setSelectedWorkspace(workspace);
+  }
+
+  async function handleHumanReply(rawReply: string) {
+    if (!selectedAttempt?.pid) {
+      return;
+    }
+    const reply = rawReply.trim();
+    if (!reply) {
+      return;
+    }
+
+    setHumanReplyBusy(true);
+    setHumanReplyError(null);
+    setWorkspaceError(null);
+    try {
+      await sendSessionInput(selectedAttempt.pid, reply);
+      setHumanReply("");
+      await Promise.all([refreshLobby(), reloadDetail(), refreshSelectedAttempt()]);
+    } catch (replyError) {
+      setHumanReplyError(
+        replyError instanceof Error
+          ? replyError.message
+          : "Failed to send human response to workflow task",
+      );
+    } finally {
+      setHumanReplyBusy(false);
     }
   }
 
@@ -636,6 +686,80 @@ export function WorkflowRunPage() {
 
           {selectedTask && inspectorTab === "details" && (
             <div className="mt-6 space-y-4">
+              {selectedWorkspace?.pendingHumanRequest && (
+                <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-sky-600">
+                        Human Input Pending
+                      </div>
+                      <div className="mt-2 text-sm font-semibold text-slate-900">
+                        {selectedWorkspace.pendingHumanRequest.question}
+                      </div>
+                    </div>
+                    <span className="rounded-full border border-sky-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-sky-700">
+                      {selectedWorkspace.pendingHumanRequest.kind}
+                    </span>
+                  </div>
+
+                  {selectedWorkspace.pendingHumanRequest.details && (
+                    <div className="mt-3 rounded-2xl border border-sky-100 bg-white px-4 py-3 text-sm leading-6 text-slate-700">
+                      {selectedWorkspace.pendingHumanRequest.details}
+                    </div>
+                  )}
+
+                  {selectedWorkspace.pendingHumanRequest.choices.length > 0 && (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {selectedWorkspace.pendingHumanRequest.choices.map((choice) => (
+                        <button
+                          key={choice}
+                          type="button"
+                          onClick={() => void handleHumanReply(choice)}
+                          disabled={humanReplyBusy}
+                          className="rounded-xl border border-sky-200 bg-white px-4 py-2 text-sm font-semibold text-sky-800 transition hover:border-sky-300 hover:bg-sky-100 disabled:opacity-50"
+                        >
+                          {choice}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {selectedWorkspace.pendingHumanRequest.allowFreeText && (
+                    <div className="mt-4 space-y-3">
+                      <textarea
+                        value={humanReply}
+                        onChange={(event) => setHumanReply(event.target.value)}
+                        rows={4}
+                        placeholder={
+                          selectedWorkspace.pendingHumanRequest.placeholder ??
+                          "Provide the human response needed to resume this workflow task..."
+                        }
+                        className="w-full rounded-2xl border border-sky-200 bg-white px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+                      />
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-xs text-slate-500">
+                          request {selectedWorkspace.pendingHumanRequest.requestId}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void handleHumanReply(humanReply)}
+                          disabled={humanReplyBusy || !humanReply.trim()}
+                          className="rounded-xl border border-sky-200 bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:opacity-50"
+                        >
+                          {humanReplyBusy ? "Sending..." : "Resume task"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {humanReplyError && (
+                    <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                      {humanReplyError}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                   <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
@@ -688,7 +812,7 @@ export function WorkflowRunPage() {
 
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                  Latest Output
+                  {selectedTask.status === "running" ? "Live Output" : "Latest Result Artifact"}
                 </div>
                 <div className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
                   {selectedTask.latestOutputText ??
@@ -913,7 +1037,11 @@ export function WorkflowRunPage() {
                         from {message.senderTask ?? `pid ${message.senderPid ?? "?"}`}
                       </span>
                       <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
-                        to {message.receiverTask ?? `pid ${message.receiverPid ?? "?"}`}
+                        to{" "}
+                        {message.receiverTask ??
+                          (message.receiverRole
+                            ? `role ${message.receiverRole}`
+                            : `pid ${message.receiverPid ?? "?"}`)}
                       </span>
                       {message.senderAttempt !== null && (
                         <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
@@ -923,6 +1051,21 @@ export function WorkflowRunPage() {
                       {message.receiverAttempt !== null && (
                         <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
                           receiver attempt {message.receiverAttempt}
+                        </span>
+                      )}
+                      {message.deliveredAtMs !== null && (
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                          delivered {formatTimestamp(message.deliveredAtMs)}
+                        </span>
+                      )}
+                      {message.consumedAtMs !== null && (
+                        <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1">
+                          consumed {formatTimestamp(message.consumedAtMs)}
+                        </span>
+                      )}
+                      {message.failedAtMs !== null && (
+                        <span className="rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-rose-700">
+                          failed {formatTimestamp(message.failedAtMs)}
                         </span>
                       )}
                     </div>

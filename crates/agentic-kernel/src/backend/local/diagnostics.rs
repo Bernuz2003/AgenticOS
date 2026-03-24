@@ -8,8 +8,10 @@ use super::llamacpp::ExternalLlamaCppBackend;
 use crate::backend::http::{HttpEndpoint, HttpJsonResponse};
 
 pub(crate) fn diagnose_external_backend() -> Result<serde_json::Value> {
-    let endpoint_raw = super::endpoint().ok_or_else(|| {
-        E::msg("AGENTIC_LLAMACPP_ENDPOINT is not configured; external backend diagnostics are unavailable.")
+    let endpoint_raw = super::runtime_manager::diagnostic_endpoint().ok_or_else(|| {
+        E::msg(
+            "No local runtime is active and no legacy external llama.cpp override is configured; backend diagnostics are unavailable.",
+        )
     })?;
     let timeout_ms = std::env::var("AGENTIC_LLAMACPP_TIMEOUT_MS")
         .ok()

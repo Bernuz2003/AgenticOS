@@ -10,9 +10,7 @@ use crate::resource_governor::ResourceGovernor;
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::services::model_runtime::activate_model_target;
-use crate::services::process_control::{
-    request_process_kill_with_session, ProcessSignalResult,
-};
+use crate::services::process_control::{request_process_kill_with_session, ProcessSignalResult};
 use crate::session::SessionRegistry;
 use crate::session::SessionRegistryError;
 use crate::storage::{current_timestamp_ms, StorageService, WorkflowArtifactInputRef};

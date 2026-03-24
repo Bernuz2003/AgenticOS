@@ -6,6 +6,7 @@ use crate::memory::ContextSlotId;
 use crate::prompting::PromptFamily;
 
 use crate::backend::http::{HttpEndpoint, HttpJsonResponse, HttpRequestOptions, HttpStreamControl};
+use crate::backend::local::runtime_manager::ManagedLocalRuntimeLease;
 use crate::backend::remote_adapter::{
     agent_invocation_end, build_completion_request, decode_completion_response, drain_json_objects,
     select_completion_prompt_transport, PromptTransportStrategy,
@@ -24,22 +25,21 @@ pub(crate) struct ExternalLlamaCppBackend {
 }
 
 impl ExternalLlamaCppBackend {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn from_env(family: PromptFamily) -> Result<Self> {
-        let endpoint = super::endpoint().ok_or_else(|| {
-            E::msg(
-                "External llama.cpp RPC backend requested, but AGENTIC_LLAMACPP_ENDPOINT is not configured.",
-            )
-        })?;
+        super::backend_for_reference("", family).map_err(E::msg)
+    }
 
-        Ok(Self {
-            endpoint: HttpEndpoint::parse(&endpoint)?,
-            family,
-            timeout_ms: crate::config::kernel_config().external_llamacpp.timeout_ms,
-            chunk_tokens: crate::config::kernel_config()
+    pub(crate) fn from_runtime_lease(lease: &ManagedLocalRuntimeLease) -> Self {
+        Self::from_endpoint(
+            lease.endpoint.clone(),
+            lease.family,
+            crate::config::kernel_config().external_llamacpp.timeout_ms,
+            crate::config::kernel_config()
                 .external_llamacpp
                 .chunk_tokens
                 .max(1),
-        })
+        )
     }
 
     pub(crate) fn for_diagnostics(
@@ -53,6 +53,20 @@ impl ExternalLlamaCppBackend {
             family,
             timeout_ms,
             chunk_tokens,
+        }
+    }
+
+    pub(crate) fn from_endpoint(
+        endpoint: HttpEndpoint,
+        family: PromptFamily,
+        timeout_ms: u64,
+        chunk_tokens: usize,
+    ) -> Self {
+        Self {
+            endpoint,
+            family,
+            timeout_ms,
+            chunk_tokens: chunk_tokens.max(1),
         }
     }
 

@@ -195,24 +195,25 @@ impl StorageService {
         truncated: bool,
         completed_at_ms: i64,
     ) -> Result<Option<StoredWorkflowArtifact>, StorageError> {
-        let preview = preview_text(output_text);
+        let result_text = derive_result_artifact_text(output_text);
+        let preview = preview_text(&result_text);
         let output_chars = output_text.len() as i64;
-        let artifact = if status == "completed" || !output_text.is_empty() {
+        let artifact = if status == "completed" || !result_text.is_empty() {
             Some(StoredWorkflowArtifact {
                 artifact_id: primary_artifact_id(orchestration_id, task_id, attempt),
                 orchestration_id,
                 producer_task_id: task_id.to_string(),
                 producer_attempt: attempt,
                 kind: if status == "completed" {
-                    "task_output".to_string()
+                    "task_result".to_string()
                 } else {
-                    "task_output_partial".to_string()
+                    "task_result_partial".to_string()
                 },
-                label: format!("{task_id} attempt {attempt}"),
+                label: format!("{task_id} result"),
                 mime_type: "text/markdown".to_string(),
-                content_text: output_text.to_string(),
+                content_text: result_text.clone(),
                 preview: preview.clone(),
-                bytes: output_text.len(),
+                bytes: result_text.len(),
                 created_at_ms: completed_at_ms,
             })
         } else {
@@ -321,10 +322,7 @@ impl StorageService {
         })
     }
 
-    pub(crate) fn delete_workflow_io(
-        &mut self,
-        orchestration_id: u64,
-    ) -> Result<(), StorageError> {
+    pub(crate) fn delete_workflow_io(&mut self, orchestration_id: u64) -> Result<(), StorageError> {
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "DELETE FROM workflow_task_artifact_inputs WHERE orchestration_id = ?1",
@@ -519,7 +517,7 @@ impl StorageService {
 }
 
 pub(crate) fn primary_artifact_id(orchestration_id: u64, task_id: &str, attempt: u32) -> String {
-    format!("orch:{orchestration_id}:task:{task_id}:attempt:{attempt}:primary")
+    format!("orch:{orchestration_id}:task:{task_id}:attempt:{attempt}:result")
 }
 
 fn preview_text(content: &str) -> String {
@@ -531,6 +529,151 @@ fn preview_text(content: &str) -> String {
     let mut preview = content.chars().take(MAX_CHARS).collect::<String>();
     preview.push_str("...");
     preview
+}
+
+fn derive_result_artifact_text(raw_output: &str) -> String {
+    let normalized = raw_output.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if let Some(explicit) = extract_result_artifact_block(trimmed) {
+        return explicit;
+    }
+
+    let trailing_after_control = take_after_last_control_line(trimmed);
+    let filtered_trailing = strip_non_result_lines(&trailing_after_control);
+    if !filtered_trailing.is_empty() {
+        return filtered_trailing;
+    }
+
+    let filtered_full = strip_non_result_lines(trimmed);
+    if !filtered_full.is_empty() {
+        return filtered_full;
+    }
+
+    trimmed.to_string()
+}
+
+fn extract_result_artifact_block(text: &str) -> Option<String> {
+    let lines = text.lines().collect::<Vec<_>>();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let lowered = trimmed.to_ascii_lowercase();
+        let marker_match = matches!(
+            lowered.as_str(),
+            "[result artifact]"
+                | "# result artifact"
+                | "## result artifact"
+                | "### result artifact"
+        ) || lowered.starts_with("result artifact:")
+            || lowered.starts_with("final result:")
+            || lowered.starts_with("result:");
+        if !marker_match {
+            continue;
+        }
+
+        let mut collected = Vec::new();
+        if let Some((_, inline)) = trimmed.split_once(':') {
+            let inline = inline.trim();
+            if !inline.is_empty() {
+                collected.push(inline.to_string());
+            }
+        }
+        for candidate in lines.iter().skip(index + 1) {
+            let candidate_trimmed = candidate.trim();
+            let lowered_candidate = candidate_trimmed.to_ascii_lowercase();
+            if !collected.is_empty()
+                && (looks_like_section_boundary(candidate_trimmed)
+                    || matches!(
+                        lowered_candidate.as_str(),
+                        "[notes]" | "[metadata]" | "[transcript]" | "[tools]"
+                    ))
+            {
+                break;
+            }
+            collected.push((*candidate).to_string());
+        }
+
+        let extracted = collapse_blank_lines(&collected.join("\n"));
+        if !extracted.is_empty() {
+            return Some(extracted);
+        }
+    }
+
+    None
+}
+
+fn take_after_last_control_line(text: &str) -> String {
+    let lines = text.lines().collect::<Vec<_>>();
+    let Some(last_control_index) = lines.iter().rposition(|line| is_control_line(line.trim()))
+    else {
+        return text.to_string();
+    };
+
+    let trailing = lines
+        .iter()
+        .skip(last_control_index + 1)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trailing = trailing.trim();
+    if trailing.is_empty() {
+        text.to_string()
+    } else {
+        trailing.to_string()
+    }
+}
+
+fn strip_non_result_lines(text: &str) -> String {
+    let mut kept = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let lowered = trimmed.to_ascii_lowercase();
+        if trimmed.is_empty() {
+            kept.push(String::new());
+            continue;
+        }
+        if is_control_line(trimmed)
+            || matches!(
+                lowered.as_str(),
+                "<thinking>" | "</thinking>" | "<analysis>" | "</analysis>"
+            )
+        {
+            continue;
+        }
+        kept.push(line.to_string());
+    }
+    collapse_blank_lines(&kept.join("\n"))
+}
+
+fn collapse_blank_lines(text: &str) -> String {
+    let mut compacted = String::new();
+    let mut previous_blank = false;
+    for line in text.lines() {
+        let is_blank = line.trim().is_empty();
+        if is_blank && previous_blank {
+            continue;
+        }
+        if !compacted.is_empty() {
+            compacted.push('\n');
+        }
+        compacted.push_str(line.trim_end());
+        previous_blank = is_blank;
+    }
+    compacted.trim().to_string()
+}
+
+fn is_control_line(line: &str) -> bool {
+    line.starts_with("TOOL:")
+        || line.starts_with("ACTION:")
+        || line.starts_with("[TOOL")
+        || line.starts_with("[ACTION")
+}
+
+fn looks_like_section_boundary(line: &str) -> bool {
+    line.starts_with('[') || line.starts_with('#')
 }
 
 fn collect_rows<T>(

@@ -115,6 +115,10 @@ pub(super) fn format_info_json(
             .metadata
             .as_ref()
             .and_then(|meta| meta.architecture.clone()),
+        max_context_tokens: entry
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.max_context_tokens),
         path: entry.path.display().to_string(),
         tokenizer_path: entry
             .tokenizer_path
@@ -168,6 +172,10 @@ fn format_list_entry(entry: &ModelEntry, selected: Option<&str>) -> ModelCatalog
             .metadata
             .as_ref()
             .and_then(|meta| meta.architecture.clone()),
+        max_context_tokens: entry
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.max_context_tokens),
         path: entry.path.display().to_string(),
         tokenizer_path: entry
             .tokenizer_path

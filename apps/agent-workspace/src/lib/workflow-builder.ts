@@ -12,7 +12,6 @@ export interface DraftTask {
   workload: DraftWorkload;
   backendClass: DraftBackendClass;
   contextStrategy: DraftContextStrategy;
-  contextWindowSize: string;
 }
 
 export interface SchedulerDraft {
@@ -36,7 +35,6 @@ export interface WorkflowPayloadTask {
   workload?: Exclude<DraftWorkload, "">;
   backend_class?: Exclude<DraftBackendClass, "">;
   context_strategy?: Exclude<DraftContextStrategy, "">;
-  context_window_size?: number;
 }
 
 export interface WorkflowPayload {
@@ -74,7 +72,6 @@ export function createTask(index: number): DraftTask {
     workload: "",
     backendClass: "",
     contextStrategy: "",
-    contextWindowSize: "",
   };
 }
 
@@ -88,7 +85,6 @@ export function initialTasks(): DraftTask[] {
       workload: "reasoning",
       backendClass: "",
       contextStrategy: "",
-      contextWindowSize: "",
     },
     {
       id: "deliver",
@@ -98,7 +94,6 @@ export function initialTasks(): DraftTask[] {
       workload: "general",
       backendClass: "",
       contextStrategy: "",
-      contextWindowSize: "",
     },
   ];
 }
@@ -165,9 +160,6 @@ export function buildWorkflowPayload(
     if (deps.includes(id)) {
       throw new Error(`Task ${id} cannot depend on itself.`);
     }
-
-    const contextWindowSize = Number.parseInt(task.contextWindowSize, 10);
-
     return {
       id,
       role: task.role.trim() || undefined,
@@ -176,10 +168,6 @@ export function buildWorkflowPayload(
       workload: task.workload || undefined,
       backend_class: task.backendClass || undefined,
       context_strategy: task.contextStrategy || undefined,
-      context_window_size:
-        Number.isFinite(contextWindowSize) && contextWindowSize > 0
-          ? contextWindowSize
-          : undefined,
     };
   });
 

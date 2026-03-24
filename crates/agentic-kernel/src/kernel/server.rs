@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::commands::MetricsState;
 use crate::config;
+use crate::backend::shutdown_managed_runtimes;
 use crate::events::flush_pending_events;
 use crate::inference_worker::{InferenceCmd, InferenceResult};
 use crate::memory::NeuralMemory;
@@ -128,6 +129,7 @@ impl Kernel {
                     &mut self.worker_handle,
                     &mut self.syscall_worker_handle,
                 );
+                shutdown_managed_runtimes();
                 break;
             }
 

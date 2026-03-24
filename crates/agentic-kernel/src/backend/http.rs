@@ -25,7 +25,7 @@ pub(crate) struct HttpRequestOptions<'a> {
     pub(crate) extra_headers: Option<&'a HashMap<String, String>>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct HttpEndpoint {
     pub(crate) host: String,
     pub(crate) port: u16,

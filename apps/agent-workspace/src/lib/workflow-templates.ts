@@ -16,7 +16,6 @@ interface WorkflowTemplateTask {
   workload?: Exclude<DraftWorkload, "">;
   backendClass?: Exclude<DraftBackendClass, "">;
   contextStrategy?: Exclude<DraftContextStrategy, "">;
-  contextWindowSize?: number;
 }
 
 export interface WorkflowTemplateDefinition {
@@ -30,6 +29,40 @@ export interface WorkflowTemplateDefinition {
   failurePolicy: FailurePolicy;
   tasks: WorkflowTemplateTask[];
   schedulerPreset?: Partial<SchedulerDraft>;
+}
+
+interface PromptSpec {
+  objective: string;
+  inputs: string[];
+  outputLines: string[];
+  constraints?: string[];
+}
+
+const BASE_RESULT_CONSTRAINTS = [
+  "Do the work directly; do not narrate that you will do it.",
+  "Do not include planning chatter, repeated tool intentions or transcript-style commentary in the final result.",
+  "If tools are needed, use them, then return only the durable result artifact.",
+  "Keep the result information-dense and easy for the next task to consume.",
+];
+
+function bulletList(items: string[]): string {
+  return items.map((item) => `- ${item}`).join("\n");
+}
+
+function buildStructuredTaskPrompt(spec: PromptSpec): string {
+  return [
+    "[Objective]",
+    spec.objective,
+    "",
+    "[Input Contract]",
+    bulletList(spec.inputs),
+    "",
+    "[Output Contract]",
+    ...spec.outputLines,
+    "",
+    "[Behavior Constraints]",
+    bulletList([...BASE_RESULT_CONSTRAINTS, ...(spec.constraints ?? [])]),
+  ].join("\n");
 }
 
 export const workflowTemplates: WorkflowTemplateDefinition[] = [
@@ -47,16 +80,52 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "plan",
         role: "Planner",
-        prompt:
-          "Break the request into a concise executable plan. Surface assumptions, constraints and acceptance criteria.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Turn the workflow request into a concrete execution plan that another task can follow without guessing.",
+          inputs: [
+            "Assume the workflow input contains the user objective, scope and any constraints.",
+            "Use only the information provided by the workflow input and upstream artifacts.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Scope",
+            "2. Assumptions",
+            "3. Execution Steps",
+            "4. Acceptance Criteria",
+            "5. Risks",
+          ],
+          constraints: [
+            "Do not write implementation code in this task.",
+            "Do not repeat the original request verbatim unless needed to clarify scope.",
+          ],
+        }),
         workload: "reasoning",
         contextStrategy: "retrieve",
       },
       {
         id: "implement",
         role: "Worker",
-        prompt:
-          "Execute the plan and produce the main deliverable. Keep it concrete and aligned with the accepted scope.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Execute the approved plan and produce the main deliverable for the workflow objective.",
+          inputs: [
+            "Use the planner artifact as the authoritative execution plan.",
+            "If upstream artifacts include constraints or acceptance criteria, satisfy them explicitly.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Deliverable",
+            "2. Key Decisions",
+            "3. Outstanding Gaps",
+          ],
+          constraints: [
+            "Do not restate the plan unless a step materially changes.",
+            "If a tool is required, use it once per needed operation and work from the acquired result.",
+          ],
+        }),
         deps: ["plan"],
         workload: "code",
         contextStrategy: "retrieve",
@@ -64,8 +133,26 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "review",
         role: "Reviewer",
-        prompt:
-          "Review the output for correctness, omissions, regressions and clarity. Produce a final corrected result if needed.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Review the worker deliverable for correctness, omissions, regressions and clarity, then produce the corrected final version if needed.",
+          inputs: [
+            "Use the worker artifact as the primary subject of review.",
+            "Use the planner artifact only to verify scope and acceptance criteria.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Verdict",
+            "2. Confirmed Strengths",
+            "3. Issues To Fix",
+            "4. Corrected Final Result",
+          ],
+          constraints: [
+            "Be explicit about defects instead of vague criticism.",
+            "If the worker result is already good, keep the corrected final result concise and complete.",
+          ],
+        }),
         deps: ["implement"],
         workload: "reasoning",
         contextStrategy: "summarize",
@@ -86,16 +173,53 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "scout",
         role: "Scout",
-        prompt:
-          "Collect the most relevant facts, examples and conflicting evidence related to the request.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Collect the most relevant evidence, facts, examples and disagreements related to the workflow research question.",
+          inputs: [
+            "Assume the workflow input defines the research topic and scope.",
+            "Only include evidence that is materially useful for downstream synthesis.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Confirmed Findings",
+            "2. Conflicting Evidence",
+            "3. Important Examples",
+            "4. Missing Information",
+          ],
+          constraints: [
+            "Avoid generic background filler.",
+            "Do not produce the final briefing in this step.",
+          ],
+        }),
         workload: "reasoning",
         contextStrategy: "retrieve",
       },
       {
         id: "synthesize",
         role: "Synthesizer",
-        prompt:
-          "Consolidate the discovered evidence into a structured view with agreements, disagreements and open gaps.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Consolidate the research evidence into a structured analysis that clearly separates strong conclusions from uncertainty.",
+          inputs: [
+            "Use the scout artifact as the evidence pack.",
+            "Preserve contradictions and open gaps instead of flattening them away.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Core Conclusions",
+            "2. Agreements",
+            "3. Disagreements",
+            "4. Confidence Notes",
+            "5. Open Gaps",
+          ],
+          constraints: [
+            "Do not re-list every raw fact if it does not change the conclusion.",
+            "Make the evidence hierarchy clear.",
+          ],
+        }),
         deps: ["scout"],
         workload: "reasoning",
         contextStrategy: "summarize",
@@ -103,8 +227,26 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "brief",
         role: "Briefing Writer",
-        prompt:
-          "Produce the final briefing with findings, risks and recommended next actions.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Produce the final briefing for the end user from the synthesized analysis.",
+          inputs: [
+            "Use the synthesizer artifact as the authoritative analysis.",
+            "Optimize for fast comprehension and actionable next steps.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Executive Summary",
+            "2. Key Findings",
+            "3. Risks And Caveats",
+            "4. Recommended Next Actions",
+          ],
+          constraints: [
+            "Do not include raw evidence dumps.",
+            "Keep the briefing concise but decision-ready.",
+          ],
+        }),
         deps: ["synthesize"],
         workload: "general",
         contextStrategy: "summarize",
@@ -125,24 +267,73 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "candidate_a",
         role: "Candidate A",
-        prompt:
-          "Answer the request independently with a high-quality solution. Focus on correctness and completeness.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Produce an independent high-quality answer to the workflow objective using one coherent approach.",
+          inputs: [
+            "Treat the workflow input as the full assignment.",
+            "Do not assume knowledge of the other candidate output.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Answer",
+            "2. Main Tradeoffs",
+          ],
+          constraints: [
+            "Keep the answer self-contained.",
+            "Do not mention that another candidate exists.",
+          ],
+        }),
         workload: "reasoning",
         contextStrategy: "sliding_window",
       },
       {
         id: "candidate_b",
         role: "Candidate B",
-        prompt:
-          "Answer the request independently with a different approach or framing. Surface different tradeoffs where possible.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Produce an independent answer that uses a materially different framing, angle or tradeoff profile from a typical default solution.",
+          inputs: [
+            "Treat the workflow input as the full assignment.",
+            "Do not assume knowledge of the other candidate output.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Answer",
+            "2. Main Tradeoffs",
+          ],
+          constraints: [
+            "Surface a different angle rather than superficial wording changes.",
+            "Keep the answer self-contained.",
+          ],
+        }),
         workload: "reasoning",
         contextStrategy: "sliding_window",
       },
       {
         id: "compare",
         role: "Comparator",
-        prompt:
-          "Compare the upstream candidates, identify which parts are strongest and produce a merged final recommendation.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Compare the independent candidates, identify the strongest parts of each and produce one merged recommendation.",
+          inputs: [
+            "Use both candidate artifacts as the comparison corpus.",
+            "Prefer concrete strengths and weaknesses over generic scoring.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Comparison Matrix",
+            "2. Best Elements To Keep",
+            "3. Final Merged Recommendation",
+          ],
+          constraints: [
+            "Do not preserve duplicated content unless it adds value.",
+            "Explain why the final merged recommendation is better than either candidate alone.",
+          ],
+        }),
         deps: ["candidate_a", "candidate_b"],
         workload: "reasoning",
         contextStrategy: "retrieve",
@@ -163,16 +354,52 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "map_repo",
         role: "Mapper",
-        prompt:
-          "Inspect the repository structure and identify the most relevant modules, boundaries and data flows for the request.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Inspect the repository structure and identify the modules, boundaries and data flows that matter for the workflow objective.",
+          inputs: [
+            "Assume the workflow input contains the repo path and the analysis objective.",
+            "Use repository inspection tools only as needed to build the map.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Relevant Areas",
+            "2. Key Files",
+            "3. Data / Control Flows",
+            "4. Initial Questions",
+          ],
+          constraints: [
+            "Do not start deep bug analysis in this task.",
+            "Avoid exhaustive file listings that do not help the objective.",
+          ],
+        }),
         workload: "code",
         contextStrategy: "retrieve",
       },
       {
         id: "inspect_hotspots",
         role: "Analyst",
-        prompt:
-          "Inspect the relevant modules in depth. Find likely bugs, risks, coupling points and missing invariants.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Inspect the mapped hotspots in depth and find concrete bugs, risks, coupling points and missing invariants.",
+          inputs: [
+            "Use the mapper artifact to decide where to inspect deeply.",
+            "Only include issues that are technically grounded in the inspected code.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Findings",
+            "2. Impacted Files",
+            "3. Architectural Risks",
+            "4. Missing Invariants / Tests",
+          ],
+          constraints: [
+            "Prefer precise findings over generic maintainability complaints.",
+            "Do not rewrite the repository map unless it changes a finding.",
+          ],
+        }),
         deps: ["map_repo"],
         workload: "code",
         contextStrategy: "retrieve",
@@ -180,8 +407,26 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "report",
         role: "Reporter",
-        prompt:
-          "Produce a technical report with findings, impacted files, risks and recommended next actions.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Produce the final technical report from the hotspot analysis.",
+          inputs: [
+            "Use the analyst artifact as the authoritative findings set.",
+            "Optimize for an engineer who needs to act on the report.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Executive Summary",
+            "2. Ranked Findings",
+            "3. Risks",
+            "4. Recommended Next Actions",
+          ],
+          constraints: [
+            "Keep the report concrete and action-oriented.",
+            "Do not pad the report with restated repository context.",
+          ],
+        }),
         deps: ["inspect_hotspots"],
         workload: "general",
         contextStrategy: "summarize",
@@ -202,16 +447,55 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "read_docs",
         role: "Reader",
-        prompt:
-          "Read the provided documents and extract key sections, repeated motifs and important factual anchors.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Read the workflow input document set and extract a clean evidence pack for downstream summarization.",
+          inputs: [
+            "Assume the workflow input specifies the file, folder or document set to inspect.",
+            "If you need to read files, read each required target once, then work from the acquired content.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Documents Read",
+            "2. Key Sections",
+            "3. Repeated Themes",
+            "4. Factual Anchors",
+            "5. Open Ambiguities",
+          ],
+          constraints: [
+            "Do not narrate tool usage.",
+            "Do not repeat the same read_file request after the content is already available.",
+            "Do not produce the final digest in this step.",
+          ],
+        }),
         workload: "general",
         contextStrategy: "retrieve",
       },
       {
         id: "summarize",
         role: "Summarizer",
-        prompt:
-          "Produce a concise but complete digest, including key takeaways, open questions and action items.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Produce the final digest from the extracted document evidence pack.",
+          inputs: [
+            "Use the reader artifact as the authoritative source.",
+            "Focus on the most decision-relevant information from the documents.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Executive Digest",
+            "2. Key Takeaways",
+            "3. Important Facts",
+            "4. Open Questions",
+            "5. Suggested Follow-ups",
+          ],
+          constraints: [
+            "Do not re-read the documents if the reader artifact already contains the needed content.",
+            "Do not include transcript fragments or meta-commentary.",
+          ],
+        }),
         deps: ["read_docs"],
         workload: "general",
         contextStrategy: "summarize",
@@ -232,16 +516,49 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "inventory",
         role: "Inventory",
-        prompt:
-          "List the directory contents and group files by responsibility, importance and likely entry points.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Inspect a directory or subtree and produce a structured inventory of what matters.",
+          inputs: [
+            "Assume the workflow input specifies the directory path and any focus area.",
+            "Only include files and folders that matter for understanding the target area.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Major Areas",
+            "2. Important Files",
+            "3. Entry Points",
+            "4. Questions For Further Inspection",
+          ],
+          constraints: [
+            "Avoid dumping every file name if it is not useful.",
+          ],
+        }),
         workload: "fast",
         contextStrategy: "retrieve",
       },
       {
         id: "summary",
         role: "Summarizer",
-        prompt:
-          "Produce a directory summary with important files, responsibilities and probable next places to inspect.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Produce the final directory summary from the structured inventory.",
+          inputs: [
+            "Use the inventory artifact as the primary source.",
+            "Optimize for someone onboarding quickly into the target area.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Purpose Overview",
+            "2. Important Files And Responsibilities",
+            "3. Suggested Next Inspection Steps",
+          ],
+          constraints: [
+            "Do not restate the entire inventory if a shorter summary is enough.",
+          ],
+        }),
         deps: ["inventory"],
         workload: "general",
         contextStrategy: "summarize",
@@ -262,16 +579,48 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "spec",
         role: "Specifier",
-        prompt:
-          "Convert the request into a crisp technical spec with constraints, assumptions and acceptance criteria.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Convert the workflow objective into a crisp technical specification.",
+          inputs: [
+            "Assume the workflow input contains the request, target domain and any explicit constraints.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Objective",
+            "2. Constraints",
+            "3. Assumptions",
+            "4. Acceptance Criteria",
+          ],
+          constraints: [
+            "Do not start planning yet.",
+          ],
+        }),
         workload: "reasoning",
         contextStrategy: "retrieve",
       },
       {
         id: "plan",
         role: "Planner",
-        prompt:
-          "Produce a concrete execution plan based on the specification.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Produce a concrete execution plan based on the approved specification.",
+          inputs: [
+            "Use the spec artifact as the authoritative problem definition.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Work Breakdown",
+            "2. Execution Order",
+            "3. Risks",
+            "4. Validation Steps",
+          ],
+          constraints: [
+            "Keep the plan operational and testable.",
+          ],
+        }),
         deps: ["spec"],
         workload: "reasoning",
         contextStrategy: "summarize",
@@ -279,8 +628,24 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "critic",
         role: "Critic",
-        prompt:
-          "Critique the specification and plan for blind spots, regressions, cost and complexity.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Critique the specification and execution plan for blind spots, regressions, unnecessary complexity and cost.",
+          inputs: [
+            "Use the spec and plan artifacts together.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Blind Spots",
+            "2. Regression Risks",
+            "3. Complexity Concerns",
+            "4. Recommended Adjustments",
+          ],
+          constraints: [
+            "Be specific about what should change and why.",
+          ],
+        }),
         deps: ["plan"],
         workload: "reasoning",
         contextStrategy: "summarize",
@@ -301,16 +666,48 @@ export const workflowTemplates: WorkflowTemplateDefinition[] = [
       {
         id: "collect",
         role: "Collector",
-        prompt:
-          "Collect the latest state relevant to the requested report and prepare structured findings.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Collect the state needed for a recurring operational report and structure it for downstream reporting.",
+          inputs: [
+            "Assume the workflow input defines the subject of the scheduled report and the time horizon to compare.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Current State",
+            "2. Deltas Since Last Run",
+            "3. Anomalies",
+            "4. Items Requiring Attention",
+          ],
+          constraints: [
+            "Prefer deltas and anomalies over generic status prose.",
+          ],
+        }),
         workload: "general",
         contextStrategy: "retrieve",
       },
       {
         id: "report",
         role: "Reporter",
-        prompt:
-          "Produce the final report with highlights, deltas, anomalies and follow-up recommendations.",
+        prompt: buildStructuredTaskPrompt({
+          objective:
+            "Produce the final unattended report from the collected operational findings.",
+          inputs: [
+            "Use the collector artifact as the authoritative source.",
+          ],
+          outputLines: [
+            "Return Markdown with exactly these sections:",
+            "[Result Artifact]",
+            "1. Highlights",
+            "2. Notable Deltas",
+            "3. Anomalies",
+            "4. Follow-up Recommendations",
+          ],
+          constraints: [
+            "Keep the report concise and ready to send as-is.",
+          ],
+        }),
         deps: ["collect"],
         workload: "general",
         contextStrategy: "summarize",
@@ -357,9 +754,6 @@ export function instantiateTemplateDraft(
       workload: task.workload ?? "",
       backendClass: task.backendClass ?? "",
       contextStrategy: task.contextStrategy ?? "",
-      contextWindowSize: task.contextWindowSize
-        ? String(task.contextWindowSize)
-        : "",
     })),
   };
 }

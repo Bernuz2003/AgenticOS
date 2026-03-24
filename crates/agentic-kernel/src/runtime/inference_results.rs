@@ -172,8 +172,7 @@ pub(super) fn drain_worker_results(
                         } else {
                             ProcessState::Finished
                         };
-                        process.termination_reason =
-                            Some("stop_marker_detected".to_string());
+                        process.termination_reason = Some("stop_marker_detected".to_string());
                     } else if finished {
                         process.termination_reason = Some(
                             finish_reason
@@ -296,8 +295,7 @@ pub(super) fn drain_worker_results(
                     if let Some(engine) = runtime_registry.engine_mut(&runtime_id) {
                         if let Some(proc) = engine.processes.get_mut(&pid) {
                             proc.state = ProcessState::Finished;
-                            proc.termination_reason =
-                                Some("token_quota_reached".to_string());
+                            proc.termination_reason = Some("token_quota_reached".to_string());
                         }
                     }
                 }
@@ -308,11 +306,17 @@ pub(super) fn drain_worker_results(
                     .map(|proc| proc.state.clone());
                 if matches!(
                     turn_state,
-                    Some(ProcessState::WaitingForInput | ProcessState::AwaitingTurnDecision)
+                    Some(
+                        ProcessState::WaitingForInput
+                            | ProcessState::WaitingForHumanInput
+                            | ProcessState::AwaitingTurnDecision
+                    )
                 ) {
                     let sched = scheduler.snapshot(pid);
                     let reason = if matches!(turn_state, Some(ProcessState::AwaitingTurnDecision)) {
                         "awaiting_turn_decision"
+                    } else if matches!(turn_state, Some(ProcessState::WaitingForHumanInput)) {
+                        "human_input_requested"
                     } else {
                         "turn_completed"
                     };
@@ -366,8 +370,7 @@ pub(super) fn drain_worker_results(
                     accounting_event,
                 );
                 tracing::error!(pid, %error, "Process error from worker, killing");
-                if let Some(finalized) =
-                    orchestrator.mark_failed(pid, &error, Some("worker_error"))
+                if let Some(finalized) = orchestrator.mark_failed(pid, &error, Some("worker_error"))
                 {
                     match storage.finalize_workflow_task_attempt(
                         finalized.orch_id,

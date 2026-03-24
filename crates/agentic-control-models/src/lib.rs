@@ -82,6 +82,20 @@ pub struct RuntimeLoadQueueEntryView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ManagedLocalRuntimeView {
+    pub family: String,
+    pub logical_model_id: String,
+    pub display_path: String,
+    pub state: String,
+    pub endpoint: String,
+    pub port: u16,
+    pub context_window_tokens: Option<usize>,
+    pub slot_save_dir: String,
+    pub managed_by_kernel: bool,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResourceGovernorStatusView {
     pub ram_budget_bytes: u64,
     pub vram_budget_bytes: u64,
@@ -200,6 +214,8 @@ pub struct ModelStatus {
     pub loaded_remote_model: Option<RemoteModelRuntimeView>,
     #[serde(default)]
     pub runtime_instances: Vec<RuntimeInstanceView>,
+    #[serde(default)]
+    pub managed_local_runtimes: Vec<ManagedLocalRuntimeView>,
     pub resource_governor: Option<ResourceGovernorStatusView>,
     #[serde(default)]
     pub runtime_load_queue: Vec<RuntimeLoadQueueEntryView>,
@@ -331,6 +347,7 @@ pub struct OrchSummaryResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HumanInputRequestView {
+    pub request_id: String,
     pub kind: String,
     pub question: String,
     #[serde(default)]
@@ -451,6 +468,8 @@ pub struct IpcMessageView {
     pub receiver_task: Option<String>,
     #[serde(default)]
     pub receiver_attempt: Option<u32>,
+    #[serde(default)]
+    pub receiver_role: Option<String>,
     pub message_type: String,
     #[serde(default)]
     pub channel: Option<String>,
@@ -462,6 +481,8 @@ pub struct IpcMessageView {
     pub delivered_at_ms: Option<i64>,
     #[serde(default)]
     pub consumed_at_ms: Option<i64>,
+    #[serde(default)]
+    pub failed_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -593,6 +614,7 @@ pub struct ModelCatalogEntry {
     pub id: String,
     pub family: String,
     pub architecture: Option<String>,
+    pub max_context_tokens: Option<usize>,
     pub path: String,
     pub tokenizer_path: Option<String>,
     pub tokenizer_present: bool,
@@ -634,6 +656,7 @@ pub struct ModelInfoResponse {
     pub id: String,
     pub family: String,
     pub architecture: Option<String>,
+    pub max_context_tokens: Option<usize>,
     pub path: String,
     pub tokenizer_path: Option<String>,
     pub tokenizer_present: bool,

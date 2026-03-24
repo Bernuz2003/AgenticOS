@@ -50,7 +50,10 @@ impl ResourceGovernor {
         }
 
         if let Some(runtime_id) = runtime_registry.runtime_id_for_target(target) {
-            if runtime_registry.is_runtime_loaded(&runtime_id) {
+            let same_runtime_target = runtime_registry
+                .descriptor(&runtime_id)
+                .is_some_and(|descriptor| descriptor.runtime_reference == target.runtime_reference());
+            if runtime_registry.is_runtime_loaded(&runtime_id) && same_runtime_target {
                 return Ok(AdmissionPlan {
                     reservation,
                     evict_runtime_ids: Vec::new(),
@@ -137,7 +140,12 @@ impl ResourceGovernor {
 
         for candidate in candidates {
             if let Some(runtime_id) = runtime_registry.runtime_id_for_target(target) {
-                if candidate.runtime_id == runtime_id {
+                let same_runtime_target = runtime_registry
+                    .descriptor(&runtime_id)
+                    .is_some_and(|descriptor| {
+                        descriptor.runtime_reference == target.runtime_reference()
+                    });
+                if candidate.runtime_id == runtime_id && same_runtime_target {
                     continue;
                 }
             }

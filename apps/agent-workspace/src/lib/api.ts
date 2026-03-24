@@ -34,6 +34,7 @@ export interface LobbySnapshot {
   loadedRemoteModel: RemoteRuntimeModel | null;
   memory: MemoryStatus | null;
   runtimeInstances: RuntimeInstance[];
+  managedLocalRuntimes: ManagedLocalRuntime[];
   resourceGovernor: ResourceGovernorStatus | null;
   runtimeLoadQueue: RuntimeLoadQueueEntry[];
   globalAuditEvents: AuditEvent[];
@@ -82,6 +83,7 @@ export interface WorkspaceContextSnapshot {
 }
 
 export interface HumanInputRequest {
+  requestId: string;
   kind: string;
   question: string;
   details: string | null;
@@ -169,6 +171,19 @@ export interface RuntimeInstance {
   activePidCount: number;
   activePids: number[];
   current: boolean;
+}
+
+export interface ManagedLocalRuntime {
+  family: string;
+  logicalModelId: string;
+  displayPath: string;
+  state: string;
+  endpoint: string;
+  port: number;
+  contextWindowTokens: number | null;
+  slotSaveDir: string;
+  managedByKernel: boolean;
+  lastError: string | null;
 }
 
 export interface RuntimeLoadQueueEntry {
@@ -354,6 +369,7 @@ export interface OrchestrationIpcMessage {
   receiverPid: number | null;
   receiverTask: string | null;
   receiverAttempt: number | null;
+  receiverRole: string | null;
   messageType: string;
   channel: string | null;
   payloadPreview: string;
@@ -362,6 +378,7 @@ export interface OrchestrationIpcMessage {
   createdAtMs: number;
   deliveredAtMs: number | null;
   consumedAtMs: number | null;
+  failedAtMs: number | null;
 }
 
 export interface OrchestrationTaskStatus {
@@ -664,6 +681,18 @@ export interface LobbySnapshotDto {
     active_pids: number[];
     current: boolean;
   }>;
+  managed_local_runtimes: Array<{
+    family: string;
+    logical_model_id: string;
+    display_path: string;
+    state: string;
+    endpoint: string;
+    port: number;
+    context_window_tokens: number | null;
+    slot_save_dir: string;
+    managed_by_kernel: boolean;
+    last_error: string | null;
+  }>;
   resource_governor: {
     ram_budget_bytes: number;
     vram_budget_bytes: number;
@@ -856,6 +885,7 @@ export interface WorkspaceSnapshotDto {
     retrieve_min_score: number;
   };
   pending_human_request: null | {
+    request_id: string;
     kind: string;
     question: string;
     details: string | null;
@@ -903,6 +933,9 @@ export function normalizeLobbySnapshot(snapshot: LobbySnapshotDto): LobbySnapsho
     loadedRemoteModel: mapRemoteRuntimeModel(snapshot.loaded_remote_model),
     memory: mapMemoryStatus(snapshot.memory),
     runtimeInstances: snapshot.runtime_instances.map(mapRuntimeInstance),
+    managedLocalRuntimes: snapshot.managed_local_runtimes.map(
+      mapManagedLocalRuntime,
+    ),
     resourceGovernor: mapResourceGovernor(snapshot.resource_governor),
     runtimeLoadQueue: snapshot.runtime_load_queue.map(mapRuntimeLoadQueueEntry),
     globalAuditEvents: snapshot.global_audit_events.map(normalizeAuditEvent),
@@ -1150,6 +1183,7 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
       : null,
     pendingHumanRequest: snapshot.pending_human_request
       ? {
+          requestId: snapshot.pending_human_request.request_id,
           kind: snapshot.pending_human_request.kind,
           question: snapshot.pending_human_request.question,
           details: snapshot.pending_human_request.details,
@@ -1256,6 +1290,23 @@ function mapRuntimeInstance(
     activePidCount: runtime.active_pid_count,
     activePids: runtime.active_pids,
     current: runtime.current,
+  };
+}
+
+function mapManagedLocalRuntime(
+  runtime: LobbySnapshotDto["managed_local_runtimes"][number],
+): ManagedLocalRuntime {
+  return {
+    family: runtime.family,
+    logicalModelId: runtime.logical_model_id,
+    displayPath: runtime.display_path,
+    state: runtime.state,
+    endpoint: runtime.endpoint,
+    port: runtime.port,
+    contextWindowTokens: runtime.context_window_tokens,
+    slotSaveDir: runtime.slot_save_dir,
+    managedByKernel: runtime.managed_by_kernel,
+    lastError: runtime.last_error,
   };
 }
 
@@ -1609,6 +1660,7 @@ export async function fetchOrchestrationStatus(
       receiver_pid?: number | null;
       receiver_task?: string | null;
       receiver_attempt?: number | null;
+      receiver_role?: string | null;
       message_type: string;
       channel?: string | null;
       payload_preview: string;
@@ -1617,6 +1669,7 @@ export async function fetchOrchestrationStatus(
       created_at_ms: number;
       delivered_at_ms?: number | null;
       consumed_at_ms?: number | null;
+      failed_at_ms?: number | null;
     }>;
   }>("fetch_orchestration_status", { orchestrationId });
 
@@ -1726,6 +1779,7 @@ export async function fetchOrchestrationStatus(
       receiverPid: message.receiver_pid ?? null,
       receiverTask: message.receiver_task ?? null,
       receiverAttempt: message.receiver_attempt ?? null,
+      receiverRole: message.receiver_role ?? null,
       messageType: message.message_type,
       channel: message.channel ?? null,
       payloadPreview: message.payload_preview,
@@ -1734,6 +1788,7 @@ export async function fetchOrchestrationStatus(
       createdAtMs: message.created_at_ms,
       deliveredAtMs: message.delivered_at_ms ?? null,
       consumedAtMs: message.consumed_at_ms ?? null,
+      failedAtMs: message.failed_at_ms ?? null,
     })),
   };
 }

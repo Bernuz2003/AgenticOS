@@ -1,12 +1,20 @@
 use agentic_kernel_macros::agentic_tool;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::process::{HumanInputRequest, HumanInputRequestKind};
 use crate::storage::current_timestamp_ms;
 
 use super::error::ToolError;
 use super::invocation::ToolContext;
+
+static HUMAN_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_human_request_id() -> String {
+    let seq = HUMAN_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("human-{}-{seq}", current_timestamp_ms())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
@@ -82,6 +90,7 @@ pub(crate) fn normalize_ask_human_request(
         .filter(|placeholder| !placeholder.is_empty());
 
     Ok(HumanInputRequest {
+        request_id: next_human_request_id(),
         kind,
         question: question.to_string(),
         details,

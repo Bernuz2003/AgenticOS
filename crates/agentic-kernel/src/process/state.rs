@@ -7,6 +7,7 @@ pub enum ProcessState {
     Running,
     AwaitingTurnDecision,
     WaitingForInput,
+    WaitingForHumanInput,
     Parked,
     WaitingForSyscall,
     Finished,
@@ -85,6 +86,7 @@ impl HumanInputRequestKind {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct HumanInputRequest {
+    pub request_id: String,
     pub kind: HumanInputRequestKind,
     pub question: String,
     pub details: Option<String>,

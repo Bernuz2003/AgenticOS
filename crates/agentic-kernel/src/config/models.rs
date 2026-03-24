@@ -204,7 +204,11 @@ pub struct AuthConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ExternalLlamaCppConfig {
-    pub endpoint: String,
+    pub executable: String,
+    pub port_base: u16,
+    pub startup_timeout_ms: u64,
+    pub health_poll_ms: u64,
+    pub legacy_endpoint_override: String,
     pub timeout_ms: u64,
     pub chunk_tokens: usize,
 }
@@ -212,7 +216,11 @@ pub struct ExternalLlamaCppConfig {
 impl Default for ExternalLlamaCppConfig {
     fn default() -> Self {
         Self {
-            endpoint: String::new(),
+            executable: "llama-server".to_string(),
+            port_base: 8080,
+            startup_timeout_ms: 120_000,
+            health_poll_ms: 250,
+            legacy_endpoint_override: String::new(),
             timeout_ms: 300_000,
             chunk_tokens: 1,
         }

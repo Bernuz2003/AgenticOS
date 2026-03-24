@@ -2,7 +2,8 @@
 # Keep secrets in config/env/agenticos.env whenever possible.
 
 [external_llamacpp]
-endpoint = "http://127.0.0.1:8080"
+# Optional machine-local override if `llama-server` is not on PATH.
+executable = "/usr/local/bin/llama-server"
 
 [openrouter]
 http_referer = "http://localhost"

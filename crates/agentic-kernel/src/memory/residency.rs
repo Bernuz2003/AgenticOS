@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use super::swap::{SwapCounterDeltas, SwapManager};
 use super::types::{ContextSlotId, ResidencySnapshot, SwapEvent};
 use crate::errors::MemoryError;
+use crate::prompting::PromptFamily;
 
 #[derive(Debug, Clone)]
 struct LogicalSlotRecord {
@@ -104,12 +105,13 @@ impl LogicalResidencyManager {
         &mut self,
         pid: u64,
         backend_id: &str,
+        family: PromptFamily,
         pressure_bytes: usize,
     ) -> Result<String, MemoryError> {
         let slot_id = self
             .slot_for_pid(pid)
             .ok_or(MemoryError::PidNotRegistered(pid))?;
-        self.swap.enqueue(pid, slot_id, backend_id, pressure_bytes)
+        self.swap.enqueue(pid, slot_id, backend_id, family, pressure_bytes)
     }
 
     pub(super) fn poll_swap_events(&mut self) -> (Vec<SwapEvent>, SwapCounterDeltas) {

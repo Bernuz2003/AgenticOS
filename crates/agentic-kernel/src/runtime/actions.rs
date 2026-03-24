@@ -7,6 +7,8 @@ use thiserror::Error;
 pub(crate) enum ActionName {
     Spawn,
     Send,
+    Receive,
+    Ack,
 }
 
 impl ActionName {
@@ -14,6 +16,8 @@ impl ActionName {
         match self {
             Self::Spawn => "spawn",
             Self::Send => "send",
+            Self::Receive => "receive",
+            Self::Ack => "ack",
         }
     }
 }
@@ -49,6 +53,8 @@ pub(crate) fn parse_text_invocation(text: &str) -> Result<ActionInvocation, Acti
     let action = match name.trim().to_ascii_lowercase().as_str() {
         "spawn" => ActionName::Spawn,
         "send" => ActionName::Send,
+        "receive" => ActionName::Receive,
+        "ack" => ActionName::Ack,
         other => return Err(ActionError::UnknownAction(other.to_string())),
     };
 
@@ -79,12 +85,15 @@ pub(crate) fn builtin_action_descriptors() -> Vec<ActionDescriptor> {
         },
         ActionDescriptor {
             name: ActionName::Send.as_str().to_string(),
-            description: "Send a typed IPC message to another running PID.".to_string(),
+            description: "Queue a typed IPC message for a PID, workflow task, role or channel."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
-                "required": ["pid"],
                 "properties": {
                     "pid": {"type": "integer", "minimum": 0},
+                    "task": {"type": "string"},
+                    "role": {"type": "string"},
+                    "orchestration_id": {"type": "integer", "minimum": 0},
                     "message": {"type": "string"},
                     "message_type": {
                         "type": "string",
@@ -101,8 +110,54 @@ pub(crate) fn builtin_action_descriptors() -> Vec<ActionDescriptor> {
                 "message": "string"
             }),
             notes: vec![
-                "Use this only when you already know the target PID.".to_string(),
+                "Use pid targeting for legacy/direct compatibility; prefer task/role/channel inside workflows."
+                    .to_string(),
                 "The legacy 'message' field remains supported for compatibility.".to_string(),
+            ],
+        },
+        ActionDescriptor {
+            name: ActionName::Receive.as_str().to_string(),
+            description: "Read pending IPC messages from the current process mailbox."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 16},
+                    "channel": {"type": "string"},
+                    "include_delivered": {"type": "boolean"}
+                },
+                "additionalProperties": false
+            }),
+            input_example: json!({
+                "limit": 4,
+                "channel": "review"
+            }),
+            notes: vec![
+                "Queued messages become delivered when received.".to_string(),
+                "Use ACTION:ack after processing messages to mark them consumed."
+                    .to_string(),
+            ],
+        },
+        ActionDescriptor {
+            name: ActionName::Ack.as_str().to_string(),
+            description: "Mark previously received IPC messages as consumed.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["message_ids"],
+                "properties": {
+                    "message_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1
+                    }
+                },
+                "additionalProperties": false
+            }),
+            input_example: json!({
+                "message_ids": ["ipc-123"]
+            }),
+            notes: vec![
+                "Ack only messages you have actually processed.".to_string(),
             ],
         },
     ]
@@ -118,6 +173,13 @@ mod tests {
             parse_text_invocation(r#"ACTION:spawn {"prompt":"hello"}"#).expect("action parse");
         assert_eq!(parsed.action, ActionName::Spawn);
         assert_eq!(parsed.input["prompt"], "hello");
+    }
+
+    #[test]
+    fn parses_receive_action() {
+        let parsed = parse_text_invocation(r#"ACTION:receive {"limit":2}"#).expect("action parse");
+        assert_eq!(parsed.action, ActionName::Receive);
+        assert_eq!(parsed.input["limit"], 2);
     }
 
     #[test]

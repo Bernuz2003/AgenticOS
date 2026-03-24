@@ -1,9 +1,9 @@
 use serde::Serialize;
 
 use agentic_control_models::{
-    BackendCapabilitiesView, BackendTelemetryView, MemoryStatus, ProcessPermissionsView,
-    RemoteModelRuntimeView, ResourceGovernorStatusView, RuntimeInstanceView,
-    RuntimeLoadQueueEntryView, ScheduledJobView,
+    BackendCapabilitiesView, BackendTelemetryView, ManagedLocalRuntimeView, MemoryStatus,
+    ProcessPermissionsView, RemoteModelRuntimeView, ResourceGovernorStatusView,
+    RuntimeInstanceView, RuntimeLoadQueueEntryView, ScheduledJobView,
 };
 
 #[derive(Debug, Serialize, Clone)]
@@ -30,6 +30,7 @@ pub struct LobbySnapshot {
     pub loaded_remote_model: Option<RemoteModelRuntimeView>,
     pub memory: Option<MemoryStatus>,
     pub runtime_instances: Vec<RuntimeInstanceView>,
+    pub managed_local_runtimes: Vec<ManagedLocalRuntimeView>,
     pub resource_governor: Option<ResourceGovernorStatusView>,
     pub runtime_load_queue: Vec<RuntimeLoadQueueEntryView>,
     pub global_audit_events: Vec<AuditEvent>,
@@ -161,6 +162,7 @@ pub struct WorkspaceContextSnapshot {
 
 #[derive(Debug, Serialize, Clone)]
 pub struct WorkspaceHumanInputRequest {
+    pub request_id: String,
     pub kind: String,
     pub question: String,
     pub details: Option<String>,

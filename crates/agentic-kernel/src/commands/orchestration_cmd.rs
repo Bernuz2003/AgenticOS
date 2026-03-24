@@ -438,9 +438,10 @@ pub(crate) fn handle_set_job_enabled(
                 None,
                 &format!("job_id={} enabled={}", result.job_id, result.enabled),
             );
-            ctx.pending_events.push(agentic_control_models::KernelEvent::LobbyChanged {
-                reason: "scheduled_job_mutated".to_string(),
-            });
+            ctx.pending_events
+                .push(agentic_control_models::KernelEvent::LobbyChanged {
+                    reason: "scheduled_job_mutated".to_string(),
+                });
             Some(protocol::response_protocol_ok(
                 ctx.client,
                 ctx.request_id,
@@ -493,9 +494,10 @@ pub(crate) fn handle_delete_job(
                 None,
                 &format!("job_id={}", result.job_id),
             );
-            ctx.pending_events.push(agentic_control_models::KernelEvent::LobbyChanged {
-                reason: "scheduled_job_deleted".to_string(),
-            });
+            ctx.pending_events
+                .push(agentic_control_models::KernelEvent::LobbyChanged {
+                    reason: "scheduled_job_deleted".to_string(),
+                });
             Some(protocol::response_protocol_ok(
                 ctx.client,
                 ctx.request_id,
@@ -529,7 +531,10 @@ fn orchestration_control_ok(
         metric_name,
         ctx.client_id,
         None,
-        &format!("orchestration_id={} status={}", result.orchestration_id, result.status),
+        &format!(
+            "orchestration_id={} status={}",
+            result.orchestration_id, result.status
+        ),
     );
     protocol::response_protocol_ok(
         ctx.client,
@@ -537,10 +542,7 @@ fn orchestration_control_ok(
         code,
         schema_id,
         &result,
-        Some(
-            &serde_json::to_string(&result)
-                .expect("OrchestrationControlResult is serializable"),
-        ),
+        Some(&serde_json::to_string(&result).expect("OrchestrationControlResult is serializable")),
     )
 }
 

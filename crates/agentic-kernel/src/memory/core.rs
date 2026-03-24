@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use super::residency::LogicalResidencyManager;
 use super::types::{ContextSlotId, MemorySnapshot, SlotPersistenceKind, SwapEvent};
 use crate::errors::MemoryError;
+use crate::prompting::PromptFamily;
 
 #[derive(Default)]
 pub(super) struct MemoryCounters {
@@ -84,7 +85,7 @@ impl NeuralMemory {
         pid: u64,
         raw_data: &[u8],
     ) -> Result<String, MemoryError> {
-        self.write_for_pid_bytes_with_backend(pid, raw_data, None)
+        self.write_for_pid_bytes_with_backend(pid, raw_data, None, None)
     }
 
     pub fn write_for_pid_bytes_with_backend(
@@ -92,6 +93,7 @@ impl NeuralMemory {
         pid: u64,
         raw_data: &[u8],
         backend_id: Option<&str>,
+        family: Option<PromptFamily>,
     ) -> Result<String, MemoryError> {
         let Some(slot_id) = self.residency.slot_for_pid(pid) else {
             if !self.active {
@@ -127,9 +129,11 @@ impl NeuralMemory {
                 "Cannot enqueue resident-slot park without an active backend id".to_string(),
             )
         })?;
+        let family = family.unwrap_or(PromptFamily::Unknown);
 
         self.counters.swap_faults += 1;
-        self.residency.enqueue_swap(pid, backend_id, raw_data.len())
+        self.residency
+            .enqueue_swap(pid, backend_id, family, raw_data.len())
     }
 
     pub fn snapshot(&self) -> MemorySnapshot {

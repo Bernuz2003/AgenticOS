@@ -321,6 +321,7 @@ fn send_user_input_clears_pending_human_request_and_resumes_process() {
     let process = engine.processes.get_mut(&1).expect("process present");
     process.state = ProcessState::WaitingForInput;
     process.set_pending_human_request(HumanInputRequest {
+        request_id: "hitl-1".to_string(),
         kind: HumanInputRequestKind::Approval,
         question: "Ship this workflow?".to_string(),
         details: None,

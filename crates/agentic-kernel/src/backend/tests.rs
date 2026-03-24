@@ -293,6 +293,7 @@ fn family_default_requires_loadable_external_runtime() {
     let err = resolve_driver_for_family(PromptFamily::Llama, None)
         .expect_err("llama driver should require a configured resident runtime");
     assert!(err.contains("No registered loadable driver"));
+    assert!(err.contains("llama-server"));
 }
 
 #[test]
@@ -331,6 +332,7 @@ fn preferred_external_driver_errors_when_endpoint_is_missing() {
     let err = resolve_driver_for_family(PromptFamily::Qwen, Some("external-llamacpp"))
         .expect_err("external backend should fail when endpoint is missing");
     assert!(err.contains("not loadable"));
+    assert!(err.contains("llama-server"));
 }
 
 #[test]
@@ -882,7 +884,12 @@ fn persist_context_slot_payload_uses_external_slot_save_for_resident_backend() {
     let final_path = base.join("pid_1_slot_7.swap");
 
     let persistence_kind =
-        persist_context_slot_payload_for_backend("external-llamacpp", 7, &final_path)
+        persist_context_slot_payload_for_backend(
+            "external-llamacpp",
+            PromptFamily::Qwen,
+            7,
+            &final_path,
+        )
             .expect("resident backend slot persist should succeed");
 
     server_handle.join().expect("join mock server");

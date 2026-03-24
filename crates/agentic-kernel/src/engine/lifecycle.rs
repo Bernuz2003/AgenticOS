@@ -420,7 +420,10 @@ impl LLMEngine {
             .get_mut(&pid)
             .ok_or(E::msg("PID not found"))?;
 
-        if process.state != ProcessState::WaitingForInput {
+        if !matches!(
+            process.state,
+            ProcessState::WaitingForInput | ProcessState::WaitingForHumanInput
+        ) {
             return Err(E::msg(format!(
                 "PID {} is not waiting for input (state={:?})",
                 pid, process.state
@@ -584,6 +587,10 @@ impl LLMEngine {
 
     pub fn loaded_model_path(&self) -> &str {
         &self.display_path
+    }
+
+    pub fn runtime_reference(&self) -> &str {
+        &self.runtime_reference
     }
 
     pub fn loaded_backend_id(&self) -> &str {

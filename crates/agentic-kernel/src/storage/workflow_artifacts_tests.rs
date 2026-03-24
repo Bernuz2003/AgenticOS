@@ -93,12 +93,40 @@ fn workflow_attempts_and_artifacts_survive_reopen() {
         .iter()
         .find(|artifact| artifact.producer_task_id == "deliver")
         .expect("deliver artifact");
-    assert_eq!(deliver_artifact.kind, "task_output_partial");
+    assert_eq!(deliver_artifact.kind, "task_result_partial");
     assert_eq!(deliver_artifact.content_text, "Partial draft");
 
     let input = workflow_io.inputs.first().expect("artifact input");
     assert_eq!(input.consumer_task_id, "deliver");
     assert_eq!(input.producer_task_id, "research");
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn workflow_result_artifact_discards_tool_chatter_and_prefers_explicit_result_block() {
+    let dir = make_temp_dir("agenticos_workflow_result_sanitization");
+    let db_path = dir.join("agenticos.db");
+
+    let mut storage = StorageService::open(&db_path).expect("open storage");
+    let artifact = storage
+        .finalize_workflow_task_attempt(
+            21,
+            "digest",
+            1,
+            "completed",
+            None,
+            Some("model_stop"),
+            "TOOL:read_file {\"path\":\"doc.txt\"}\n\n[Result Artifact]\n1. Key point A\n2. Key point B\n\n[Notes]\nIgnore this",
+            false,
+            5000,
+        )
+        .expect("finalize attempt")
+        .expect("artifact");
+
+    assert_eq!(artifact.kind, "task_result");
+    assert_eq!(artifact.content_text, "1. Key point A\n2. Key point B");
+    assert!(!artifact.content_text.contains("TOOL:read_file"));
 
     let _ = fs::remove_dir_all(dir);
 }

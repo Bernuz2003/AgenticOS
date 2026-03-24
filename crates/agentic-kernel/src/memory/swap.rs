@@ -16,6 +16,7 @@ use super::types::SlotPersistenceKind;
 use super::types::SwapEvent;
 use crate::backend;
 use crate::errors::MemoryError;
+use crate::prompting::PromptFamily;
 
 // ── Internal message types ──────────────────────────────────────────────
 
@@ -23,6 +24,7 @@ pub(super) struct SwapJob {
     pub pid: u64,
     pub slot_id: ContextSlotId,
     pub backend_id: String,
+    pub family: PromptFamily,
     pub target: PreparedSwapTarget,
     pub pressure_bytes: usize,
 }
@@ -109,6 +111,7 @@ impl SwapManager {
                 while let Ok(job) = rx_job.recv() {
                     let result = backend::persist_context_slot_payload_for_backend(
                         &job.backend_id,
+                        job.family,
                         job.slot_id,
                         &job.target.final_path,
                     )
@@ -193,6 +196,7 @@ impl SwapManager {
         pid: u64,
         slot_id: ContextSlotId,
         backend_id: &str,
+        family: PromptFamily,
         pressure_bytes: usize,
     ) -> Result<String, MemoryError> {
         let Some(tx) = &self.tx else {
@@ -207,6 +211,7 @@ impl SwapManager {
             pid,
             slot_id,
             backend_id: backend_id.to_string(),
+            family,
             target,
             pressure_bytes,
         })
@@ -306,6 +311,7 @@ impl SwapManager {
         let target = swap_io::prepare_swap_target(base_dir, pid, slot_id)?;
         let persistence_kind = backend::persist_context_slot_payload_for_backend(
             backend_id,
+            PromptFamily::Unknown,
             slot_id,
             &target.final_path,
         )?;

@@ -85,7 +85,7 @@ export function TimelinePane({
       ? humanRequest.placeholder ?? "Inserisci la risposta umana richiesta..."
       : "Questo step richiede una scelta esplicita dalle opzioni sopra."
     : !canSend
-      ? "Il composer si abilita quando il processo entra in WaitingForInput..."
+      ? "Il composer si abilita quando il processo entra in WaitingForInput o WaitingForHumanInput..."
       : "Invia un messaggio o un prompt all'agente...";
 
   return (

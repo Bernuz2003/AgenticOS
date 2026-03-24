@@ -26,7 +26,7 @@ mod workflow_artifacts;
 
 pub(crate) use accounting::StoredAccountingEvent;
 pub(crate) use audit::NewAuditEvent;
-pub(crate) use ipc_messages::NewIpcMessage;
+pub(crate) use ipc_messages::{IpcMailboxSelector, NewIpcMessage, StoredIpcMessage};
 pub(crate) use recovery::BootRecoveryReport;
 pub(crate) use runtime::StoredRuntimeRecord;
 pub(crate) use runtime_queue::StoredRuntimeLoadQueueEntry;

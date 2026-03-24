@@ -248,8 +248,12 @@ impl RuntimeRegistry {
             .runtimes
             .get(&runtime_id)
             .is_some_and(|handle| handle.engine.is_some());
+        let target_changed = self
+            .runtimes
+            .get(&runtime_id)
+            .is_some_and(|handle| runtime_target_changed(handle, target));
 
-        if already_loaded {
+        if already_loaded && !target_changed {
             let handle = self
                 .runtimes
                 .get_mut(&runtime_id)
@@ -271,6 +275,22 @@ impl RuntimeRegistry {
             );
             self.set_current_runtime(Some(runtime_id.clone()))?;
             return Ok(RuntimeActivation { runtime_id });
+        }
+
+        if already_loaded && target_changed {
+            let has_active_pids = self
+                .pid_to_runtime
+                .values()
+                .any(|bound_runtime_id| bound_runtime_id == &runtime_id);
+            if has_active_pids {
+                return Err(RuntimeRegistryError::LoadFailed(format!(
+                    "Local family runtime '{}' is busy with active processes and cannot switch to '{}'.",
+                    runtime_id,
+                    target.display_path().display()
+                )));
+            }
+
+            let _ = self.evict_runtime(storage, &runtime_id)?;
         }
 
         self.begin_transition(storage, &runtime_id, RuntimeLifecycleState::Loading)?;
@@ -794,6 +814,16 @@ fn runtime_state_for_handle(handle: &RuntimeHandle) -> RuntimeLifecycleState {
 }
 
 pub(crate) fn runtime_key_for_target(target: &ResolvedModelTarget) -> String {
+    if is_family_scoped_local_runtime(target) {
+        return format!(
+            "{}|{}|{}|{}",
+            target.target_kind(),
+            target.driver_resolution().resolved_backend_id,
+            target.provider_id().unwrap_or("-"),
+            format!("{:?}", target.family())
+        );
+    }
+
     format!(
         "{}|{}|{}|{}",
         target.target_kind(),
@@ -801,6 +831,18 @@ pub(crate) fn runtime_key_for_target(target: &ResolvedModelTarget) -> String {
         target.provider_id().unwrap_or("-"),
         target.display_path().display()
     )
+}
+
+fn is_family_scoped_local_runtime(target: &ResolvedModelTarget) -> bool {
+    matches!(target, ResolvedModelTarget::Local(_))
+        && target.driver_resolution().backend_class == BackendClass::ResidentLocal
+        && target.driver_resolution().resolved_backend_id == "external-llamacpp"
+        && !matches!(target.family(), PromptFamily::Unknown)
+}
+
+fn runtime_target_changed(handle: &RuntimeHandle, target: &ResolvedModelTarget) -> bool {
+    is_family_scoped_local_runtime(target)
+        && handle.descriptor.runtime_reference != target.runtime_reference()
 }
 
 fn runtime_id_from_key(runtime_key: &str) -> String {

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::service::StorageError;
 
-pub(crate) const LATEST_SCHEMA_VERSION: i32 = 10;
+pub(crate) const LATEST_SCHEMA_VERSION: i32 = 11;
 
 pub(super) fn apply_pending_migrations(connection: &mut Connection) -> Result<(), StorageError> {
     let current_version: i32 =
@@ -44,6 +44,9 @@ pub(super) fn apply_pending_migrations(connection: &mut Connection) -> Result<()
     }
     if current_version < 10 {
         apply_v10_schema(connection)?;
+    }
+    if current_version < 11 {
+        apply_v11_schema(connection)?;
     }
 
     Ok(())
@@ -531,6 +534,33 @@ fn apply_v10_schema(connection: &mut Connection) -> Result<(), StorageError> {
 
         CREATE INDEX IF NOT EXISTS idx_ipc_messages_status_created
             ON ipc_messages(status, created_at_ms DESC);
+        "#,
+    )?;
+    transaction.pragma_update(None, "user_version", LATEST_SCHEMA_VERSION)?;
+    transaction.commit()?;
+
+    Ok(())
+}
+
+fn apply_v11_schema(connection: &mut Connection) -> Result<(), StorageError> {
+    let transaction = connection.transaction()?;
+
+    transaction.execute_batch(
+        r#"
+        ALTER TABLE ipc_messages
+            ADD COLUMN receiver_role TEXT NULL;
+
+        ALTER TABLE ipc_messages
+            ADD COLUMN failed_at_ms INTEGER NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_ipc_messages_task_created
+            ON ipc_messages(orchestration_id, receiver_task_id, created_at_ms ASC);
+
+        CREATE INDEX IF NOT EXISTS idx_ipc_messages_role_created
+            ON ipc_messages(orchestration_id, receiver_role, created_at_ms ASC);
+
+        CREATE INDEX IF NOT EXISTS idx_ipc_messages_channel_created
+            ON ipc_messages(orchestration_id, channel, created_at_ms ASC);
         "#,
     )?;
     transaction.pragma_update(None, "user_version", LATEST_SCHEMA_VERSION)?;
