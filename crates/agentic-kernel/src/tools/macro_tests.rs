@@ -85,6 +85,7 @@ fn manual_echo_registry_entry() -> ToolRegistryEntry {
                 },
                 "additionalProperties": false
             }),
+            input_example: Some(json!({"message": "string"})),
             output_schema: json!({
                 "type": "object",
                 "required": ["output", "length"],

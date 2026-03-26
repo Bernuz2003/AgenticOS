@@ -53,13 +53,58 @@ impl ContextPolicy {
     pub fn from_kernel_defaults() -> Self {
         let config = &crate::config::kernel_config().context;
         let strategy = ContextStrategy::parse(&config.default_strategy).unwrap_or_default();
+        Self::new_with_window(strategy, config.default_window_tokens, config.retrieve_top_k)
+    }
+
+    pub fn new_with_window(
+        strategy: ContextStrategy,
+        window_size_tokens: usize,
+        retrieve_top_k: usize,
+    ) -> Self {
+        let (compaction_trigger_tokens, compaction_target_tokens) =
+            scaled_compaction_thresholds(window_size_tokens);
         Self::new(
             strategy,
-            config.default_window_tokens,
-            config.compaction_trigger_tokens,
-            config.compaction_target_tokens,
-            config.retrieve_top_k,
+            window_size_tokens,
+            compaction_trigger_tokens,
+            compaction_target_tokens,
+            retrieve_top_k,
         )
+    }
+
+    pub fn align_to_runtime_window_if_default(
+        &self,
+        runtime_window_tokens: Option<usize>,
+    ) -> Self {
+        let Some(runtime_window_tokens) =
+            runtime_window_tokens.filter(|value| *value > 0 && *value != self.window_size_tokens)
+        else {
+            return self.clone();
+        };
+
+        let defaults = &crate::config::kernel_config().context;
+        if self.window_size_tokens != defaults.default_window_tokens {
+            return self.clone();
+        }
+
+        let mut adjusted = if self.compaction_trigger_tokens == defaults.compaction_trigger_tokens
+            && self.compaction_target_tokens == defaults.compaction_target_tokens
+        {
+            Self::new_with_window(self.strategy, runtime_window_tokens, self.retrieve_top_k)
+        } else {
+            let adjusted_trigger = self.compaction_trigger_tokens.min(runtime_window_tokens);
+            Self::new(
+                self.strategy,
+                runtime_window_tokens,
+                adjusted_trigger,
+                self.compaction_target_tokens.min(adjusted_trigger),
+                self.retrieve_top_k,
+            )
+        };
+        adjusted.retrieve_candidate_limit = self.retrieve_candidate_limit;
+        adjusted.retrieve_max_segment_chars = self.retrieve_max_segment_chars;
+        adjusted.retrieve_min_score = self.retrieve_min_score;
+        adjusted
     }
 
     pub fn new(
@@ -97,6 +142,17 @@ impl Default for ContextPolicy {
     fn default() -> Self {
         Self::from_kernel_defaults()
     }
+}
+
+fn scaled_compaction_thresholds(window_size_tokens: usize) -> (usize, usize) {
+    let config = &crate::config::kernel_config().context;
+    let default_window = config.default_window_tokens.max(1) as f64;
+    let trigger_ratio = (config.compaction_trigger_tokens.max(1) as f64) / default_window;
+    let target_ratio = (config.compaction_target_tokens.max(1) as f64) / default_window;
+    let window = window_size_tokens.max(1) as f64;
+    let trigger = (window * trigger_ratio).round() as usize;
+    let target = (window * target_ratio).round() as usize;
+    (trigger.max(1), target.max(1))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

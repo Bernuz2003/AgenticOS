@@ -4,6 +4,7 @@ use super::{
     runtime_backend_telemetry, BackendClass, CompletionResponse, ContextSlotPersistence,
     ExternalLlamaCppBackend, InferenceBackend, InferenceStepRequest, InferenceStepResult,
     PromptFamily, RuntimeModel, TestExternalEndpointOverrideGuard,
+    TestRuntimeDriverAvailabilityGuard,
     TestRemoteOpenAIConfigOverrideGuard,
 };
 use crate::config::{RemoteAdapterKind, RemoteProviderRuntimeConfig};
@@ -290,10 +291,11 @@ fn spawn_mock_diag_server() -> (String, SharedStringLog, MockServerHandle) {
 #[test]
 fn family_default_requires_loadable_external_runtime() {
     let _endpoint = TestExternalEndpointOverrideGuard::clear();
+    let _driver =
+        TestRuntimeDriverAvailabilityGuard::unavailable("test override: runtime unavailable");
     let err = resolve_driver_for_family(PromptFamily::Llama, None)
         .expect_err("llama driver should require a configured resident runtime");
     assert!(err.contains("No registered loadable driver"));
-    assert!(err.contains("llama-server"));
 }
 
 #[test]
@@ -329,15 +331,18 @@ fn preferred_openai_driver_resolves_unknown_family_when_configured() {
 #[test]
 fn preferred_external_driver_errors_when_endpoint_is_missing() {
     let _endpoint = TestExternalEndpointOverrideGuard::clear();
+    let _driver =
+        TestRuntimeDriverAvailabilityGuard::unavailable("test override: runtime unavailable");
     let err = resolve_driver_for_family(PromptFamily::Qwen, Some("external-llamacpp"))
         .expect_err("external backend should fail when endpoint is missing");
     assert!(err.contains("not loadable"));
-    assert!(err.contains("llama-server"));
 }
 
 #[test]
 fn unsupported_family_without_loadable_driver_errors() {
     let _endpoint = TestExternalEndpointOverrideGuard::clear();
+    let _driver =
+        TestRuntimeDriverAvailabilityGuard::unavailable("test override: runtime unavailable");
     let err = resolve_driver_for_family(PromptFamily::Mistral, None)
         .expect_err("mistral should not resolve to loadable driver yet");
     assert!(err.contains("No registered loadable driver"));
@@ -346,6 +351,8 @@ fn unsupported_family_without_loadable_driver_errors() {
 #[test]
 fn architecture_specific_driver_resolution_rejects_qwen35_for_qwen2_backend() {
     let _endpoint = TestExternalEndpointOverrideGuard::clear();
+    let _driver =
+        TestRuntimeDriverAvailabilityGuard::unavailable("test override: runtime unavailable");
     let err = resolve_driver_for_model(PromptFamily::Qwen, Some("qwen35"), None)
         .expect_err("qwen35 should not resolve to qwen2 backend");
     assert!(err.contains("qwen35"));

@@ -2085,14 +2085,19 @@ export async function loadModel(selector = ""): Promise<LoadModelResult> {
   };
 }
 
-export async function sendSessionInput(
-  pid: number,
-  prompt: string,
-): Promise<SendInputResult> {
+export async function sendSessionInput(payload: {
+  pid?: number | null;
+  sessionId?: string | null;
+  prompt: string;
+}): Promise<SendInputResult> {
   const result = await invoke<{
     pid: number;
     state: string;
-  }>("send_session_input", { pid, prompt });
+  }>("send_session_input", {
+    pid: payload.pid ?? null,
+    sessionId: payload.sessionId ?? null,
+    prompt: payload.prompt,
+  });
 
   return {
     pid: result.pid,

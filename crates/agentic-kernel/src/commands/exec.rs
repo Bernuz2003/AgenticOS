@@ -170,6 +170,9 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                     "No Model Loaded",
                 ));
             };
+            let effective_context_policy = resolved
+                .context_policy
+                .align_to_runtime_window_if_default(engine.effective_context_window_tokens());
             spawn_managed_process_with_session(
                 &runtime_id,
                 pid_floor,
@@ -188,13 +191,14 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                     required_backend_class: None,
                     priority: ProcessPriority::Normal,
                     lifecycle_policy: ProcessLifecyclePolicy::Interactive,
-                    context_policy: Some(resolved.context_policy.clone()),
+                    context_policy: Some(effective_context_policy.clone()),
                 },
             )
+            .map(|spawned| (spawned, effective_context_policy))
         };
 
         match spawn_result {
-            Ok(spawned) => {
+            Ok((spawned, effective_context_policy)) => {
                 let session_id = spawned.session_id.clone();
                 let pid = spawned.pid;
                 if let Err(err) = runtime_registry.register_pid(storage, &runtime_id, pid) {
@@ -231,8 +235,8 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                     pid,
                     workload: format!("{:?}", workload).to_lowercase(),
                     priority: "normal".to_string(),
-                    context_strategy: resolved.context_policy.strategy.label().to_string(),
-                    context_window_size: resolved.context_policy.window_size_tokens,
+                    context_strategy: effective_context_policy.strategy.label().to_string(),
+                    context_window_size: effective_context_policy.window_size_tokens,
                 };
                 Some(protocol::response_protocol_ok(
                     client,

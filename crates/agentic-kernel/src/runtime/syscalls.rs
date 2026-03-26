@@ -62,6 +62,7 @@ fn next_ipc_message_id() -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SyscallDispatchOutcome {
     None,
+    Queued,
     Spawned(u64),
     Killed,
 }
@@ -393,6 +394,7 @@ pub(super) fn dispatch_process_syscall(
                     pid,
                     reason: "syscall_dispatched".to_string(),
                 });
+                SyscallDispatchOutcome::Queued
             }
             Err(err) => {
                 let _ = engine.inject_context(
@@ -405,9 +407,9 @@ pub(super) fn dispatch_process_syscall(
                 if let Some(process) = engine.processes.get_mut(&pid) {
                     process.state = ProcessState::Ready;
                 }
+                SyscallDispatchOutcome::None
             }
         }
-        SyscallDispatchOutcome::None
     }
 }
 

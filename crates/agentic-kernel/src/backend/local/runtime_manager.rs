@@ -477,6 +477,11 @@ pub(crate) fn runtime_driver_available() -> bool {
 }
 
 pub(crate) fn runtime_driver_unavailability_reason() -> Option<String> {
+    #[cfg(test)]
+    if let Some(override_reason) = test_driver_unavailability_override_get() {
+        return override_reason;
+    }
+
     if legacy_endpoint_override().is_some() {
         return None;
     }
@@ -962,6 +967,27 @@ fn test_external_runtime_ready_override_lock() -> &'static Mutex<()> {
 }
 
 #[cfg(test)]
+fn test_driver_unavailability_override_get() -> Option<Option<String>> {
+    let cell = test_driver_unavailability_override_cell();
+    cell.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+#[cfg(test)]
+fn test_driver_unavailability_override_set(value: Option<Option<String>>) {
+    let cell = test_driver_unavailability_override_cell();
+    *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = value;
+}
+
+#[cfg(test)]
+fn test_driver_unavailability_override_cell() -> &'static Mutex<Option<Option<String>>> {
+    static TEST_DRIVER_UNAVAILABILITY_OVERRIDE: OnceLock<Mutex<Option<Option<String>>>> =
+        OnceLock::new();
+    TEST_DRIVER_UNAVAILABILITY_OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
 pub(crate) struct TestExternalRuntimeReadyGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
     previous: Option<bool>,
@@ -991,6 +1017,40 @@ impl TestExternalRuntimeReadyGuard {
 impl Drop for TestExternalRuntimeReadyGuard {
     fn drop(&mut self) {
         test_external_runtime_ready_override_set(self.previous);
+        reset_for_tests();
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TestRuntimeDriverAvailabilityGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: Option<Option<String>>,
+}
+
+#[cfg(test)]
+impl TestRuntimeDriverAvailabilityGuard {
+    pub(crate) fn unavailable(reason: &str) -> Self {
+        Self::set(Some(Some(reason.to_string())))
+    }
+
+    fn set(value: Option<Option<String>>) -> Self {
+        let lock = test_external_runtime_ready_override_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = test_driver_unavailability_override_get();
+        test_driver_unavailability_override_set(value);
+        reset_for_tests();
+        Self {
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestRuntimeDriverAvailabilityGuard {
+    fn drop(&mut self) {
+        test_driver_unavailability_override_set(self.previous.clone());
         reset_for_tests();
     }
 }

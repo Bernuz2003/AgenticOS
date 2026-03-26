@@ -298,6 +298,7 @@ pub(crate) fn python_host_builtin_registration() -> HostBuiltinRegistration {
                     },
                     "additionalProperties": false
                 }),
+                input_example: Some(json!({"code": "print('hello')"})),
                 output_schema: json!({
                     "type": "object",
                     "required": ["output"],
@@ -406,6 +407,7 @@ pub(crate) fn write_file_host_builtin_registration() -> HostBuiltinRegistration 
                     },
                     "additionalProperties": false
                 }),
+                input_example: Some(json!({"path": "notes.txt", "content": "hello"})),
                 output_schema: json!({
                     "type": "object",
                     "required": ["output", "path", "bytes_written"],

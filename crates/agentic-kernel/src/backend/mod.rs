@@ -26,6 +26,8 @@ pub(crate) use local::TestExternalEndpointOverrideGuard;
 #[cfg(test)]
 pub(crate) use local::TestExternalRuntimeReadyGuard;
 #[cfg(test)]
+pub(crate) use local::TestRuntimeDriverAvailabilityGuard;
+#[cfg(test)]
 pub(crate) use remote::{TestOpenAIConfigOverrideGuard, TestRemoteOpenAIConfigOverrideGuard};
 #[cfg(test)]
 use remote_adapter::{combine_completion_text, completion_is_finished, CompletionResponse};

@@ -38,6 +38,7 @@
                       "aliases": {"type": "array", "items": {"type": "string"}},
                       "description": {"type": "string"},
                       "input_schema": {"type": "object"},
+                      "input_example": {},
                       "output_schema": {"type": "object"},
                       "allowed_callers": {
                         "type": "array",

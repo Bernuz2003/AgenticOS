@@ -97,11 +97,11 @@ fn path_info(input: PathInfoInput, ctx: &ToolContext) -> Result<PathInfoOutput, 
     })
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct FindFilesInput {
     path: Option<String>,
-    pattern: Option<String>,
+    pattern: String,
     extension: Option<String>,
     recursive: Option<bool>,
     max_results: Option<u64>,
@@ -117,7 +117,8 @@ struct FindFilesOutput {
 
 #[agentic_tool(
     name = "find_files",
-    description = "Find files by name pattern or extension inside the workspace.",
+    description = "Find files inside the workspace using a required filename pattern and an optional extension filter.",
+    input_example = serde_json::json!({"pattern": "agent", "path": "crates", "extension": "rs", "recursive": true}),
     capabilities = ["fs", "search"],
     allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
@@ -125,23 +126,18 @@ fn find_files(input: FindFilesInput, ctx: &ToolContext) -> Result<FindFilesOutpu
     let root = resolve_search_root("find_files", input.path.as_deref(), ctx)?;
     let recursive = input.recursive.unwrap_or(true);
     let max_results = normalize_max_results(input.max_results, DEFAULT_FIND_FILES_MAX_RESULTS);
-    let pattern = input
-        .pattern
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+    let pattern = input.pattern.trim();
+    if pattern.is_empty() {
+        return Err(ToolError::InvalidInput(
+            "find_files".into(),
+            "field 'pattern' cannot be empty".into(),
+        ));
+    }
     let extension = input
         .extension
         .as_deref()
         .map(normalize_extension)
         .filter(|value| !value.is_empty());
-
-    if pattern.is_none() && extension.is_none() {
-        return Err(ToolError::InvalidInput(
-            "find_files".into(),
-            "at least one of 'pattern' or 'extension' must be provided".into(),
-        ));
-    }
 
     let mut matches = Vec::new();
     let mut truncated = false;
@@ -150,7 +146,7 @@ fn find_files(input: FindFilesInput, ctx: &ToolContext) -> Result<FindFilesOutpu
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        if !filename_matches(file_name, pattern, extension.as_deref()) {
+        if !filename_matches(file_name, Some(pattern), extension.as_deref()) {
             continue;
         }
 

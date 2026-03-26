@@ -52,6 +52,10 @@ fn expand_agentic_tool(attr: TokenStream, item: TokenStream) -> Result<TokenStre
     let dangerous = config.dangerous;
     let enabled = config.enabled;
     let output_schema_type = config.output_schema_type;
+    let input_example = config.input_example;
+    let input_example_expr = input_example
+        .map(|expr| quote! { Some(#expr) })
+        .unwrap_or_else(|| quote! { None });
 
     let execute_body = if returns_tool_result {
         // ToolResult passthrough: no output serialization, full control to the tool.
@@ -157,6 +161,7 @@ fn expand_agentic_tool(attr: TokenStream, item: TokenStream) -> Result<TokenStre
                     aliases: vec![#(#aliases.to_string()),*],
                     description: #description.to_string(),
                     input_schema,
+                    input_example: #input_example_expr,
                     output_schema,
                     allowed_callers: vec![#(crate::tools::invocation::ToolCaller::#allowed_callers),*],
                     backend_kind: crate::tool_registry::ToolBackendKind::Host,
@@ -187,6 +192,7 @@ struct ToolMacroConfig {
     capabilities: Vec<LitStr>,
     allowed_callers: Vec<Ident>,
     output_schema_type: Option<Type>,
+    input_example: Option<Expr>,
     dangerous: LitBool,
     enabled: LitBool,
 }
@@ -199,6 +205,7 @@ impl ToolMacroConfig {
         let mut capabilities = None;
         let mut allowed_callers = None;
         let mut output_schema_type = None;
+        let mut input_example = None;
         let mut dangerous = None;
         let mut enabled = None;
 
@@ -231,6 +238,9 @@ impl ToolMacroConfig {
                 "output_schema_type" => {
                     output_schema_type = Some(parse_type(&name_value.value, "output_schema_type")?)
                 }
+                "input_example" => {
+                    input_example = Some(parse_expr(&name_value.value, "input_example")?)
+                }
                 "dangerous" => dangerous = Some(parse_lit_bool(&name_value.value, "dangerous")?),
                 "enabled" => enabled = Some(parse_lit_bool(&name_value.value, "enabled")?),
                 _ => {
@@ -262,6 +272,7 @@ impl ToolMacroConfig {
             capabilities: capabilities.unwrap_or_default(),
             allowed_callers,
             output_schema_type,
+            input_example,
             dangerous: dangerous.unwrap_or_else(|| LitBool::new(false, Span::call_site())),
             enabled: enabled.unwrap_or_else(|| LitBool::new(true, Span::call_site())),
         })
@@ -479,6 +490,10 @@ fn parse_ident_array(expr: &Expr, label: &str) -> Result<Vec<Ident>, syn::Error>
 fn parse_type(expr: &Expr, label: &str) -> Result<Type, syn::Error> {
     syn::parse2::<Type>(expr.to_token_stream())
         .map_err(|_| syn::Error::new_spanned(expr, format!("{label} must be a valid Rust type")))
+}
+
+fn parse_expr(expr: &Expr, _label: &str) -> Result<Expr, syn::Error> {
+    Ok(expr.clone())
 }
 
 fn missing_option(name: &str) -> syn::Error {

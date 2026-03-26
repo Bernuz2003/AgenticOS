@@ -131,6 +131,7 @@ mod tests {
                         "properties": {},
                         "additionalProperties": false
                     }),
+                    input_example: None,
                     output_schema,
                     allowed_callers,
                     backend_kind: ToolBackendKind::Host,

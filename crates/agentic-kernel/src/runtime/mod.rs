@@ -1,7 +1,10 @@
 pub(crate) mod actions;
+mod assistant_output;
 pub(crate) mod deadlines;
 mod inference_results;
 mod orchestration;
+mod process_checkout;
+mod process_finish;
 pub(crate) mod syscalls;
 
 use mio::{Poll, Token};
@@ -23,7 +26,9 @@ use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
 use inference_results::drain_worker_results;
-use orchestration::{advance_orchestrator, checkout_active_processes, handle_finished_processes};
+use orchestration::advance_orchestrator;
+use process_checkout::checkout_active_processes;
+use process_finish::handle_finished_processes;
 use syscalls::{drain_syscall_results, SyscallCmd, SyscallCompletion};
 
 #[derive(Debug, Clone, Copy, Default)]

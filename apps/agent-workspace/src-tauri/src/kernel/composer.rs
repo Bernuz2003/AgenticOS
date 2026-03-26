@@ -142,45 +142,85 @@ pub fn ensure_live_timeline_for_pid(
     Ok(snapshot.session_id)
 }
 
+pub fn register_live_user_input(
+    workspace_root: &Path,
+    timeline_store: &Arc<Mutex<TimelineStore>>,
+    session_id: &str,
+    pid: u64,
+    workload_hint: Option<String>,
+    prompt: &str,
+) -> Result<(), String> {
+    ensure_live_timeline_for_session_pid(
+        workspace_root,
+        timeline_store,
+        session_id,
+        pid,
+        workload_hint,
+    )?;
+    let mut store = timeline_store
+        .lock()
+        .map_err(|_| "Timeline store lock poisoned".to_string())?;
+    store.append_user_turn(pid, prompt.to_string());
+    Ok(())
+}
+
 pub fn ensure_live_timeline_from_snapshot(
     workspace_root: &Path,
     timeline_store: &Arc<Mutex<TimelineStore>>,
     snapshot: WorkspaceSnapshot,
 ) -> Result<(), String> {
+    ensure_live_timeline_for_session_pid(
+        workspace_root,
+        timeline_store,
+        &snapshot.session_id,
+        snapshot.pid,
+        Some(snapshot.workload),
+    )
+}
+
+fn ensure_live_timeline_for_session_pid(
+    workspace_root: &Path,
+    timeline_store: &Arc<Mutex<TimelineStore>>,
+    session_id: &str,
+    pid: u64,
+    workload_hint: Option<String>,
+) -> Result<(), String> {
+    let workload = workload_hint
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            persisted_truth::load_workspace_snapshot(workspace_root, session_id, Some(pid))
+                .ok()
+                .flatten()
+                .map(|snapshot| snapshot.workload)
+        })
+        .unwrap_or_else(|| "general".to_string());
+
     {
         let mut store = timeline_store
             .lock()
             .map_err(|_| "Timeline store lock poisoned".to_string())?;
-        if store.has_pid(snapshot.pid) {
+        if store.has_pid(pid) {
             return Ok(());
         }
-        if store.has_session_id(&snapshot.session_id) {
-            store.rebind_session_pid(
-                &snapshot.session_id,
-                snapshot.pid,
-                snapshot.workload.clone(),
-            );
+        if store.has_session_id(session_id) {
+            store.rebind_session_pid(session_id, pid, workload);
             return Ok(());
         }
     }
 
-    let seeded = persisted_truth::load_timeline_seed(
-        workspace_root,
-        &snapshot.session_id,
-        Some(snapshot.pid),
-    )?;
+    let seeded = persisted_truth::load_timeline_seed(workspace_root, session_id, Some(pid))?;
 
     let mut store = timeline_store
         .lock()
         .map_err(|_| "Timeline store lock poisoned".to_string())?;
     if let Some(mut seeded) = seeded {
-        seeded.pid = snapshot.pid;
-        if !snapshot.workload.trim().is_empty() {
-            seeded.workload = snapshot.workload.clone();
+        seeded.pid = pid;
+        if !workload.trim().is_empty() {
+            seeded.workload = workload;
         }
         store.insert_seeded_session(seeded);
     } else {
-        store.insert_empty_session(snapshot.pid, snapshot.session_id, snapshot.workload);
+        store.insert_empty_session(pid, session_id.to_string(), workload);
     }
     Ok(())
 }
@@ -268,7 +308,10 @@ mod tests {
 
     use rusqlite::{params, Connection};
 
-    use super::{compose_timeline_snapshot_for_session, compose_workspace_snapshot_for_session};
+    use super::{
+        compose_timeline_snapshot_for_session, compose_workspace_snapshot_for_session,
+        register_live_user_input,
+    };
     use crate::kernel::client::KernelBridge;
     use crate::kernel::live_cache::TimelineStore;
 
@@ -321,6 +364,37 @@ mod tests {
         assert_eq!(timeline.pid, 44);
         assert_eq!(timeline.source, "sqlite_history");
         assert_eq!(timeline.items.len(), 2);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn register_live_user_input_seeds_persisted_history_before_appending_new_turn() {
+        let root = make_temp_root("agenticos-composer-resume-seed");
+        seed_persisted_session(&root, "sess-compose", 44, "completed").expect("seed session");
+        let timeline_store = Arc::new(Mutex::new(TimelineStore::default()));
+
+        register_live_user_input(
+            &root,
+            &timeline_store,
+            "sess-compose",
+            84,
+            Some("general".to_string()),
+            "new input",
+        )
+        .expect("register live user input");
+
+        let timeline = timeline_store
+            .lock()
+            .expect("timeline store")
+            .snapshot(84)
+            .expect("seeded live timeline");
+        assert_eq!(timeline.session_id, "sess-compose");
+        assert_eq!(timeline.items.len(), 4);
+        assert_eq!(timeline.items[0].text, "hello composer");
+        assert_eq!(timeline.items[1].text, "persisted answer");
+        assert_eq!(timeline.items[2].text, "new input");
+        assert!(timeline.running);
 
         let _ = fs::remove_dir_all(root);
     }

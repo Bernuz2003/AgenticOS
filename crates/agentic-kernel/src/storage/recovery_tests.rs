@@ -53,7 +53,7 @@ fn boot_recovery_interrupts_open_runs_and_turns() {
     storage
         .bind_session_to_pid("sess-1", "rt-local", boot.boot_id, 7, 2_000)
         .expect("bind session");
-    storage
+    let _ = storage
         .start_session_turn("sess-1", 7, "general", "exec", "hello", "prompt")
         .expect("start turn");
 
@@ -213,7 +213,7 @@ fn boot_recovery_marks_remote_stateless_sessions_as_logical_resume_only() {
     storage
         .bind_session_to_pid("sess-remote", "rt-remote", boot.boot_id, 11, 2_000)
         .expect("bind session");
-    storage
+    let _ = storage
         .start_session_turn(
             "sess-remote",
             11,

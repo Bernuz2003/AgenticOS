@@ -631,6 +631,17 @@ impl LLMEngine {
         self.metadata.as_ref()
     }
 
+    pub fn effective_context_window_tokens(&self) -> Option<usize> {
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.max_context_tokens)
+            .or_else(|| {
+                self.loaded_remote_model
+                    .as_ref()
+                    .and_then(|model| model.context_window_tokens)
+            })
+    }
+
     pub fn free_context_slot(&mut self, slot_id: ContextSlotId) -> Result<()> {
         let model = self
             .master_model

@@ -1,6 +1,9 @@
 use super::metadata::parse_tokenizer_metadata_json;
 use super::*;
-use crate::backend::{TestExternalEndpointOverrideGuard, TestOpenAIConfigOverrideGuard};
+use crate::backend::{
+    TestExternalEndpointOverrideGuard, TestOpenAIConfigOverrideGuard,
+    TestRuntimeDriverAvailabilityGuard,
+};
 use crate::config::OpenAIResponsesConfig;
 use agentic_control_models::{ModelCatalogSnapshot, ModelInfoResponse};
 use std::fs;
@@ -429,6 +432,8 @@ fn format_list_json_exposes_routing_source_and_score() {
 #[test]
 fn format_info_json_exposes_unresolved_driver_when_no_loadable_backend_exists() {
     let _endpoint = TestExternalEndpointOverrideGuard::clear();
+    let _driver =
+        TestRuntimeDriverAvailabilityGuard::unavailable("test override: runtime unavailable");
     let base = mk_temp_dir("agenticos_catalog_driver_info");
     let models = base.join("models");
     let mistral_dir = models.join("mistral-7b");
@@ -463,6 +468,8 @@ fn format_info_json_exposes_unresolved_driver_when_no_loadable_backend_exists() 
 #[test]
 fn format_info_json_exposes_unresolved_driver_for_unsupported_architecture() {
     let _endpoint = TestExternalEndpointOverrideGuard::clear();
+    let _driver =
+        TestRuntimeDriverAvailabilityGuard::unavailable("test override: runtime unavailable");
     let base = mk_temp_dir("agenticos_catalog_qwen35_driver_info");
     let models = base.join("models");
     let qwen_dir = models.join("qwen3.5-9b");

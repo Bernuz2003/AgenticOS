@@ -25,7 +25,10 @@ use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 
 #[derive(Deserialize)]
 struct SendInputPayload {
-    pid: u64,
+    #[serde(default)]
+    pid: Option<u64>,
+    #[serde(default)]
+    session_id: Option<String>,
     prompt: String,
 }
 
@@ -37,6 +40,13 @@ struct PidPayload {
 #[derive(Deserialize)]
 struct ResumeSessionPayload {
     session_id: String,
+}
+
+struct SessionContinuationTarget {
+    session_id: String,
+    runtime_id: String,
+    pid: u64,
+    resumed_from_history: bool,
 }
 
 pub(crate) fn handle_term(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
@@ -265,7 +275,7 @@ pub(crate) fn handle_kill(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec
     }
 }
 
-pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_send_input(mut ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let parsed = serde_json::from_slice::<SendInputPayload>(payload).map_err(|err| err.to_string());
     let payload = match parsed {
         Ok(value) => value,
@@ -276,7 +286,7 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
                 ControlErrorCode::SendInputInvalid,
                 protocol::schema::ERROR,
                 &format!(
-                    "SEND_INPUT expects JSON payload {{\"pid\":...,\"prompt\":\"...\"}}: {}",
+                    "SEND_INPUT expects JSON payload {{\"pid\":...,\"session_id\":\"...\",\"prompt\":\"...\"}}: {}",
                     detail
                 ),
             );
@@ -294,21 +304,20 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
         );
     }
 
-    let Some(runtime_id) = ctx
-        .runtime_registry
-        .runtime_id_for_pid(payload.pid)
-        .or_else(|| ctx.session_registry.runtime_id_for_pid(payload.pid))
-        .map(ToString::to_string)
-    else {
-        return protocol::response_protocol_err_typed(
-            ctx.client,
-            ctx.request_id,
-            ControlErrorCode::NoModel,
-            protocol::schema::ERROR,
-            "No Model Loaded",
-        );
+    let target = match resolve_send_input_target(&mut ctx, &payload) {
+        Ok(target) => target,
+        Err((code, detail)) => {
+            return protocol::response_protocol_err_typed(
+                ctx.client,
+                ctx.request_id,
+                code,
+                protocol::schema::ERROR,
+                &detail,
+            );
+        }
     };
-    let Some(engine) = ctx.runtime_registry.engine_mut(&runtime_id) else {
+
+    let Some(engine) = ctx.runtime_registry.engine_mut(&target.runtime_id) else {
         return protocol::response_protocol_err_typed(
             ctx.client,
             ctx.request_id,
@@ -318,13 +327,13 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
         );
     };
 
-    let Some(process) = engine.processes.get(&payload.pid) else {
+    let Some(process) = engine.processes.get(&target.pid) else {
         return protocol::response_protocol_err_typed(
             ctx.client,
             ctx.request_id,
             ControlErrorCode::PidNotFound,
             protocol::schema::ERROR,
-            &format!("PID {} not found", payload.pid),
+            &format!("PID {} not found", target.pid),
         );
     };
 
@@ -342,41 +351,44 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
             protocol::schema::ERROR,
             &format!(
                 "PID {} is not waiting for input (state={:?})",
-                payload.pid, process.state
+                target.pid, process.state
             ),
         );
     }
 
-    match engine.send_user_input(payload.pid, prompt) {
+    match engine.send_user_input(target.pid, prompt) {
         Ok(()) => {
             let session_id = ctx
                 .session_registry
-                .session_id_for_pid(payload.pid)
+                .session_id_for_pid(target.pid)
                 .map(ToString::to_string);
             let workload = ctx
                 .scheduler
-                .snapshot(payload.pid)
+                .snapshot(target.pid)
                 .map(|snapshot| format!("{:?}", snapshot.workload).to_lowercase())
                 .unwrap_or_else(|| "general".to_string());
             if let Some(session_id_ref) = session_id.as_deref() {
-                if let Err(err) = ctx.storage.start_session_turn(
+                match ctx.storage.start_session_turn(
                     session_id_ref,
-                    payload.pid,
+                    target.pid,
                     &workload,
                     "send_input",
                     prompt,
                     "input",
                 ) {
-                    tracing::warn!(
-                        pid = payload.pid,
-                        session_id = session_id_ref,
-                        %err,
-                        "PROCESS_CMD: failed to persist SEND_INPUT turn"
-                    );
+                    Ok(turn_id) => ctx.session_registry.remember_active_turn(target.pid, turn_id),
+                    Err(err) => {
+                        tracing::warn!(
+                            pid = target.pid,
+                            session_id = session_id_ref,
+                            %err,
+                            "PROCESS_CMD: failed to persist SEND_INPUT turn"
+                        );
+                    }
                 }
             }
             ctx.pending_events.push(KernelEvent::WorkspaceChanged {
-                pid: payload.pid,
+                pid: target.pid,
                 reason: "input_received".to_string(),
             });
             ctx.pending_events.push(KernelEvent::LobbyChanged {
@@ -394,13 +406,21 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
                     prompt.chars().count(),
                     had_pending_human_request
                 ),
-                AuditContext::for_process(session_id.as_deref(), payload.pid, Some(&runtime_id)),
+                AuditContext::for_process(
+                    session_id.as_deref(),
+                    target.pid,
+                    Some(&target.runtime_id),
+                ),
             );
             log_event(
                 "process_continue",
                 ctx.client_id,
-                Some(payload.pid),
-                "input_appended_to_resident_session",
+                Some(target.pid),
+                if target.resumed_from_history {
+                    "input_appended_after_implicit_session_resume"
+                } else {
+                    "input_appended_to_live_session"
+                },
             );
             protocol::response_protocol_ok(
                 ctx.client,
@@ -408,10 +428,18 @@ pub(crate) fn handle_send_input(ctx: ProcessCommandContext<'_>, payload: &[u8]) 
                 "SEND_INPUT",
                 agentic_protocol::schema::SEND_INPUT,
                 &SendInputResult {
-                    pid: payload.pid,
+                    pid: target.pid,
                     state: "ready".to_string(),
                 },
-                Some(&format!("Input queued for PID {}", payload.pid)),
+                Some(&format!(
+                    "Input queued for PID {}{}",
+                    target.pid,
+                    if target.resumed_from_history {
+                        " (session resumed from history)"
+                    } else {
+                        ""
+                    }
+                )),
             )
         }
         Err(err) => protocol::response_protocol_err_typed(
@@ -491,11 +519,19 @@ pub(crate) fn handle_continue_output(ctx: ProcessCommandContext<'_>, payload: &[
 
     match engine.continue_current_turn(payload.pid) {
         Ok(()) => {
-            if let Err(err) = ctx.storage.resume_latest_turn_for_pid(payload.pid) {
+            if let Some(turn_id) = ctx.session_registry.active_turn_id_for_pid(payload.pid) {
+                if let Err(err) = ctx.storage.resume_turn(turn_id) {
+                    tracing::warn!(
+                        pid = payload.pid,
+                        turn_id,
+                        %err,
+                        "PROCESS_CMD: failed to persist CONTINUE_OUTPUT turn resume"
+                    );
+                }
+            } else {
                 tracing::warn!(
                     pid = payload.pid,
-                    %err,
-                    "PROCESS_CMD: failed to persist CONTINUE_OUTPUT turn resume"
+                    "PROCESS_CMD: active turn missing during CONTINUE_OUTPUT"
                 );
             }
             ctx.pending_events.push(KernelEvent::WorkspaceChanged {
@@ -601,16 +637,24 @@ pub(crate) fn handle_stop_output(ctx: ProcessCommandContext<'_>, payload: &[u8])
 
     match engine.stop_current_turn(payload.pid) {
         Ok(()) => {
-            if let Err(err) = ctx.storage.finish_latest_turn_for_pid(
-                payload.pid,
-                "completed",
-                "output_stopped",
-                None,
-            ) {
+            if let Some(turn_id) = ctx.session_registry.active_turn_id_for_pid(payload.pid) {
+                if let Err(err) =
+                    ctx.storage
+                        .finish_turn(turn_id, "completed", "output_stopped", None)
+                {
+                    tracing::warn!(
+                        pid = payload.pid,
+                        turn_id,
+                        %err,
+                        "PROCESS_CMD: failed to persist STOP_OUTPUT turn finish"
+                    );
+                } else {
+                    ctx.session_registry.clear_active_turn(payload.pid);
+                }
+            } else {
                 tracing::warn!(
                     pid = payload.pid,
-                    %err,
-                    "PROCESS_CMD: failed to persist STOP_OUTPUT turn finish"
+                    "PROCESS_CMD: active turn missing during STOP_OUTPUT"
                 );
             }
             ctx.pending_events.push(KernelEvent::WorkspaceChanged {
@@ -659,7 +703,7 @@ pub(crate) fn handle_stop_output(ctx: ProcessCommandContext<'_>, payload: &[u8])
     }
 }
 
-pub(crate) fn handle_resume_session(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_resume_session(mut ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let payload = match serde_json::from_slice::<ResumeSessionPayload>(payload)
         .map_err(|err| err.to_string())
     {
@@ -689,32 +733,138 @@ pub(crate) fn handle_resume_session(ctx: ProcessCommandContext<'_>, payload: &[u
         );
     }
 
-    if let Some(active_pid) = ctx.session_registry.active_pid_for_session(session_id) {
-        return protocol::response_protocol_ok(
+    match ensure_live_session_binding(&mut ctx, session_id) {
+        Ok(target) => protocol::response_protocol_ok(
             ctx.client,
             ctx.request_id,
             "RESUME_SESSION",
             agentic_protocol::schema::RESUME_SESSION,
             &ResumeSessionResult {
-                session_id: session_id.to_string(),
-                pid: active_pid,
-                resumed_from_history: false,
+                session_id: target.session_id.clone(),
+                pid: target.pid,
+                resumed_from_history: target.resumed_from_history,
             },
             Some(&format!(
-                "Session {} is already bound to live PID {}",
-                session_id, active_pid
+                "Session {} {} PID {}",
+                session_id,
+                if target.resumed_from_history {
+                    "resumed on"
+                } else {
+                    "is already bound to live"
+                },
+                target.pid
             )),
-        );
+        ),
+        Err((code, detail)) => protocol::response_protocol_err_typed(
+            ctx.client,
+            ctx.request_id,
+            code,
+            protocol::schema::ERROR,
+            &detail,
+        ),
+    }
+}
+
+fn resolve_send_input_target(
+    ctx: &mut ProcessCommandContext<'_>,
+    payload: &SendInputPayload,
+) -> Result<SessionContinuationTarget, (ControlErrorCode, String)> {
+    if let Some(pid) = payload.pid {
+        let runtime_id = ctx
+            .runtime_registry
+            .runtime_id_for_pid(pid)
+            .or_else(|| ctx.session_registry.runtime_id_for_pid(pid))
+            .map(ToString::to_string);
+        let has_live_process = runtime_id
+            .as_deref()
+            .and_then(|runtime_id| ctx.runtime_registry.engine(runtime_id))
+            .is_some_and(|engine| engine.processes.contains_key(&pid));
+
+        if has_live_process {
+            return Ok(SessionContinuationTarget {
+                session_id: ctx
+                    .session_registry
+                    .session_id_for_pid(pid)
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| format!("pid-{pid}")),
+                runtime_id: runtime_id.unwrap_or_default(),
+                pid,
+                resumed_from_history: false,
+            });
+        }
+
+        if payload.session_id.is_none() {
+            return Err((
+                if runtime_id.is_some() {
+                    ControlErrorCode::PidNotFound
+                } else {
+                    ControlErrorCode::NoModel
+                },
+                if runtime_id.is_some() {
+                    format!("PID {} not found", pid)
+                } else {
+                    "No Model Loaded".to_string()
+                },
+            ));
+        }
+    }
+
+    let session_id = payload
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            (
+                ControlErrorCode::SendInputInvalid,
+                "SEND_INPUT requires either pid or session_id".to_string(),
+            )
+        })?;
+    ensure_live_session_binding(ctx, session_id)
+}
+
+fn ensure_live_session_binding(
+    ctx: &mut ProcessCommandContext<'_>,
+    session_id: &str,
+) -> Result<SessionContinuationTarget, (ControlErrorCode, String)> {
+    if let Some(active_pid) = ctx.session_registry.active_pid_for_session(session_id) {
+        let runtime_id = ctx
+            .runtime_registry
+            .runtime_id_for_pid(active_pid)
+            .or_else(|| ctx.session_registry.runtime_id_for_pid(active_pid))
+            .map(ToString::to_string);
+        let has_live_process = runtime_id
+            .as_deref()
+            .and_then(|runtime_id| ctx.runtime_registry.engine(runtime_id))
+            .is_some_and(|engine| engine.processes.contains_key(&active_pid));
+
+        if has_live_process {
+            return Ok(SessionContinuationTarget {
+                session_id: session_id.to_string(),
+                runtime_id: runtime_id.unwrap_or_default(),
+                pid: active_pid,
+                resumed_from_history: false,
+            });
+        }
+
+        if let Err(err) = ctx
+            .session_registry
+            .release_pid(ctx.storage, active_pid, "interrupted")
+        {
+            tracing::warn!(
+                session_id,
+                pid = active_pid,
+                %err,
+                "PROCESS_CMD: failed to clear stale live binding before session resume"
+            );
+        }
     }
 
     let Some(session_record) = ctx.session_registry.session(session_id).cloned() else {
-        return protocol::response_protocol_err_typed(
-            ctx.client,
-            ctx.request_id,
+        return Err((
             ControlErrorCode::Generic,
-            protocol::schema::ERROR,
-            &format!("Session '{}' not found", session_id),
-        );
+            format!("Session '{}' not found", session_id),
+        ));
     };
 
     let mut runtime_id = session_record.runtime_id.clone().or_else(|| {
@@ -724,35 +874,21 @@ pub(crate) fn handle_resume_session(ctx: ProcessCommandContext<'_>, payload: &[u
     });
 
     let Some(candidate_runtime_id) = runtime_id.clone() else {
-        return protocol::response_protocol_err_typed(
-            ctx.client,
-            ctx.request_id,
+        return Err((
             ControlErrorCode::NoModel,
-            protocol::schema::ERROR,
-            &format!(
+            format!(
                 "Session '{}' has no persisted runtime binding and no runtime is currently loaded",
                 session_id
             ),
-        );
+        ));
     };
 
     if !ctx
         .runtime_registry
         .is_runtime_loaded(&candidate_runtime_id)
     {
-        let selector =
-            match runtime_selector_for_session(ctx.runtime_registry, &candidate_runtime_id) {
-                Ok(selector) => selector,
-                Err(detail) => {
-                    return protocol::response_protocol_err_typed(
-                        ctx.client,
-                        ctx.request_id,
-                        ControlErrorCode::NoModel,
-                        protocol::schema::ERROR,
-                        &detail,
-                    );
-                }
-            };
+        let selector = runtime_selector_for_session(ctx.runtime_registry, &candidate_runtime_id)
+            .map_err(|detail| (ControlErrorCode::NoModel, detail))?;
 
         if let Err(err) = ctx.model_catalog.refresh() {
             tracing::warn!(
@@ -763,21 +899,18 @@ pub(crate) fn handle_resume_session(ctx: ProcessCommandContext<'_>, payload: &[u
             );
         }
 
-        let target = match ctx.model_catalog.resolve_load_target(&selector) {
-            Ok(target) => target,
-            Err(err) => {
-                return protocol::response_protocol_err_typed(
-                    ctx.client,
-                    ctx.request_id,
+        let target = ctx
+            .model_catalog
+            .resolve_load_target(&selector)
+            .map_err(|err| {
+                (
                     ControlErrorCode::LoadFailed,
-                    protocol::schema::ERROR,
-                    &format!(
+                    format!(
                         "Failed to resolve runtime '{}' for session '{}': {}",
                         candidate_runtime_id, session_id, err
                     ),
-                );
-            }
-        };
+                )
+            })?;
 
         match activate_model_target(
             ctx.runtime_registry,
@@ -791,71 +924,43 @@ pub(crate) fn handle_resume_session(ctx: ProcessCommandContext<'_>, payload: &[u
                 runtime_id = Some(loaded.runtime_id);
             }
             Err(err) => {
-                return protocol::response_protocol_err_typed(
-                    ctx.client,
-                    ctx.request_id,
-                    ControlErrorCode::LoadFailed,
-                    protocol::schema::ERROR,
-                    err.message(),
-                );
+                return Err((ControlErrorCode::LoadFailed, err.message().to_string()));
             }
         }
     }
 
     let Some(runtime_id) = runtime_id else {
-        return protocol::response_protocol_err_typed(
-            ctx.client,
-            ctx.request_id,
-            ControlErrorCode::NoModel,
-            protocol::schema::ERROR,
-            "No Model Loaded",
-        );
+        return Err((ControlErrorCode::NoModel, "No Model Loaded".to_string()));
     };
 
-    let replay_messages = match ctx.storage.load_replay_messages_for_session(session_id) {
-        Ok(messages) => messages,
-        Err(err) => {
-            return protocol::response_protocol_err_typed(
-                ctx.client,
-                ctx.request_id,
+    let replay_messages = ctx
+        .storage
+        .load_replay_messages_for_session(session_id)
+        .map_err(|err| {
+            (
                 ControlErrorCode::Generic,
-                protocol::schema::ERROR,
-                &format!(
+                format!(
                     "Failed to load persisted history for session '{}': {}",
                     session_id, err
                 ),
-            );
-        }
-    };
+            )
+        })?;
 
     let system_prompt =
         crate::agent_prompt::build_agent_system_prompt(ctx.tool_registry, ToolCaller::AgentText);
     let rendered_prompt = {
         let Some(engine) = ctx.runtime_registry.engine(&runtime_id) else {
-            return protocol::response_protocol_err_typed(
-                ctx.client,
-                ctx.request_id,
+            return Err((
                 ControlErrorCode::NoModel,
-                protocol::schema::ERROR,
-                &format!(
+                format!(
                     "Runtime '{}' is not loaded after activation for session '{}'",
                     runtime_id, session_id
                 ),
-            );
+            ));
         };
 
-        match render_prompt_from_replay_history(&replay_messages, &system_prompt, engine) {
-            Ok(prompt) => prompt,
-            Err(detail) => {
-                return protocol::response_protocol_err_typed(
-                    ctx.client,
-                    ctx.request_id,
-                    ControlErrorCode::Generic,
-                    protocol::schema::ERROR,
-                    &detail,
-                );
-            }
-        }
+        render_prompt_from_replay_history(&replay_messages, &system_prompt, engine)
+            .map_err(|detail| (ControlErrorCode::Generic, detail))?
     };
 
     let workload = ctx
@@ -865,32 +970,16 @@ pub(crate) fn handle_resume_session(ctx: ProcessCommandContext<'_>, payload: &[u
         .flatten()
         .and_then(|value| parse_workload_label(&value))
         .unwrap_or_default();
-    let permission_policy = match ProcessPermissionPolicy::interactive_chat(ctx.tool_registry) {
-        Ok(policy) => policy,
-        Err(err) => {
-            return protocol::response_protocol_err_typed(
-                ctx.client,
-                ctx.request_id,
-                ControlErrorCode::SpawnFailed,
-                protocol::schema::ERROR,
-                &err,
-            );
-        }
-    };
+    let permission_policy = ProcessPermissionPolicy::interactive_chat(ctx.tool_registry)
+        .map_err(|err| (ControlErrorCode::SpawnFailed, err))?;
     let pid_floor = ctx.runtime_registry.next_pid_floor();
 
     let spawn_result = {
         let Some(engine) = ctx.runtime_registry.engine_mut(&runtime_id) else {
-            return protocol::response_protocol_err_typed(
-                ctx.client,
-                ctx.request_id,
+            return Err((
                 ControlErrorCode::NoModel,
-                protocol::schema::ERROR,
-                &format!(
-                    "Runtime '{}' is not available for session resume",
-                    runtime_id
-                ),
-            );
+                format!("Runtime '{}' is not available for session resume", runtime_id),
+            ));
         };
 
         spawn_restored_managed_process_with_session(
@@ -914,60 +1003,41 @@ pub(crate) fn handle_resume_session(ctx: ProcessCommandContext<'_>, payload: &[u
                 context_policy: None,
             },
         )
-    };
+        .map_err(|err| (ControlErrorCode::SpawnFailed, err))
+    }?;
 
-    match spawn_result {
-        Ok(spawned) => {
-            if let Err(err) =
-                ctx.runtime_registry
-                    .register_pid(ctx.storage, &runtime_id, spawned.pid)
-            {
-                tracing::warn!(
-                    pid = spawned.pid,
-                    runtime_id,
-                    %err,
-                    "PROCESS_CMD: failed to register resumed pid in runtime registry"
-                );
-            }
-
-            ctx.pending_events.push(KernelEvent::WorkspaceChanged {
-                pid: spawned.pid,
-                reason: "session_resumed".to_string(),
-            });
-            ctx.pending_events.push(KernelEvent::LobbyChanged {
-                reason: "session_resumed".to_string(),
-            });
-            log_event(
-                "process_resume_session",
-                ctx.client_id,
-                Some(spawned.pid),
-                "session_resumed_from_persisted_history",
-            );
-
-            protocol::response_protocol_ok(
-                ctx.client,
-                ctx.request_id,
-                "RESUME_SESSION",
-                agentic_protocol::schema::RESUME_SESSION,
-                &ResumeSessionResult {
-                    session_id: spawned.session_id,
-                    pid: spawned.pid,
-                    resumed_from_history: true,
-                },
-                Some(&format!(
-                    "Session {} resumed on PID {}",
-                    session_id, spawned.pid
-                )),
-            )
-        }
-        Err(err) => protocol::response_protocol_err_typed(
-            ctx.client,
-            ctx.request_id,
-            ControlErrorCode::SpawnFailed,
-            protocol::schema::ERROR,
-            &err,
-        ),
+    if let Err(err) = ctx
+        .runtime_registry
+        .register_pid(ctx.storage, &runtime_id, spawn_result.pid)
+    {
+        tracing::warn!(
+            pid = spawn_result.pid,
+            runtime_id,
+            %err,
+            "PROCESS_CMD: failed to register resumed pid in runtime registry"
+        );
     }
+
+    ctx.pending_events.push(KernelEvent::WorkspaceChanged {
+        pid: spawn_result.pid,
+        reason: "session_resumed".to_string(),
+    });
+    ctx.pending_events.push(KernelEvent::LobbyChanged {
+        reason: "session_resumed".to_string(),
+    });
+    log_event(
+        "process_resume_session",
+        ctx.client_id,
+        Some(spawn_result.pid),
+        "session_resumed_from_persisted_history",
+    );
+
+    Ok(SessionContinuationTarget {
+        session_id: spawn_result.session_id,
+        runtime_id,
+        pid: spawn_result.pid,
+        resumed_from_history: true,
+    })
 }
 
 fn runtime_selector_for_session(
@@ -1045,4 +1115,255 @@ fn render_prompt_from_replay_history(
     }
 
     Ok(rendered)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::net::TcpListener;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use serde_json::json;
+
+    use super::handle_send_input;
+    use crate::backend::{resolve_driver_for_model, TestOpenAIConfigOverrideGuard};
+    use crate::commands::context::ProcessCommandContext;
+    use crate::commands::metrics::MetricsState;
+    use crate::config::OpenAIResponsesConfig;
+    use crate::memory::NeuralMemory;
+    use crate::model_catalog::{ModelCatalog, RemoteModelEntry, ResolvedModelTarget, WorkloadClass};
+    use crate::process::ProcessLifecyclePolicy;
+    use crate::prompting::PromptFamily;
+    use crate::resource_governor::ResourceGovernor;
+    use crate::runtimes::{RuntimeRegistry, RuntimeReservation};
+    use crate::scheduler::{ProcessPriority, ProcessScheduler};
+    use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
+    use crate::session::SessionRegistry;
+    use crate::storage::StorageService;
+    use crate::tool_registry::ToolRegistry;
+    use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
+    use crate::transport::Client;
+
+    #[test]
+    fn send_input_by_session_id_implicitly_resumes_historical_session() {
+        let _openai = TestOpenAIConfigOverrideGuard::set(test_openai_config());
+        let base = temp_dir("agenticos_process_cmd_resume");
+        let db_path = base.join("agenticos.db");
+
+        let session_id = {
+            let mut storage = StorageService::open(&db_path).expect("open storage");
+            let boot = storage
+                .record_kernel_boot("0.5.0-test")
+                .expect("record first boot");
+            let mut runtime_registry = RuntimeRegistry::load(&mut storage).expect("load runtimes");
+            let mut session_registry =
+                SessionRegistry::load(&mut storage, boot.boot_id).expect("load sessions");
+            let mut memory = NeuralMemory::new().expect("memory init");
+            let mut scheduler = ProcessScheduler::new();
+            let tool_registry = ToolRegistry::with_builtins();
+
+            let runtime = runtime_registry
+                .activate_target(
+                    &mut storage,
+                    &remote_target(),
+                    RuntimeReservation::default(),
+                )
+                .expect("activate remote runtime");
+            let spawned = {
+                let pid_floor = runtime_registry.next_pid_floor();
+                let engine = runtime_registry
+                    .engine_mut(&runtime.runtime_id)
+                    .expect("runtime engine");
+                spawn_managed_process_with_session(
+                    &runtime.runtime_id,
+                    pid_floor,
+                    engine,
+                    &mut memory,
+                    &mut scheduler,
+                    &mut session_registry,
+                    &mut storage,
+                    ManagedProcessRequest {
+                        prompt: "Prima domanda".to_string(),
+                        system_prompt: None,
+                        owner_id: 41,
+                        tool_caller: ToolCaller::AgentText,
+                        permission_policy: Some(
+                            ProcessPermissionPolicy::interactive_chat(&tool_registry)
+                                .expect("interactive permissions"),
+                        ),
+                        workload: WorkloadClass::General,
+                        required_backend_class: None,
+                        priority: ProcessPriority::Normal,
+                        lifecycle_policy: ProcessLifecyclePolicy::Interactive,
+                        context_policy: None,
+                    },
+                )
+                .expect("spawn initial session")
+            };
+            runtime_registry
+                .register_pid(&mut storage, &runtime.runtime_id, spawned.pid)
+                .expect("register initial pid");
+
+            let turn_id = storage
+                .start_session_turn(
+                    &spawned.session_id,
+                    spawned.pid,
+                    "general",
+                    "test",
+                    "Prima domanda",
+                    "prompt",
+                )
+                .expect("start first turn");
+            session_registry.remember_active_turn(spawned.pid, turn_id);
+            storage
+                .append_assistant_message(turn_id, "Prima risposta")
+                .expect("persist assistant message");
+            storage
+                .finish_turn(turn_id, "completed", "turn_completed", None)
+                .expect("finish first turn");
+            session_registry.clear_active_turn(spawned.pid);
+            session_registry
+                .release_pid(&mut storage, spawned.pid, "completed")
+                .expect("release session pid");
+
+            spawned.session_id
+        };
+
+        let mut storage = StorageService::open(&db_path).expect("reopen storage");
+        let boot = storage
+            .record_kernel_boot("0.5.0-test")
+            .expect("record second boot");
+        let mut runtime_registry = RuntimeRegistry::load(&mut storage).expect("reload runtimes");
+        let mut session_registry =
+            SessionRegistry::load(&mut storage, boot.boot_id).expect("reload sessions");
+        let mut model_catalog =
+            ModelCatalog::discover(&repository_root().join("models")).expect("discover catalog");
+        let mut resource_governor =
+            ResourceGovernor::load(&mut storage, Default::default()).expect("load governor");
+        let mut memory = NeuralMemory::new().expect("memory init");
+        let mut scheduler = ProcessScheduler::new();
+        let in_flight = HashSet::new();
+        let mut pending_kills = Vec::new();
+        let mut pending_events = Vec::new();
+        let mut metrics = MetricsState::new();
+        let tool_registry = ToolRegistry::with_builtins();
+        let mut client = test_client();
+
+        let payload = serde_json::to_vec(&json!({
+            "session_id": session_id,
+            "prompt": "Seconda domanda"
+        }))
+        .expect("serialize payload");
+
+        let response = handle_send_input(
+            ProcessCommandContext {
+                client: &mut client,
+                request_id: "test:1",
+                runtime_registry: &mut runtime_registry,
+                resource_governor: &mut resource_governor,
+                model_catalog: &mut model_catalog,
+                memory: &mut memory,
+                scheduler: &mut scheduler,
+                in_flight: &in_flight,
+                pending_kills: &mut pending_kills,
+                pending_events: &mut pending_events,
+                metrics: &mut metrics,
+                client_id: 99,
+                session_registry: &mut session_registry,
+                storage: &mut storage,
+                tool_registry: &tool_registry,
+            },
+            &payload,
+        );
+
+        assert!(
+            response.starts_with(b"+OK"),
+            "expected +OK response, got: {}",
+            String::from_utf8_lossy(&response)
+        );
+
+        let resumed_pid = session_registry
+            .active_pid_for_session(&session_id)
+            .expect("session bound to resumed pid");
+        let runtime_id = session_registry
+            .runtime_id_for_session(&session_id)
+            .expect("runtime id for resumed session")
+            .to_string();
+        let process = runtime_registry
+            .engine(&runtime_id)
+            .and_then(|engine| engine.processes.get(&resumed_pid))
+            .expect("resumed process");
+
+        assert!(process.prompt_text().contains("Prima domanda"));
+        assert!(process.prompt_text().contains("Prima risposta"));
+        assert!(process.prompt_text().contains("Seconda domanda"));
+
+        let replay_messages = storage
+            .load_replay_messages_for_session(&session_id)
+            .expect("load replay messages");
+        assert!(replay_messages
+            .iter()
+            .any(|message| message.content == "Seconda domanda"));
+    }
+
+    fn test_openai_config() -> OpenAIResponsesConfig {
+        OpenAIResponsesConfig {
+            endpoint: "https://api.openai.example/v1/responses".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-4.1-mini".to_string(),
+            stream: true,
+            ..Default::default()
+        }
+    }
+
+    fn remote_target() -> ResolvedModelTarget {
+        let driver_resolution =
+            resolve_driver_for_model(PromptFamily::Unknown, None, Some("openai-responses"))
+                .expect("resolve remote backend");
+        ResolvedModelTarget::remote(
+            "openai-responses",
+            "OpenAI",
+            "openai-responses",
+            "gpt-4.1-mini",
+            RemoteModelEntry {
+                id: "gpt-4.1-mini".to_string(),
+                label: "GPT-4.1 mini".to_string(),
+                context_window_tokens: None,
+                max_output_tokens: None,
+                supports_structured_output: true,
+                input_price_usd_per_mtok: None,
+                output_price_usd_per_mtok: None,
+            },
+            test_openai_config().into(),
+            None,
+            driver_resolution,
+        )
+    }
+
+    fn test_client() -> Client {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let join = std::thread::spawn(move || listener.accept().expect("accept client").0);
+        let client_stream = std::net::TcpStream::connect(addr).expect("connect listener");
+        let _server_stream = join.join().expect("join accept thread");
+        Client::new(mio::net::TcpStream::from_std(client_stream), true)
+    }
+
+    fn repository_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("canonical repository root")
+    }
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
+        std::fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
 }

@@ -49,7 +49,11 @@ pub(crate) fn build_agent_capability_manifest(
             name: entry.descriptor.name.clone(),
             description: entry.descriptor.description.clone(),
             input_schema: entry.descriptor.input_schema.clone(),
-            input_example: synthesize_object_example(&entry.descriptor.input_schema),
+            input_example: entry
+                .descriptor
+                .input_example
+                .clone()
+                .unwrap_or_else(|| synthesize_object_example(&entry.descriptor.input_schema)),
             dangerous: entry.descriptor.dangerous,
             backend_kind: entry.descriptor.backend_kind.clone(),
             source: entry.descriptor.source.clone(),
@@ -157,6 +161,7 @@ mod tests {
                         "properties": {"path": {"type": "string"}},
                         "additionalProperties": false
                     }),
+                    input_example: None,
                     output_schema: json!({"type": "object"}),
                     allowed_callers: vec![ToolCaller::AgentText],
                     backend_kind: ToolBackendKind::Host,
@@ -177,6 +182,7 @@ mod tests {
                     aliases: vec![],
                     description: "hidden".to_string(),
                     input_schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
+                    input_example: None,
                     output_schema: json!({"type": "object"}),
                     allowed_callers: vec![ToolCaller::Programmatic],
                     backend_kind: ToolBackendKind::Host,
@@ -197,6 +203,7 @@ mod tests {
                     aliases: vec![],
                     description: "disabled".to_string(),
                     input_schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
+                    input_example: None,
                     output_schema: json!({"type": "object"}),
                     allowed_callers: vec![ToolCaller::AgentText],
                     backend_kind: ToolBackendKind::Host,

@@ -418,6 +418,9 @@ fn spawn_workflow_requests(
             let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
                 return Err("no_model_loaded".to_string());
             };
+            let effective_context_policy = req
+                .context_policy
+                .align_to_runtime_window_if_default(engine.effective_context_window_tokens());
             spawn_managed_process_with_session(
                 &runtime_id,
                 pid_floor,
@@ -436,7 +439,7 @@ fn spawn_workflow_requests(
                     required_backend_class: req.required_backend_class,
                     priority: ProcessPriority::Normal,
                     lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
-                    context_policy: Some(req.context_policy.clone()),
+                    context_policy: Some(effective_context_policy),
                 },
             )
         };

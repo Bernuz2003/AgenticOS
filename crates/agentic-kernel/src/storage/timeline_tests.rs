@@ -25,14 +25,14 @@ fn session_turns_persist_user_input_chunks_and_finish_markers() {
         .bind_session_to_pid("sess-1", "rt-test", boot.boot_id, 9, 2_000)
         .expect("bind session");
 
-    storage
+    let turn_id = storage
         .start_session_turn("sess-1", 9, "general", "exec", "hello", "prompt")
         .expect("start turn");
     storage
-        .append_assistant_chunk_for_pid(9, "world")
-        .expect("append chunk");
+        .append_assistant_message(turn_id, "world")
+        .expect("append assistant");
     storage
-        .finish_latest_turn_for_pid(9, "completed", "turn_completed", None)
+        .finish_turn(turn_id, "completed", "turn_completed", None)
         .expect("finish turn");
 
     let turn_count: i64 = storage

@@ -100,6 +100,8 @@ pub struct ToolDescriptor {
     pub aliases: Vec<String>,
     pub description: String,
     pub input_schema: Value,
+    #[serde(default)]
+    pub input_example: Option<Value>,
     pub output_schema: Value,
     #[serde(default = "default_allowed_callers")]
     pub allowed_callers: Vec<ToolCaller>,
@@ -234,6 +236,13 @@ fn validate_entry(entry: &ToolRegistryEntry) -> Result<(), String> {
         &descriptor.output_schema,
         &format!("tool '{}'.output_schema", descriptor.name),
     )?;
+    if let Some(example) = descriptor.input_example.as_ref() {
+        crate::tools::schema::validate_value(
+            &descriptor.input_schema,
+            example,
+            &format!("tool '{}'.input_example", descriptor.name),
+        )?;
+    }
 
     if descriptor.backend_kind != entry.backend.kind() {
         return Err(format!(

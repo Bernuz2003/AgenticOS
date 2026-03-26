@@ -142,7 +142,7 @@ pub fn spawn_managed_process(
         engine.runtime_reference(),
     )?;
 
-    let context_policy = context_policy.unwrap_or_else(ContextPolicy::from_kernel_defaults);
+    let context_policy = resolve_process_context_policy(engine, context_policy);
     let permission_policy = permission_policy
         .ok_or_else(|| "Missing process permission policy for spawn request.".to_string())?;
     let pid = engine
@@ -191,7 +191,7 @@ pub fn spawn_restored_managed_process(
         engine.runtime_reference(),
     )?;
 
-    let context_policy = context_policy.unwrap_or_else(ContextPolicy::from_kernel_defaults);
+    let context_policy = resolve_process_context_policy(engine, context_policy);
     let permission_policy = permission_policy
         .ok_or_else(|| "Missing process permission policy for restored request.".to_string())?;
     let pid = engine
@@ -333,6 +333,15 @@ fn validate_backend_class_policy(
         required_backend_class.as_str(),
         loaded_backend_class.as_str()
     ))
+}
+
+fn resolve_process_context_policy(
+    engine: &LLMEngine,
+    requested: Option<ContextPolicy>,
+) -> ContextPolicy {
+    requested
+        .unwrap_or_else(ContextPolicy::from_kernel_defaults)
+        .align_to_runtime_window_if_default(engine.effective_context_window_tokens())
 }
 
 fn attach_process_resources(

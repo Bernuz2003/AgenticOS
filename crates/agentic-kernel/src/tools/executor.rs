@@ -132,6 +132,7 @@ mod tests {
                         "properties": {},
                         "additionalProperties": false
                     }),
+                    input_example: None,
                     output_schema: json!({
                         "type": "object",
                         "required": ["output", "entries"],

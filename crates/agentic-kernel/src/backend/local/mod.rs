@@ -19,6 +19,7 @@ pub(crate) use runtime_manager::{
 #[cfg(test)]
 pub(crate) use runtime_manager::{
     TestExternalEndpointOverrideGuard, TestExternalRuntimeReadyGuard,
+    TestRuntimeDriverAvailabilityGuard,
 };
 
 const FAMILIES_COMMON: [PromptFamily; 3] = [

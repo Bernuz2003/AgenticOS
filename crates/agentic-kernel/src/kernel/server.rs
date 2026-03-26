@@ -218,6 +218,7 @@ impl Kernel {
                 &mut self.clients,
                 &self.poll,
                 &mut self.next_event_sequence,
+                &mut self.session_registry,
                 &mut self.storage,
                 &mut self.pending_events,
             );

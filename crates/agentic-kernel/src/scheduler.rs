@@ -154,6 +154,9 @@ pub struct CheckedOutProcessMetadata {
     pub backend_capabilities: Option<BackendCapabilities>,
     pub context: ContextStatusSnapshot,
     pub pending_human_request: Option<HumanInputRequest>,
+    pub pending_output_buffer: String,
+    pub captured_assistant_text: String,
+    pub pending_stream_syscall: Option<String>,
 }
 
 // ── ProcessScheduler ────────────────────────────────────────────────────
@@ -226,8 +229,16 @@ impl ProcessScheduler {
         self.checked_out_processes.remove(&pid);
     }
 
+    pub fn take_checked_out_process(&mut self, pid: u64) -> Option<CheckedOutProcessMetadata> {
+        self.checked_out_processes.remove(&pid)
+    }
+
     pub fn checked_out_process(&self, pid: u64) -> Option<&CheckedOutProcessMetadata> {
         self.checked_out_processes.get(&pid)
+    }
+
+    pub fn checked_out_process_mut(&mut self, pid: u64) -> Option<&mut CheckedOutProcessMetadata> {
+        self.checked_out_processes.get_mut(&pid)
     }
 
     pub fn checked_out_snapshots(&self) -> Vec<(u64, CheckedOutProcessMetadata)> {

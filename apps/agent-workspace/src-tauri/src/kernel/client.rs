@@ -477,9 +477,15 @@ impl KernelBridge {
         self.decode_response(&response.payload, &[agentic_protocol::schema::LOAD])
     }
 
-    pub fn send_input(&mut self, pid: u64, prompt: &str) -> KernelBridgeResult<SendInputResult> {
+    pub fn send_input(
+        &mut self,
+        pid: Option<u64>,
+        session_id: Option<&str>,
+        prompt: &str,
+    ) -> KernelBridgeResult<SendInputResult> {
         let payload = serde_json::to_vec(&serde_json::json!({
             "pid": pid,
+            "session_id": session_id,
             "prompt": prompt,
         }))?;
         let response = self.send_control_command(OpCode::SendInput, &payload)?;

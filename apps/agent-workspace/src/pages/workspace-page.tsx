@@ -6,7 +6,6 @@ import { AuditDrawer } from "../components/workspace/audit-drawer";
 import { ArrowLeft } from "lucide-react";
 import {
   continueSessionOutput,
-  resumeSession,
   sendSessionInput,
   stopSessionOutput,
 } from "../lib/api";
@@ -171,19 +170,13 @@ export function WorkspacePage() {
     setComposerError(null);
     setTurnActionError(null);
     try {
-      let targetPid = activePid;
-      if (!targetPid) {
-        const resumed = await resumeSession(session.sessionId);
-        targetPid = resumed.pid;
-      }
-
-      if (!targetPid) {
-        throw new Error("No live PID available for session input");
-      }
-
-      await sendSessionInput(targetPid, prompt);
+      const result = await sendSessionInput({
+        pid: activePid,
+        sessionId: session.sessionId,
+        prompt,
+      });
       setComposerValue("");
-      await refreshWorkspace(session.sessionId, targetPid);
+      await refreshWorkspace(session.sessionId, result.pid);
     } catch (error) {
       setComposerError(
         error instanceof Error ? error.message : "Failed to resume or send input to session",

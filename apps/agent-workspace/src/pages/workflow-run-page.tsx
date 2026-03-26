@@ -375,7 +375,11 @@ export function WorkflowRunPage() {
     setHumanReplyError(null);
     setWorkspaceError(null);
     try {
-      await sendSessionInput(selectedAttempt.pid, reply);
+      await sendSessionInput({
+        pid: selectedAttempt.pid,
+        sessionId: selectedAttempt.sessionId,
+        prompt: reply,
+      });
       setHumanReply("");
       await Promise.all([refreshLobby(), reloadDetail(), refreshSelectedAttempt()]);
     } catch (replyError) {

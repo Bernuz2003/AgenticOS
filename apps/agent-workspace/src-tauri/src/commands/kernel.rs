@@ -357,7 +357,8 @@ pub async fn load_model(
 
 #[tauri::command]
 pub async fn send_session_input(
-    pid: u64,
+    pid: Option<u64>,
+    session_id: Option<String>,
     prompt: String,
     state: State<'_, AppState>,
 ) -> Result<SendInputResult, String> {
@@ -365,20 +366,27 @@ pub async fn send_session_input(
     let bridge = state.bridge.clone();
     let timeline_store = state.timeline_store.clone();
     run_blocking(move || {
-        let session_id =
-            composer::ensure_live_timeline_for_pid(&workspace_root, &bridge, &timeline_store, pid)?;
-        let mut bridge = bridge
-            .lock()
-            .map_err(|_| "Bridge state lock poisoned".to_string())?;
-        let result = bridge
-            .send_input(pid, &prompt)
-            .map_err(|err| err.to_string())?;
+        let result = {
+            let mut bridge_guard = bridge
+                .lock()
+                .map_err(|_| "Bridge state lock poisoned".to_string())?;
+            bridge_guard
+                .send_input(pid, session_id.as_deref(), &prompt)
+                .map_err(|err| err.to_string())?
+        };
+        let timeline_session_id = session_id
+            .clone()
+            .unwrap_or_else(|| format!("pid-{}", result.pid));
 
-        if let Ok(mut store) = timeline_store.lock() {
-            if !store.has_pid(pid) {
-                store.insert_empty_session(pid, session_id, "general".to_string());
-            }
-            store.append_user_turn(pid, prompt);
+        if let Err(err) = composer::register_live_user_input(
+            &workspace_root,
+            &timeline_store,
+            &timeline_session_id,
+            result.pid,
+            None,
+            &prompt,
+        ) {
+            let _ = err;
         }
 
         Ok(result)

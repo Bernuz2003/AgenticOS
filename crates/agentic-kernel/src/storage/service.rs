@@ -39,6 +39,15 @@ pub(crate) enum StorageError {
     #[error("database schema version {found} is newer than supported version {supported}")]
     SchemaVersionTooNew { found: i32, supported: i32 },
 
+    #[error("no active process run found for session '{session_id}' and pid {pid}")]
+    MissingProcessRun { session_id: String, pid: u64 },
+
+    #[error("turn {turn_id} not found")]
+    MissingTurn { turn_id: i64 },
+
+    #[error("kernel boot record is required before importing legacy timelines")]
+    MissingKernelBoot,
+
     #[error("sqlite operation failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
 }

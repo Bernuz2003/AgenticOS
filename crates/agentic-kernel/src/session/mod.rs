@@ -51,6 +51,7 @@ pub(crate) struct SessionRegistry {
     next_sequence: u64,
     sessions: BTreeMap<String, SessionRecord>,
     pid_to_session: HashMap<u64, String>,
+    pid_to_active_turn: HashMap<u64, i64>,
 }
 
 impl SessionRegistry {
@@ -88,6 +89,7 @@ impl SessionRegistry {
             next_sequence,
             sessions,
             pid_to_session,
+            pid_to_active_turn: HashMap::new(),
         })
     }
 
@@ -131,6 +133,8 @@ impl SessionRegistry {
         storage.delete_session(session_id)?;
         self.sessions.remove(session_id);
         self.pid_to_session.retain(|_, bound| bound != session_id);
+        self.pid_to_active_turn
+            .retain(|pid, _| self.pid_to_session.contains_key(pid));
         Ok(())
     }
 
@@ -176,6 +180,18 @@ impl SessionRegistry {
         record.updated_at_ms = now;
 
         Ok(Some(session_id))
+    }
+
+    pub(crate) fn remember_active_turn(&mut self, pid: u64, turn_id: i64) {
+        self.pid_to_active_turn.insert(pid, turn_id);
+    }
+
+    pub(crate) fn active_turn_id_for_pid(&self, pid: u64) -> Option<i64> {
+        self.pid_to_active_turn.get(&pid).copied()
+    }
+
+    pub(crate) fn clear_active_turn(&mut self, pid: u64) -> Option<i64> {
+        self.pid_to_active_turn.remove(&pid)
     }
 
     pub(crate) fn session_id_for_pid(&self, pid: u64) -> Option<&str> {

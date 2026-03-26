@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
 
-use agentic_control_models::KernelEvent;
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::Deserialize;
 
@@ -98,15 +97,22 @@ impl StorageService {
         source: &str,
         prompt: &str,
         prompt_kind: &str,
-    ) -> Result<(), StorageError> {
+    ) -> Result<i64, StorageError> {
         let started_at_ms = current_timestamp_ms();
         let transaction = self.connection.transaction()?;
         let turn_index = next_turn_index(&transaction, session_id)?;
+        let run_id = active_run_id_for_session_pid(&transaction, session_id, pid)?.ok_or_else(|| {
+            StorageError::MissingProcessRun {
+                session_id: session_id.to_string(),
+                pid,
+            }
+        })?;
 
         transaction.execute(
             r#"
             INSERT INTO session_turns (
                 session_id,
+                run_id,
                 pid,
                 turn_index,
                 workload,
@@ -116,9 +122,17 @@ impl StorageService {
                 updated_at_ms,
                 completed_at_ms,
                 finish_reason
-            ) VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?6, NULL, NULL)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', ?7, ?7, NULL, NULL)
             "#,
-            params![session_id, pid, turn_index, workload, source, started_at_ms],
+            params![
+                session_id,
+                run_id,
+                pid,
+                turn_index,
+                workload,
+                source,
+                started_at_ms
+            ],
         )?;
         let turn_id = transaction.last_insert_rowid();
         insert_message(
@@ -138,15 +152,14 @@ impl StorageService {
         )?;
         transaction.commit()?;
 
-        Ok(())
+        Ok(turn_id)
     }
 
-    pub(crate) fn resume_latest_turn_for_pid(&mut self, pid: u64) -> Result<(), StorageError> {
+    pub(crate) fn resume_turn(&mut self, turn_id: i64) -> Result<(), StorageError> {
         let updated_at_ms = current_timestamp_ms();
         let transaction = self.connection.transaction()?;
-        let Some((turn_id, session_id)) = latest_turn_identity_for_pid(&transaction, pid)? else {
-            return Ok(());
-        };
+        let (session_id, _) = turn_identity(&transaction, turn_id)?
+            .ok_or(StorageError::MissingTurn { turn_id })?;
 
         transaction.execute(
             r#"
@@ -168,9 +181,9 @@ impl StorageService {
         Ok(())
     }
 
-    pub(crate) fn append_assistant_chunk_for_pid(
+    pub(crate) fn append_assistant_message(
         &mut self,
-        pid: u64,
+        turn_id: i64,
         text: &str,
     ) -> Result<(), StorageError> {
         if text.is_empty() {
@@ -179,22 +192,32 @@ impl StorageService {
 
         let created_at_ms = current_timestamp_ms();
         let transaction = self.connection.transaction()?;
-        let Some((turn_id, session_id)) = latest_turn_identity_for_pid(&transaction, pid)? else {
-            return Ok(());
-        };
-        let ordinal = next_message_ordinal(&transaction, turn_id)?;
+        let (session_id, pid) = turn_identity(&transaction, turn_id)?
+            .ok_or(StorageError::MissingTurn { turn_id })?;
 
-        insert_message(
-            &transaction,
-            &session_id,
-            turn_id,
-            pid,
-            ordinal,
-            "assistant",
-            "chunk",
-            text,
-            created_at_ms,
-        )?;
+        if let Some(message_id) = assistant_message_id_for_turn(&transaction, turn_id)? {
+            transaction.execute(
+                r#"
+                UPDATE session_messages
+                SET content = content || ?2
+                WHERE message_id = ?1
+                "#,
+                params![message_id, text],
+            )?;
+        } else {
+            let ordinal = next_message_ordinal(&transaction, turn_id)?;
+            insert_message(
+                &transaction,
+                &session_id,
+                turn_id,
+                pid,
+                ordinal,
+                "assistant",
+                "message",
+                text,
+                created_at_ms,
+            )?;
+        }
         transaction.execute(
             "UPDATE session_turns SET updated_at_ms = ?2 WHERE turn_id = ?1",
             params![turn_id, created_at_ms],
@@ -208,18 +231,17 @@ impl StorageService {
         Ok(())
     }
 
-    pub(crate) fn finish_latest_turn_for_pid(
+    pub(crate) fn finish_turn(
         &mut self,
-        pid: u64,
+        turn_id: i64,
         status: &str,
         finish_reason: &str,
         marker_text: Option<&str>,
     ) -> Result<(), StorageError> {
         let ended_at_ms = current_timestamp_ms();
         let transaction = self.connection.transaction()?;
-        let Some((turn_id, session_id)) = latest_turn_identity_for_pid(&transaction, pid)? else {
-            return Ok(());
-        };
+        let (session_id, pid) = turn_identity(&transaction, turn_id)?
+            .ok_or(StorageError::MissingTurn { turn_id })?;
         let (current_status, current_finish_reason): (String, Option<String>) = transaction
             .query_row(
                 "SELECT status, finish_reason FROM session_turns WHERE turn_id = ?1",
@@ -281,16 +303,15 @@ impl StorageService {
         Ok(())
     }
 
-    pub(crate) fn error_latest_turn_for_pid(
+    pub(crate) fn error_turn(
         &mut self,
-        pid: u64,
+        turn_id: i64,
         message: &str,
     ) -> Result<(), StorageError> {
         let ended_at_ms = current_timestamp_ms();
         let transaction = self.connection.transaction()?;
-        let Some((turn_id, session_id)) = latest_turn_identity_for_pid(&transaction, pid)? else {
-            return Ok(());
-        };
+        let (session_id, pid) = turn_identity(&transaction, turn_id)?
+            .ok_or(StorageError::MissingTurn { turn_id })?;
 
         transaction.execute(
             r#"
@@ -322,41 +343,6 @@ impl StorageService {
         transaction.commit()?;
 
         Ok(())
-    }
-
-    pub(crate) fn record_kernel_event(&mut self, event: &KernelEvent) -> Result<(), StorageError> {
-        match event {
-            KernelEvent::SessionStarted {
-                session_id,
-                pid,
-                workload,
-                prompt,
-            } => self.start_session_turn(
-                session_id,
-                *pid,
-                workload,
-                "kernel_event",
-                prompt,
-                "prompt",
-            ),
-            KernelEvent::TimelineChunk { pid, text } => {
-                self.append_assistant_chunk_for_pid(*pid, text)
-            }
-            KernelEvent::SessionFinished {
-                pid,
-                tokens_generated,
-                elapsed_secs,
-                reason,
-            } => {
-                let (status, marker_text) =
-                    finish_reason_to_turn_outcome(reason, *tokens_generated, *elapsed_secs);
-                self.finish_latest_turn_for_pid(*pid, status, reason, marker_text.as_deref())
-            }
-            KernelEvent::SessionErrored { pid, message } => {
-                self.error_latest_turn_for_pid(*pid, message)
-            }
-            _ => Ok(()),
-        }
     }
 
     fn legacy_import_already_completed(&self) -> Result<bool, StorageError> {
@@ -397,6 +383,13 @@ impl StorageService {
             report.imported_sessions = 1;
         }
 
+        let run_id = ensure_legacy_process_run(
+            &transaction,
+            &legacy.session_id,
+            legacy.pid,
+            imported_at_ms,
+        )?;
+
         for (index, turn) in legacy.turns.iter().enumerate() {
             let turn_index = (index as i64) + 1;
             let turn_started_at_ms = imported_at_ms + (index as i64);
@@ -404,6 +397,7 @@ impl StorageService {
                 r#"
                 INSERT INTO session_turns (
                     session_id,
+                    run_id,
                     pid,
                     turn_index,
                     workload,
@@ -413,10 +407,11 @@ impl StorageService {
                     updated_at_ms,
                     completed_at_ms,
                     finish_reason
-                ) VALUES (?1, ?2, ?3, ?4, 'legacy_import', ?5, ?6, ?6, ?7, ?8)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, 'legacy_import', ?6, ?7, ?7, ?8, ?9)
                 "#,
                 params![
                     legacy.session_id,
+                    run_id,
                     legacy.pid,
                     turn_index,
                     legacy.workload,
@@ -458,7 +453,7 @@ impl StorageService {
                     legacy.pid,
                     2,
                     "assistant",
-                    "chunk",
+                    "message",
                     &turn.assistant_stream,
                     turn_started_at_ms,
                 )?;
@@ -581,21 +576,24 @@ fn next_turn_index(
     )
 }
 
-fn latest_turn_identity_for_pid(
+fn active_run_id_for_session_pid(
     transaction: &Transaction<'_>,
+    session_id: &str,
     pid: u64,
-) -> Result<Option<(i64, String)>, rusqlite::Error> {
+) -> Result<Option<i64>, rusqlite::Error> {
     transaction
         .query_row(
             r#"
-            SELECT turn_id, session_id
-            FROM session_turns
-            WHERE pid = ?1
-            ORDER BY turn_index DESC, turn_id DESC
+            SELECT run_id
+            FROM process_runs
+            WHERE session_id = ?1
+              AND pid = ?2
+              AND ended_at_ms IS NULL
+            ORDER BY run_id DESC
             LIMIT 1
             "#,
-            params![pid],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            params![session_id, pid],
+            |row| row.get(0),
         )
         .optional()
 }
@@ -617,6 +615,90 @@ fn latest_turn_id_for_session(
             |row| row.get(0),
         )
         .optional()
+}
+
+fn turn_identity(
+    transaction: &Transaction<'_>,
+    turn_id: i64,
+) -> Result<Option<(String, u64)>, rusqlite::Error> {
+    transaction
+        .query_row(
+            "SELECT session_id, pid FROM session_turns WHERE turn_id = ?1",
+            params![turn_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+}
+
+fn assistant_message_id_for_turn(
+    transaction: &Transaction<'_>,
+    turn_id: i64,
+) -> Result<Option<i64>, rusqlite::Error> {
+    transaction
+        .query_row(
+            r#"
+            SELECT message_id
+            FROM session_messages
+            WHERE turn_id = ?1
+              AND role = 'assistant'
+            ORDER BY ordinal ASC, message_id ASC
+            LIMIT 1
+            "#,
+            params![turn_id],
+            |row| row.get(0),
+        )
+        .optional()
+}
+
+fn latest_kernel_boot_id(transaction: &Transaction<'_>) -> Result<Option<i64>, rusqlite::Error> {
+    transaction
+        .query_row(
+            "SELECT boot_id FROM kernel_boots ORDER BY boot_id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+}
+
+fn ensure_legacy_process_run(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    pid: u64,
+    imported_at_ms: i64,
+) -> Result<i64, StorageError> {
+    if let Some(existing) = transaction
+        .query_row(
+            r#"
+            SELECT run_id
+            FROM process_runs
+            WHERE session_id = ?1 AND pid = ?2
+            ORDER BY run_id DESC
+            LIMIT 1
+            "#,
+            params![session_id, pid],
+            |row| row.get(0),
+        )
+        .optional()?
+    {
+        return Ok(existing);
+    }
+
+    let boot_id = latest_kernel_boot_id(transaction)?.ok_or(StorageError::MissingKernelBoot)?;
+    transaction.execute(
+        r#"
+        INSERT INTO process_runs (
+            session_id,
+            boot_id,
+            pid,
+            runtime_id,
+            state,
+            started_at_ms,
+            ended_at_ms
+        ) VALUES (?1, ?2, ?3, NULL, 'legacy_import', ?4, ?4)
+        "#,
+        params![session_id, boot_id, pid, imported_at_ms],
+    )?;
+    Ok(transaction.last_insert_rowid())
 }
 
 pub(super) fn next_message_ordinal(
@@ -696,34 +778,6 @@ fn ensure_session_exists(
         params![session_id, title, imported_at_ms],
     )?;
     Ok(())
-}
-
-fn finish_reason_to_turn_outcome(
-    reason: &str,
-    tokens_generated: Option<u64>,
-    elapsed_secs: Option<f64>,
-) -> (&'static str, Option<String>) {
-    match reason {
-        "turn_completed" => ("completed", None),
-        "awaiting_turn_decision" => ("awaiting_turn_decision", None),
-        "completed" => (
-            "completed",
-            tokens_generated
-                .zip(elapsed_secs)
-                .map(|(tokens_generated, elapsed_secs)| {
-                    format!(
-                        "Process finished: tokens_generated={} elapsed_secs={:.3}",
-                        tokens_generated, elapsed_secs
-                    )
-                }),
-        ),
-        "terminated" => ("terminated", Some("terminated".to_string())),
-        "killed" => ("killed", Some("killed".to_string())),
-        "orchestrator_killed" => ("killed", Some("orchestrator_killed".to_string())),
-        "syscall_killed" => ("killed", Some("syscall_killed".to_string())),
-        "worker_error" => ("errored", Some("worker_error".to_string())),
-        other => ("completed", Some(other.to_string())),
-    }
 }
 
 fn file_timestamp_ms(path: &Path) -> Option<i64> {
