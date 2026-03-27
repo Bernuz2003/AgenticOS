@@ -1,8 +1,10 @@
 //! System configuration definition and initialization.
 
+pub mod environment;
 pub mod models;
 pub mod parser;
 
+pub use environment::*;
 pub use models::*;
 pub use parser::*;
 

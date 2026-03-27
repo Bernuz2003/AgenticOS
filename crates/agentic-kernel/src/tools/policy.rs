@@ -1,4 +1,4 @@
-use crate::backend::http::HttpEndpoint;
+use crate::backend::HttpEndpoint;
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};

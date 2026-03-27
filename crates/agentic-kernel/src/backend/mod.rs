@@ -4,21 +4,21 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokenizers::Tokenizer;
 
-use crate::accounting::BackendAccountingEvent;
+use crate::services::accounting::BackendAccountingEvent;
 use crate::memory::{ContextSlotId, SlotPersistenceKind};
 use crate::model_catalog::ResolvedModelTarget;
 use crate::prompting::{GenerationConfig, PromptFamily};
 
-pub(crate) mod http;
+pub(crate) mod common;
 mod local;
 mod remote;
-mod remote_adapter;
 
 pub(crate) use local::diagnose_external_backend;
 pub(crate) use local::managed_runtime_views;
 pub(crate) use local::shutdown_managed_runtimes;
 #[allow(unused_imports)]
 pub(crate) use local::ExternalLlamaCppBackend;
+pub(crate) use common::{HttpEndpoint, HttpJsonResponse, HttpRequestOptions, HttpStreamControl};
 use remote::RemoteOpenAICompatibleBackend;
 
 #[cfg(test)]
@@ -30,7 +30,7 @@ pub(crate) use local::TestRuntimeDriverAvailabilityGuard;
 #[cfg(test)]
 pub(crate) use remote::{TestOpenAIConfigOverrideGuard, TestRemoteOpenAIConfigOverrideGuard};
 #[cfg(test)]
-use remote_adapter::{combine_completion_text, completion_is_finished, CompletionResponse};
+use local::remote_adapter::{combine_completion_text, completion_is_finished, CompletionResponse};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -633,5 +633,5 @@ fn resolve_loadable_driver_descriptor(
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
+#[path = "tests/mod.rs"]
 mod tests;

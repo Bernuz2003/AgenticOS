@@ -652,5 +652,5 @@ fn system_time_to_unix_ms(value: SystemTime) -> Option<u64> {
 }
 
 #[cfg(test)]
-#[path = "workspace_tools_tests.rs"]
+#[path = "tests/workspace.rs"]
 mod tests;

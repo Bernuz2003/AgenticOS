@@ -1,22 +1,18 @@
-mod accounting;
-mod agent_capabilities;
-mod agent_prompt;
-mod audit;
 mod backend;
 mod checkpoint;
 mod commands;
 mod config;
+mod diagnostics;
 mod engine;
 mod errors;
 mod events;
-mod inference_worker;
 mod kernel;
 mod memory;
 mod model_catalog;
 mod orchestrator;
 mod policy;
 mod process;
-mod prompting;
+mod prompt;
 mod protocol;
 mod resource_governor;
 mod runtime;
@@ -25,21 +21,30 @@ mod scheduler;
 mod services;
 mod session;
 mod storage;
-mod text_invocation;
 mod tool_registry;
 mod tools;
 mod transport;
+mod invocation;
+mod workers;
+#[cfg(test)]
+mod test_support;
 
-use kernel::server::Kernel;
+#[allow(unused_imports)]
+pub(crate) use invocation::text as text_invocation;
+#[allow(unused_imports)]
+pub(crate) use prompt::agent_prompt as agent_prompt;
+#[allow(unused_imports)]
+pub(crate) use prompt::capabilities as agent_capabilities;
+#[allow(unused_imports)]
+pub(crate) use prompt::rendering as prompting;
+#[allow(unused_imports)]
+pub(crate) use workers::inference as inference_worker;
+
+use kernel::event_loop::Kernel;
 use std::io;
 
 pub fn run() -> io::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    diagnostics::tracing::initialize_subscriber();
 
     let config = config::initialize().map_err(io::Error::other)?;
     tools::cleanup_stale_temp_scripts();

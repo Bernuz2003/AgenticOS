@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 
-use super::swap_io;
-use super::swap_io::PreparedSwapTarget;
+use super::restore;
+use super::restore::PreparedSwapTarget;
 use super::types::ContextSlotId;
 use super::types::SlotPersistenceKind;
 use super::types::SwapEvent;
@@ -96,7 +96,7 @@ impl SwapManager {
             return Ok(());
         }
 
-        let validated = swap_io::resolve_valid_swap_dir(swap_dir).map_err(MemoryError::Swap)?;
+        let validated = restore::resolve_valid_swap_dir(swap_dir).map_err(MemoryError::Swap)?;
         self.dir = validated;
         self.spawn_worker()
     }
@@ -206,7 +206,7 @@ impl SwapManager {
         self.waiting.insert(pid);
 
         let target =
-            swap_io::prepare_swap_target(&self.dir, pid, slot_id).map_err(MemoryError::Swap)?;
+            restore::prepare_swap_target(&self.dir, pid, slot_id).map_err(MemoryError::Swap)?;
         tx.send(SwapJob {
             pid,
             slot_id,
@@ -299,7 +299,7 @@ impl SwapManager {
         (events, deltas)
     }
 
-    // ── Persistence helpers (delegate to swap_io) ───────────────────
+    // ── Persistence helpers (delegate to restore) ───────────────────
 
     #[cfg(test)]
     pub fn persist_payload(
@@ -308,7 +308,7 @@ impl SwapManager {
         slot_id: ContextSlotId,
         backend_id: &str,
     ) -> Result<(PathBuf, SlotPersistenceKind), String> {
-        let target = swap_io::prepare_swap_target(base_dir, pid, slot_id)?;
+        let target = restore::prepare_swap_target(base_dir, pid, slot_id)?;
         let persistence_kind = backend::persist_context_slot_payload_for_backend(
             backend_id,
             PromptFamily::Unknown,

@@ -87,5 +87,5 @@ pub(crate) fn parse_generation_payload(
 }
 
 #[cfg(test)]
-#[path = "parsing_tests.rs"]
+#[path = "tests/parsing.rs"]
 mod tests;

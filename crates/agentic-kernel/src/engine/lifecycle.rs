@@ -14,7 +14,7 @@ use crate::prompting::{
 };
 use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 
-use super::tokenizer::{
+use crate::backend::common::tokenizer::{
     build_remote_fallback_tokenizer, resolve_special_tokens, resolve_tokenizer_path,
 };
 use super::LLMEngine;
@@ -678,5 +678,5 @@ impl LLMEngine {
 }
 
 #[cfg(test)]
-#[path = "lifecycle_tests.rs"]
+#[path = "tests/lifecycle.rs"]
 mod tests;

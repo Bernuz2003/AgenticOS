@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::protocol;
 
 use super::context::MiscCommandContext;
-use super::metrics::log_event;
+use super::diagnostics::log_event;
 use super::parsing::parse_generation_payload;
 
 pub(crate) fn handle_ping(ctx: MiscCommandContext<'_>) -> Vec<u8> {

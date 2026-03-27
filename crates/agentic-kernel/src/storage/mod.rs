@@ -12,28 +12,20 @@
 
 mod accounting;
 mod audit;
-mod ipc_messages;
-mod kernel_repo;
-mod migrations;
-mod recovery;
-mod runtime;
-mod runtime_queue;
-mod scheduled_jobs;
-mod service;
-mod sessions_repo;
-mod timeline;
-mod workflow_artifacts;
+mod conversation;
+mod ipc;
+mod schema;
+mod workflows;
 
 pub(crate) use accounting::StoredAccountingEvent;
 pub(crate) use audit::NewAuditEvent;
-pub(crate) use ipc_messages::{IpcMailboxSelector, NewIpcMessage, StoredIpcMessage};
-pub(crate) use recovery::BootRecoveryReport;
-pub(crate) use runtime::StoredRuntimeRecord;
-pub(crate) use runtime_queue::StoredRuntimeLoadQueueEntry;
-pub(crate) use scheduled_jobs::{NewScheduledJobRecord, StoredScheduledJob, StoredScheduledJobRun};
-pub(crate) use service::{current_timestamp_ms, StorageError, StorageService, StoredSessionRecord};
-pub(crate) use timeline::StoredReplayMessage;
-pub(crate) use workflow_artifacts::{
+pub(crate) use conversation::StoredSessionRecord;
+pub(crate) use ipc::{IpcMailboxSelector, NewIpcMessage, StoredIpcMessage};
+#[allow(unused_imports)]
+pub(crate) use schema::{current_timestamp_ms, BootRecoveryReport, KernelBootRecord, StorageError, StorageService};
+pub(crate) use conversation::StoredReplayMessage;
+pub(crate) use workflows::{NewScheduledJobRecord, StoredScheduledJob, StoredScheduledJobRun};
+pub(crate) use workflows::{
     StoredWorkflowArtifact, StoredWorkflowArtifactInput, StoredWorkflowTaskAttempt,
     WorkflowArtifactInputRef,
 };

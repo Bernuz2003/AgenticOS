@@ -1,3 +1,4 @@
+use super::environment::*;
 use super::kernel_config;
 use super::models::*;
 /// Parsing and environment overrides for configuration.
@@ -5,25 +6,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml::Value as TomlValue;
 
-#[derive(Debug, Clone)]
-pub(crate) struct ConfigBootstrapPaths {
-    config_files: Vec<PathBuf>,
-    env_file: PathBuf,
-}
-
-impl ConfigBootstrapPaths {
-    pub fn primary_config_path(&self) -> PathBuf {
-        self.config_files
-            .first()
-            .cloned()
-            .unwrap_or_else(|| repository_path("config/kernel/base.toml"))
-    }
-}
-
 pub(crate) fn load_kernel_config() -> Result<KernelConfig, String> {
     let bootstrap = resolve_config_bootstrap_paths();
     let primary_config_path = bootstrap.primary_config_path();
-    let merged = load_merged_toml_config(&bootstrap.config_files)?;
+    let merged = load_merged_toml_config(bootstrap.config_files())?;
     let mut config = if let Some(value) = merged {
         value.try_into::<KernelConfig>().map_err(|e| {
             format!(
@@ -36,42 +22,10 @@ pub(crate) fn load_kernel_config() -> Result<KernelConfig, String> {
         KernelConfig::default()
     };
 
-    load_env_file(&bootstrap.env_file)?;
+    load_env_file(bootstrap.env_file())?;
     apply_env_overrides(&mut config);
     normalize_config_paths(&mut config, &primary_config_path);
     Ok(config)
-}
-
-pub(crate) fn resolve_config_bootstrap_paths() -> ConfigBootstrapPaths {
-    let local_override = env_string("AGENTIC_LOCAL_CONFIG_PATH")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repository_path("config/kernel/local.toml"));
-    let env_file = env_string("AGENTIC_ENV_FILE")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repository_path("config/env/agenticos.env"));
-
-    let mut config_files = if let Some(path) = env_string("AGENTIC_CONFIG_PATH")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-    {
-        vec![path]
-    } else {
-        vec![
-            repository_path("config/kernel/base.toml"),
-            repository_path("agenticos.toml"),
-        ]
-    };
-
-    if !config_files.contains(&local_override) {
-        config_files.push(local_override);
-    }
-
-    ConfigBootstrapPaths {
-        config_files,
-        env_file,
-    }
 }
 
 pub(crate) fn load_merged_toml_config(
@@ -168,17 +122,6 @@ pub(crate) fn parse_env_value(value: &str) -> String {
     }
 
     trimmed.to_string()
-}
-
-pub fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-}
-
-pub fn repository_path(relative: impl AsRef<Path>) -> PathBuf {
-    repository_root().join(relative)
 }
 
 pub fn ensure_workspace_root() -> Result<PathBuf, String> {
@@ -466,58 +409,4 @@ pub(crate) fn apply_env_overrides(config: &mut KernelConfig) {
     if let Some(value) = env_usize_opt("AGENTIC_REMOTE_TOOL_MAX_RESPONSE_BYTES") {
         config.tools.remote_http_max_response_bytes = value.max(256);
     }
-}
-
-#[allow(dead_code)]
-pub fn env_bool(name: &str, default: bool) -> bool {
-    env_bool_opt(name).unwrap_or(default)
-}
-
-#[allow(dead_code)]
-pub fn env_u64(name: &str, default: u64) -> u64 {
-    env_u64_opt(name).unwrap_or(default)
-}
-
-#[allow(dead_code)]
-pub fn env_usize(name: &str, default: usize) -> usize {
-    env_usize_opt(name).unwrap_or(default)
-}
-
-pub(crate) fn env_bool_opt(name: &str) -> Option<bool> {
-    std::env::var(name).ok().map(|v| {
-        matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
-}
-
-pub(crate) fn env_u16(name: &str) -> Option<u16> {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.trim().parse::<u16>().ok())
-}
-
-pub(crate) fn env_u64_opt(name: &str) -> Option<u64> {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-}
-
-pub(crate) fn env_f64_opt(name: &str) -> Option<f64> {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.trim().parse::<f64>().ok())
-}
-
-pub(crate) fn env_usize_opt(name: &str) -> Option<usize> {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-}
-
-pub(crate) fn env_string(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
 }

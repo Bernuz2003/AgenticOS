@@ -345,5 +345,5 @@ pub fn build_kernel_snapshot(
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[path = "checkpoint_tests.rs"]
+#[path = "tests/checkpoint.rs"]
 mod tests;

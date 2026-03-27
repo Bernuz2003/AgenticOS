@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::backend::http::{HttpEndpoint, HttpRequestOptions};
+use crate::backend::{HttpEndpoint, HttpRequestOptions};
 use crate::config::kernel_config;
 use crate::tool_registry::{
     HostExecutor, ToolBackendConfig, ToolBackendKind, ToolDescriptor, ToolRegistryEntry, ToolSource,
@@ -701,5 +701,5 @@ impl Tool for RemoteHttpTool {
 }
 
 #[cfg(test)]
-#[path = "runner_tests.rs"]
+#[path = "tests/runner.rs"]
 mod tests;

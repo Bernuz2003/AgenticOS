@@ -1,11 +1,11 @@
-pub(crate) mod actions;
-mod assistant_output;
+mod output;
 pub(crate) mod deadlines;
-mod inference_results;
-mod orchestration;
-mod process_checkout;
-mod process_finish;
+mod process;
 pub(crate) mod syscalls;
+mod workflows;
+
+#[allow(unused_imports)]
+pub(crate) use syscalls::parser as actions;
 
 use mio::{Poll, Token};
 use std::collections::{HashMap, HashSet};
@@ -25,11 +25,10 @@ use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
-use inference_results::drain_worker_results;
-use orchestration::advance_orchestrator;
-use process_checkout::checkout_active_processes;
-use process_finish::handle_finished_processes;
+use output::drain_worker_results;
+use process::{checkout_active_processes, handle_finished_processes};
 use syscalls::{drain_syscall_results, SyscallCmd, SyscallCompletion};
+use workflows::advance_orchestrator;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TickReport {
@@ -255,5 +254,5 @@ pub fn run_engine_tick(
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
+#[path = "tests/mod.rs"]
 mod tests;

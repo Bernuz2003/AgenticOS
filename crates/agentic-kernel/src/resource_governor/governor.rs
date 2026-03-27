@@ -2,13 +2,14 @@ use super::admission::*;
 /// Core resource governor implementation handling activation queues.
 use super::state::*;
 
-use crate::audit::{self, AuditContext};
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::backend::BackendClass;
 use crate::config::ResourceGovernorConfig;
 use crate::model_catalog::ResolvedModelTarget;
 use crate::runtimes::{runtime_key_for_target, RuntimeRegistry, RuntimeReservation};
 use crate::session::SessionRegistry;
-use crate::storage::{StorageService, StoredRuntimeLoadQueueEntry};
+use crate::runtimes::StoredRuntimeLoadQueueEntry;
+use crate::storage::StorageService;
 
 pub(crate) struct ResourceGovernor {
     config: ResourceGovernorConfig,

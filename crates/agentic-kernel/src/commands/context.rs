@@ -17,7 +17,7 @@ use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
-use super::metrics::MetricsState;
+use super::diagnostics::MetricsState;
 
 /// Shared references for all command handlers, replacing loose parameters.
 pub(crate) struct CommandContext<'a> {

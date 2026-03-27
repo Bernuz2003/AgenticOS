@@ -3,7 +3,10 @@ use agentic_control_models::BackendTelemetryView;
 use super::{BackendCapabilities, BackendClass, DriverDescriptor};
 use crate::prompting::PromptFamily;
 
+pub(crate) mod groq;
 pub(crate) mod openai_compatible;
+pub(crate) mod openrouter;
+pub(crate) mod streaming;
 
 pub(crate) use openai_compatible::RemoteOpenAICompatibleBackend;
 

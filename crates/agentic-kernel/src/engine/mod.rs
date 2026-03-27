@@ -1,6 +1,5 @@
 mod lifecycle;
 mod slot_manager;
-mod tokenizer;
 
 use std::collections::HashMap;
 

@@ -17,7 +17,7 @@ mod governor;
 mod state;
 
 #[cfg(test)]
-#[path = "tests.rs"]
+#[path = "tests/mod.rs"]
 mod tests;
 
 pub(crate) use governor::*;

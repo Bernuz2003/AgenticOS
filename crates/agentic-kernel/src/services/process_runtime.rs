@@ -1,4 +1,4 @@
-use crate::audit::{self, AuditContext};
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::backend::{ensure_runtime_backend_ready_for_target, BackendClass};
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
@@ -388,5 +388,5 @@ fn attach_process_resources(
 }
 
 #[cfg(test)]
-#[path = "process_runtime_tests.rs"]
+#[path = "tests/process_runtime.rs"]
 mod tests;

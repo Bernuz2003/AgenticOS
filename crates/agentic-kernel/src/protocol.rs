@@ -245,5 +245,5 @@ pub fn response_data_with_code(code: &str, data: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(test)]
-#[path = "protocol_tests.rs"]
+#[path = "tests/protocol.rs"]
 mod tests;

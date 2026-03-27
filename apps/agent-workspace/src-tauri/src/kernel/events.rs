@@ -12,11 +12,10 @@ use agentic_protocol::{HelloRequest, OpCode, PROTOCOL_VERSION_V1};
 use tauri::{AppHandle, Emitter};
 
 use super::auth::kernel_token_path;
-use super::client::KernelBridge;
+use super::client::{transport, KernelBridge};
 use super::composer;
-use super::live_cache;
-use super::live_cache::TimelineStore;
-use super::protocol;
+use super::live_timeline;
+use super::live_timeline::TimelineStore;
 use crate::models::kernel::{AuditEvent, LobbySnapshot};
 
 const BRIDGE_STATUS_EVENT: &str = "kernel://bridge_status";
@@ -84,11 +83,11 @@ fn run_event_bridge(
     let mut last_workspace_refresh = std::collections::HashMap::<u64, Instant>::new();
 
     loop {
-        match protocol::read_stream_frame(&mut stream, &mut frame_buffer, Duration::from_secs(30))
+        match transport::read_stream_frame(&mut stream, &mut frame_buffer, Duration::from_secs(30))
             .map_err(|err| err.to_string())?
         {
             Some(frame) if frame.kind == "DATA" && frame.code.eq_ignore_ascii_case("event") => {
-                let event = protocol::decode_protocol_data::<KernelEventEnvelope>(&frame.payload)
+                let event = transport::decode_protocol_data::<KernelEventEnvelope>(&frame.payload)
                     .map_err(|err| err.to_string())?;
                 handle_kernel_event(
                     app,
@@ -102,7 +101,7 @@ fn run_event_bridge(
             }
             Some(frame) if frame.kind == "-ERR" => {
                 return Err(
-                    protocol::decode_protocol_error(&frame.code, &frame.payload).to_string()
+                    transport::decode_protocol_error(&frame.code, &frame.payload).to_string()
                 );
             }
             Some(_) | None => continue,
@@ -184,7 +183,7 @@ fn handle_kernel_event(
                         pid,
                         match (tokens_generated, elapsed_secs) {
                             (Some(tokens_generated), Some(elapsed_secs)) => {
-                                Some(live_cache::ProcessFinishedMarker {
+                                Some(live_timeline::ProcessFinishedMarker {
                                     pid,
                                     tokens_generated,
                                     elapsed_secs,
@@ -339,6 +338,7 @@ fn should_evict_live_timeline(reason: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::should_evict_live_timeline;
 
@@ -383,12 +383,12 @@ fn authenticate(stream: &mut TcpStream, workspace_root: &Path) -> Result<(), Str
         return Ok(());
     }
 
-    protocol::send_command(stream, OpCode::Auth, "events", token.as_bytes())
+    transport::send_command(stream, OpCode::Auth, "events", token.as_bytes())
         .map_err(|err| err.to_string())?;
-    let response = protocol::read_single_frame(stream, Duration::from_secs(5))
+    let response = transport::read_single_frame(stream, Duration::from_secs(5))
         .map_err(|err| err.to_string())?;
     if response.kind != "+OK" {
-        return Err(protocol::decode_protocol_error(&response.code, &response.payload).to_string());
+        return Err(transport::decode_protocol_error(&response.code, &response.payload).to_string());
     }
 
     Ok(())
@@ -400,25 +400,25 @@ fn negotiate_events_hello(stream: &mut TcpStream) -> Result<(), String> {
         required_capabilities: vec!["event_stream_v1".to_string()],
     })
     .map_err(|err| err.to_string())?;
-    protocol::send_command(stream, OpCode::Hello, "events", &payload)
+    transport::send_command(stream, OpCode::Hello, "events", &payload)
         .map_err(|err| err.to_string())?;
-    let response = protocol::read_single_frame(stream, Duration::from_secs(5))
+    let response = transport::read_single_frame(stream, Duration::from_secs(5))
         .map_err(|err| err.to_string())?;
     if response.kind != "+OK" {
-        return Err(protocol::decode_protocol_error(&response.code, &response.payload).to_string());
+        return Err(transport::decode_protocol_error(&response.code, &response.payload).to_string());
     }
     Ok(())
 }
 
 fn subscribe(stream: &mut TcpStream) -> Result<(), String> {
-    protocol::send_command(stream, OpCode::Subscribe, "events", &[])
+    transport::send_command(stream, OpCode::Subscribe, "events", &[])
         .map_err(|err| err.to_string())?;
-    let response = protocol::read_single_frame(stream, Duration::from_secs(5))
+    let response = transport::read_single_frame(stream, Duration::from_secs(5))
         .map_err(|err| err.to_string())?;
     if response.kind != "+OK" {
-        return Err(protocol::decode_protocol_error(&response.code, &response.payload).to_string());
+        return Err(transport::decode_protocol_error(&response.code, &response.payload).to_string());
     }
-    let _ = protocol::decode_protocol_data::<SubscribeResult>(&response.payload)
+    let _ = transport::decode_protocol_data::<SubscribeResult>(&response.payload)
         .map_err(|err| err.to_string())?;
     Ok(())
 }

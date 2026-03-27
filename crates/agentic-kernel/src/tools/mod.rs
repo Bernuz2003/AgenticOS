@@ -101,4 +101,5 @@ pub(crate) fn validates_tool_invocation(command_block: &str) -> bool {
 }
 
 #[cfg(test)]
+#[path = "tests/macros.rs"]
 mod macro_tests;

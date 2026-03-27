@@ -5,12 +5,13 @@ use std::path::Path;
 use crate::memory::ContextSlotId;
 use crate::prompting::PromptFamily;
 
-use crate::backend::http::{HttpEndpoint, HttpJsonResponse, HttpRequestOptions, HttpStreamControl};
+use crate::backend::{HttpEndpoint, HttpJsonResponse, HttpRequestOptions, HttpStreamControl};
 use crate::backend::local::runtime_manager::ManagedLocalRuntimeLease;
-use crate::backend::remote_adapter::{
-    agent_invocation_end, build_completion_request, decode_completion_response, drain_json_objects,
-    select_completion_prompt_transport, PromptTransportStrategy,
+use crate::backend::local::remote_adapter::{
+    build_completion_request, decode_completion_response, select_completion_prompt_transport,
+    PromptTransportStrategy,
 };
+use crate::backend::remote::streaming::{agent_invocation_end, drain_json_objects};
 use crate::backend::{
     ContextSlotPersistence, InferenceBackend, InferenceFinishReason, InferenceStepRequest,
     InferenceStepResult, ModelBackend,

@@ -1,7 +1,7 @@
 mod core;
 mod residency;
+mod restore;
 pub(crate) mod swap;
-mod swap_io;
 mod types;
 
 pub use core::NeuralMemory;

@@ -335,5 +335,5 @@ fn default_allowed_callers() -> Vec<ToolCaller> {
 }
 
 #[cfg(test)]
-#[path = "tool_registry_tests.rs"]
+#[path = "tests/tool_registry.rs"]
 mod tests;

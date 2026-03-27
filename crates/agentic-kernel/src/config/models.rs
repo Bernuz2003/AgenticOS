@@ -1,4 +1,4 @@
-use super::parser::repository_path;
+use super::environment::repository_path;
 /// Configuration models and structures.
 use serde::Deserialize;
 use std::path::PathBuf;

@@ -171,5 +171,5 @@ const fn default_true() -> bool {
 }
 
 #[cfg(test)]
-#[path = "remote_catalog_tests.rs"]
+#[path = "tests/remote_catalog.rs"]
 mod tests;

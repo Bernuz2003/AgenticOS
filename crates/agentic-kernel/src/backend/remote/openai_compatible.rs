@@ -7,32 +7,33 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokenizers::Tokenizer;
 
-use crate::accounting::{AccountingEventStatus, BackendAccountingEvent};
+use crate::services::accounting::{AccountingEventStatus, BackendAccountingEvent};
 use crate::config::RemoteProviderRuntimeConfig;
 use crate::model_catalog::RemoteModelEntry;
 use crate::prompting::PromptFamily;
 
-use crate::backend::remote_adapter::{agent_invocation_end, drain_json_objects};
 use crate::backend::{
     BackendCapabilities, InferenceBackend, InferenceFinishReason, InferenceStepRequest,
     InferenceStepResult, StreamChunkObserver,
 };
+use super::streaming::{agent_invocation_end, drain_json_objects};
+use super::{groq::GROQ_RESPONSES_PROFILE, openrouter::OPENROUTER_PROFILE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RemoteOpenAITransport {
+pub(super) enum RemoteOpenAITransport {
     ResponsesApi,
     ChatCompletions,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RemoteOpenAIProviderProfile {
-    backend_id: &'static str,
-    display_name: &'static str,
-    config_section: &'static str,
-    endpoint_env: &'static str,
-    api_key_env: &'static str,
-    fallback_api_key_env: Option<&'static str>,
-    transport: RemoteOpenAITransport,
+pub(super) struct RemoteOpenAIProviderProfile {
+    pub(super) backend_id: &'static str,
+    pub(super) display_name: &'static str,
+    pub(super) config_section: &'static str,
+    pub(super) endpoint_env: &'static str,
+    pub(super) api_key_env: &'static str,
+    pub(super) fallback_api_key_env: Option<&'static str>,
+    pub(super) transport: RemoteOpenAITransport,
 }
 
 const OPENAI_RESPONSES_PROFILE: RemoteOpenAIProviderProfile = RemoteOpenAIProviderProfile {
@@ -43,26 +44,6 @@ const OPENAI_RESPONSES_PROFILE: RemoteOpenAIProviderProfile = RemoteOpenAIProvid
     api_key_env: "AGENTIC_OPENAI_API_KEY",
     fallback_api_key_env: Some("OPENAI_API_KEY"),
     transport: RemoteOpenAITransport::ResponsesApi,
-};
-
-const GROQ_RESPONSES_PROFILE: RemoteOpenAIProviderProfile = RemoteOpenAIProviderProfile {
-    backend_id: "groq-responses",
-    display_name: "Groq Responses",
-    config_section: "groq_responses",
-    endpoint_env: "AGENTIC_GROQ_ENDPOINT",
-    api_key_env: "AGENTIC_GROQ_API_KEY",
-    fallback_api_key_env: Some("GROQ_API_KEY"),
-    transport: RemoteOpenAITransport::ResponsesApi,
-};
-
-const OPENROUTER_PROFILE: RemoteOpenAIProviderProfile = RemoteOpenAIProviderProfile {
-    backend_id: "openrouter",
-    display_name: "OpenRouter",
-    config_section: "openrouter",
-    endpoint_env: "AGENTIC_OPENROUTER_ENDPOINT",
-    api_key_env: "AGENTIC_OPENROUTER_API_KEY",
-    fallback_api_key_env: Some("OPENROUTER_API_KEY"),
-    transport: RemoteOpenAITransport::ChatCompletions,
 };
 
 fn provider_profile(backend_id: &str) -> Option<&'static RemoteOpenAIProviderProfile> {
@@ -1146,5 +1127,5 @@ fn extract_error_message(json: &serde_json::Value) -> String {
 }
 
 #[cfg(test)]
-#[path = "openai_compatible_tests.rs"]
+#[path = "tests/openai_compatible.rs"]
 mod tests;

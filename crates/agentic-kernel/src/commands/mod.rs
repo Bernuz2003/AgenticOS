@@ -1,17 +1,17 @@
 mod checkpoint_cmd;
 mod context;
+mod diagnostics;
 mod exec;
 mod memory_cmd;
-mod metrics;
 mod misc;
-mod model;
-mod orchestration_cmd;
+mod models;
 mod parsing;
-mod process_cmd;
-mod scheduler_cmd;
-mod status;
+#[path = "process/mod.rs"]
+mod process_commands;
+mod runtime;
 mod tools_cmd;
-mod workflow_control;
+#[path = "workflows/mod.rs"]
+mod workflow_commands;
 
 use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
@@ -36,7 +36,7 @@ use crate::transport::Client;
 use self::context::CommandContext;
 
 // Re-export for other modules.
-pub(crate) use self::metrics::MetricsState;
+pub(crate) use self::diagnostics::MetricsState;
 
 #[allow(clippy::too_many_arguments)]
 pub fn execute_command(
@@ -146,11 +146,11 @@ pub fn execute_command(
     let response = match header.opcode {
         OpCode::Ping => misc::handle_ping(ctx.misc_view()),
         OpCode::Subscribe => misc::handle_subscribe(ctx.misc_view()),
-        OpCode::Load => model::handle_load(ctx.model_view(), &payload),
-        OpCode::ListModels => model::handle_list_models(ctx.model_view()),
-        OpCode::SelectModel => model::handle_select_model(ctx.model_view(), &payload),
-        OpCode::ModelInfo => model::handle_model_info(ctx.model_view(), &payload),
-        OpCode::BackendDiag => model::handle_backend_diag(ctx.model_view()),
+        OpCode::Load => models::handle_load(ctx.model_view(), &payload),
+        OpCode::ListModels => models::handle_list_models(ctx.model_view()),
+        OpCode::SelectModel => models::handle_select_model(ctx.model_view(), &payload),
+        OpCode::ModelInfo => models::handle_model_info(ctx.model_view(), &payload),
+        OpCode::BackendDiag => models::handle_backend_diag(ctx.model_view()),
         OpCode::Exec => {
             if let Some(r) = exec::handle_exec(ctx.exec_view(), &payload) {
                 r
@@ -158,10 +158,10 @@ pub fn execute_command(
                 return;
             }
         }
-        OpCode::ResumeSession => process_cmd::handle_resume_session(ctx.process_view(), &payload),
+        OpCode::ResumeSession => self::process_commands::handle_resume_session(ctx.process_view(), &payload),
         OpCode::ScheduleJob => {
             if let Some(r) =
-                orchestration_cmd::handle_schedule_job(ctx.orchestration_view(), &payload)
+                workflow_commands::jobs::handle_schedule_job(ctx.orchestration_view(), &payload)
             {
                 r
             } else {
@@ -170,7 +170,7 @@ pub fn execute_command(
         }
         OpCode::SetJobEnabled => {
             if let Some(r) =
-                orchestration_cmd::handle_set_job_enabled(ctx.orchestration_view(), &payload)
+                workflow_commands::jobs::handle_set_job_enabled(ctx.orchestration_view(), &payload)
             {
                 r
             } else {
@@ -179,18 +179,21 @@ pub fn execute_command(
         }
         OpCode::DeleteJob => {
             if let Some(r) =
-                orchestration_cmd::handle_delete_job(ctx.orchestration_view(), &payload)
+                workflow_commands::jobs::handle_delete_job(ctx.orchestration_view(), &payload)
             {
                 r
             } else {
                 return;
             }
         }
-        OpCode::SendInput => process_cmd::handle_send_input(ctx.process_view(), &payload),
-        OpCode::ContinueOutput => process_cmd::handle_continue_output(ctx.process_view(), &payload),
+        OpCode::SendInput => self::process_commands::handle_send_input(ctx.process_view(), &payload),
+        OpCode::ContinueOutput => self::process_commands::handle_continue_output(ctx.process_view(), &payload),
         OpCode::StopOrchestration => {
             if let Some(r) =
-                orchestration_cmd::handle_stop_orchestration(ctx.orchestration_view(), &payload)
+                workflow_commands::orchestration::handle_stop_orchestration(
+                    ctx.orchestration_view(),
+                    &payload,
+                )
             {
                 r
             } else {
@@ -199,39 +202,42 @@ pub fn execute_command(
         }
         OpCode::DeleteOrchestration => {
             if let Some(r) =
-                orchestration_cmd::handle_delete_orchestration(ctx.orchestration_view(), &payload)
+                workflow_commands::orchestration::handle_delete_orchestration(
+                    ctx.orchestration_view(),
+                    &payload,
+                )
             {
                 r
             } else {
                 return;
             }
         }
-        OpCode::StopOutput => process_cmd::handle_stop_output(ctx.process_view(), &payload),
-        OpCode::Status => status::handle_status(ctx.status_view(), &payload),
+        OpCode::StopOutput => self::process_commands::handle_stop_output(ctx.process_view(), &payload),
+        OpCode::Status => runtime::handle_status(ctx.status_view(), &payload),
         OpCode::ListOrchestrations => {
-            workflow_control::handle_list_orchestrations(ctx.status_view(), &payload)
+            workflow_commands::control::handle_list_orchestrations(ctx.status_view(), &payload)
         }
         OpCode::OrchestrationStatus => {
-            workflow_control::handle_orchestration_status(ctx.status_view(), &payload)
+            workflow_commands::control::handle_orchestration_status(ctx.status_view(), &payload)
         }
-        OpCode::ListJobs => workflow_control::handle_list_jobs(ctx.status_view(), &payload),
+        OpCode::ListJobs => workflow_commands::control::handle_list_jobs(ctx.status_view(), &payload),
         OpCode::ListArtifacts => {
-            workflow_control::handle_list_artifacts(ctx.status_view(), &payload)
+            workflow_commands::control::handle_list_artifacts(ctx.status_view(), &payload)
         }
-        OpCode::Term => process_cmd::handle_term(ctx.process_view(), &payload),
-        OpCode::Kill => process_cmd::handle_kill(ctx.process_view(), &payload),
+        OpCode::Term => self::process_commands::handle_term(ctx.process_view(), &payload),
+        OpCode::Kill => self::process_commands::handle_kill(ctx.process_view(), &payload),
         OpCode::Shutdown => misc::handle_shutdown(ctx.misc_view()),
         OpCode::SetGen => misc::handle_set_gen(ctx.misc_view(), &payload),
         OpCode::GetGen => misc::handle_get_gen(ctx.misc_view()),
         OpCode::MemoryWrite => memory_cmd::handle_memory_write(ctx.memory_view(), &payload),
-        OpCode::SetPriority => scheduler_cmd::handle_set_priority(ctx.scheduler_view(), &payload),
-        OpCode::GetQuota => scheduler_cmd::handle_get_quota(ctx.scheduler_view(), &payload),
-        OpCode::SetQuota => scheduler_cmd::handle_set_quota(ctx.scheduler_view(), &payload),
+        OpCode::SetPriority => self::process_commands::lifecycle::handle_set_priority(ctx.scheduler_view(), &payload),
+        OpCode::GetQuota => self::process_commands::lifecycle::handle_get_quota(ctx.scheduler_view(), &payload),
+        OpCode::SetQuota => self::process_commands::lifecycle::handle_set_quota(ctx.scheduler_view(), &payload),
         OpCode::Checkpoint => checkpoint_cmd::handle_checkpoint(ctx.checkpoint_view(), &payload),
         OpCode::Restore => checkpoint_cmd::handle_restore(ctx.checkpoint_view(), &payload),
         OpCode::Orchestrate => {
             if let Some(r) =
-                orchestration_cmd::handle_orchestrate(ctx.orchestration_view(), &payload)
+                workflow_commands::orchestration::handle_orchestrate(ctx.orchestration_view(), &payload)
             {
                 r
             } else {
@@ -240,7 +246,7 @@ pub fn execute_command(
         }
         OpCode::RetryTask => {
             if let Some(r) =
-                orchestration_cmd::handle_retry_task(ctx.orchestration_view(), &payload)
+                workflow_commands::orchestration::handle_retry_task(ctx.orchestration_view(), &payload)
             {
                 r
             } else {

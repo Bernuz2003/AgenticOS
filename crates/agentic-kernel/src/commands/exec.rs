@@ -9,7 +9,7 @@ use agentic_control_models::{ExecStartPayload, KernelEvent};
 use agentic_protocol::ControlErrorCode;
 
 use super::context::ExecCommandContext;
-use super::metrics::log_event;
+use super::diagnostics::log_event;
 
 /// Handle the EXEC opcode: spawn a new inference process.
 ///

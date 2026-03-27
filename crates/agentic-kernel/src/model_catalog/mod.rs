@@ -13,6 +13,7 @@ mod metadata;
 mod remote_catalog;
 mod routing;
 #[cfg(test)]
+#[path = "tests/mod.rs"]
 mod tests;
 mod workload;
 

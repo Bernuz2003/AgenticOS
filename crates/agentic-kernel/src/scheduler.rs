@@ -383,5 +383,5 @@ impl ProcessScheduler {
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[path = "scheduler_tests.rs"]
+#[path = "tests/scheduler.rs"]
 mod tests;

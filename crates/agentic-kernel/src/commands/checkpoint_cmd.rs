@@ -1,14 +1,14 @@
 use crate::checkpoint;
 use crate::protocol;
 use crate::scheduler::{ProcessPriority, ProcessQuota, RestoredProcessMetadata};
-use crate::{audit, audit::AuditContext};
+use crate::diagnostics::audit::{self, AuditContext};
 use agentic_control_models::KernelEvent;
 use agentic_protocol::ControlErrorCode;
 
 use serde_json::json;
 
 use super::context::CheckpointCommandContext;
-use super::metrics::log_event;
+use super::diagnostics::log_event;
 
 pub(crate) fn handle_checkpoint(ctx: CheckpointCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let CheckpointCommandContext {
@@ -255,5 +255,5 @@ fn apply_restore_snapshot(
 }
 
 #[cfg(test)]
-#[path = "checkpoint_cmd_tests.rs"]
+#[path = "tests/checkpoint_cmd.rs"]
 mod tests;

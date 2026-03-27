@@ -11,15 +11,17 @@
 //!
 //! Agent process management and context logic.
 
-mod agent;
+mod model;
 mod context;
+mod quota;
+mod registry;
 mod retrieval;
-mod state;
+mod states;
 
 #[cfg(test)]
-#[path = "tests.rs"]
+#[path = "tests/mod.rs"]
 mod tests;
 
-pub use agent::*;
+pub use model::*;
 pub use context::*;
-pub use state::*;
+pub use states::*;

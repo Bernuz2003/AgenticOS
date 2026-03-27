@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::commands::MetricsState;
 use crate::config;
 use crate::inference_worker::{self, InferenceCmd, InferenceResult};
@@ -18,15 +19,13 @@ use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
 use crate::services::job_scheduler::JobScheduler;
 use crate::session::SessionRegistry;
-use crate::storage::StorageService;
+use crate::storage::{BootRecoveryReport, StorageService};
 use crate::tool_registry::ToolRegistry;
 use crate::tools::SyscallRateMap;
 use crate::transport::Client;
 
-use super::{
-    recovery,
-    server::{Kernel, SERVER, WORKER_WAKE_TOKEN},
-};
+use super::event_loop::Kernel;
+use super::wakers::{SERVER, WORKER_WAKE_TOKEN};
 
 /// Costruisce e inizializza l'istanza principale del Kernel di AgenticOS.
 ///
@@ -77,7 +76,7 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
     let legacy_import = storage
         .import_legacy_timelines_once(&config::repository_path("timeline_sessions"))
         .map_err(io::Error::other)?;
-    let recovery_report = recovery::run_boot_recovery(&mut storage)?;
+    let recovery_report = run_boot_recovery(&mut storage)?;
     let runtime_registry = RuntimeRegistry::load(&mut storage).map_err(io::Error::other)?;
     let resource_governor =
         ResourceGovernor::load(&mut storage, config.resources.clone()).map_err(io::Error::other)?;
@@ -198,3 +197,29 @@ fn write_auth_token(config: &config::KernelConfig) -> io::Result<String> {
     file.write_all(hex.as_bytes())?;
     Ok(hex)
 }
+
+fn run_boot_recovery(storage: &mut StorageService) -> io::Result<BootRecoveryReport> {
+    let report = storage.run_boot_recovery().map_err(io::Error::other)?;
+    audit::record(
+        storage,
+        audit::KERNEL_BOOT_RECOVERED,
+        format!(
+            "sessions={} runtimes={} reset_sessions={} interrupted_runs={} interrupted_turns={} interrupted_scheduler_runs={} logical_resume={} strong_restore_candidates={} pending_queue={}",
+            report.persisted_sessions,
+            report.known_runtimes,
+            report.stale_active_sessions_reset,
+            report.interrupted_process_runs,
+            report.interrupted_turns,
+            report.interrupted_scheduler_job_runs,
+            report.logical_resume_sessions,
+            report.strong_restore_candidate_sessions,
+            report.pending_runtime_queue_entries
+        ),
+        AuditContext::default(),
+    );
+    Ok(report)
+}
+
+#[cfg(test)]
+#[path = "tests/bootstrap.rs"]
+mod tests;
