@@ -4,9 +4,9 @@ use std::process::{Command, Stdio};
 
 use crate::prompting::PromptFamily;
 
-use super::manager::{ManagedLocalRuntimeEntry, ManagedRuntimeProcess};
 #[cfg(test)]
 use super::manager::TestSpawnRequest;
+use super::manager::{ManagedLocalRuntimeEntry, ManagedRuntimeProcess};
 use super::paths::{current_timestamp_ms, family_label, log_path_for_family};
 
 pub(super) fn spawn_llama_server(
@@ -42,10 +42,20 @@ pub(super) fn spawn_llama_server(
         .create(true)
         .append(true)
         .open(&log_path)
-        .map_err(|err| format!("Failed to open runtime log '{}': {}", log_path.display(), err))?;
-    let stderr = stdout
-        .try_clone()
-        .map_err(|err| format!("Failed to clone runtime log '{}': {}", log_path.display(), err))?;
+        .map_err(|err| {
+            format!(
+                "Failed to open runtime log '{}': {}",
+                log_path.display(),
+                err
+            )
+        })?;
+    let stderr = stdout.try_clone().map_err(|err| {
+        format!(
+            "Failed to clone runtime log '{}': {}",
+            log_path.display(),
+            err
+        )
+    })?;
 
     let child = Command::new(executable)
         .arg("-m")

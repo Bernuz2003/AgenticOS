@@ -1,4 +1,6 @@
-use agentic_control_models::{ScheduleJobResult, ScheduledJobControlResult, ScheduledJobListResponse};
+use agentic_control_models::{
+    ScheduleJobResult, ScheduledJobControlResult, ScheduledJobListResponse,
+};
 use tauri::State;
 
 use super::run_blocking;

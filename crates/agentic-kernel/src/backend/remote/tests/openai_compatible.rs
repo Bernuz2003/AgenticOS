@@ -94,6 +94,53 @@ data: {"type":"response.output_text.delta","delta":"\nI should not continue"}
 }
 
 #[test]
+fn streaming_responses_decoder_truncates_same_line_suffix_after_tool_json() {
+    let stream = Cursor::new(
+        br#"data: {"type":"response.output_text.delta","delta":"TOOL:calc {\"expression\":\"1+1\"} trailing text"}
+
+"#,
+    );
+
+    let decoded = decode_streaming_response(
+        provider_profile("openai-responses").expect("openai profile"),
+        stream,
+        4096,
+        &test_tokenizer(),
+        None,
+    )
+    .expect("decode stream");
+
+    assert_eq!(decoded.emitted_text, "TOOL:calc {\"expression\":\"1+1\"}");
+    assert!(!decoded.finished);
+}
+
+#[test]
+fn streaming_responses_decoder_truncates_inline_tool_invocation_after_preamble() {
+    let stream = Cursor::new(
+        br#"data: {"type":"response.output_text.delta","delta":"Creo la cartella richiesta: TOOL:mkdir {\"path\":\"prova\"}"}
+
+data: {"type":"response.output_text.delta","delta":" testo che non deve arrivare"}
+
+"#,
+    );
+
+    let decoded = decode_streaming_response(
+        provider_profile("openai-responses").expect("openai profile"),
+        stream,
+        4096,
+        &test_tokenizer(),
+        None,
+    )
+    .expect("decode stream");
+
+    assert_eq!(
+        decoded.emitted_text,
+        "Creo la cartella richiesta: TOOL:mkdir {\"path\":\"prova\"}"
+    );
+    assert!(!decoded.finished);
+}
+
+#[test]
 fn non_streaming_chat_completions_extracts_prompt_text_and_usage() {
     let payload = r#"{
             "choices":[{"text":"hello world","finish_reason":"stop"}],

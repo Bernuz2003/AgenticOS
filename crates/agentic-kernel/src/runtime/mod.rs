@@ -1,5 +1,5 @@
-mod output;
 pub(crate) mod deadlines;
+mod output;
 mod process;
 pub(crate) mod syscalls;
 mod workflows;

@@ -53,7 +53,11 @@ impl ContextPolicy {
     pub fn from_kernel_defaults() -> Self {
         let config = &crate::config::kernel_config().context;
         let strategy = ContextStrategy::parse(&config.default_strategy).unwrap_or_default();
-        Self::new_with_window(strategy, config.default_window_tokens, config.retrieve_top_k)
+        Self::new_with_window(
+            strategy,
+            config.default_window_tokens,
+            config.retrieve_top_k,
+        )
     }
 
     pub fn new_with_window(
@@ -72,10 +76,7 @@ impl ContextPolicy {
         )
     }
 
-    pub fn align_to_runtime_window_if_default(
-        &self,
-        runtime_window_tokens: Option<usize>,
-    ) -> Self {
+    pub fn align_to_runtime_window_if_default(&self, runtime_window_tokens: Option<usize>) -> Self {
         let Some(runtime_window_tokens) =
             runtime_window_tokens.filter(|value| *value > 0 && *value != self.window_size_tokens)
         else {

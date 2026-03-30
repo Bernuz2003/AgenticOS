@@ -31,7 +31,11 @@ pub(crate) fn handle_memory_write(ctx: MemoryCommandContext<'_>, payload: &[u8])
                 .runtime_id_for_pid(pid)
                 .and_then(|runtime_id| runtime_registry.engine(runtime_id))
                 .map(|engine| engine.loaded_family())
-                .or_else(|| runtime_registry.current_engine().map(|engine| engine.loaded_family()));
+                .or_else(|| {
+                    runtime_registry
+                        .current_engine()
+                        .map(|engine| engine.loaded_family())
+                });
             match memory.write_for_pid_bytes_with_backend(pid, &raw, backend_id, family) {
                 Ok(msg) => {
                     let is_parked = memory.is_pid_parked(pid);

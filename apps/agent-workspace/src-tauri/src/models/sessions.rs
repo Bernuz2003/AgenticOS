@@ -1,6 +1,8 @@
 use serde::Serialize;
 
-use agentic_control_models::{BackendCapabilitiesView, BackendTelemetryView, ProcessPermissionsView};
+use agentic_control_models::{
+    BackendCapabilitiesView, BackendTelemetryView, ProcessPermissionsView,
+};
 
 use super::workflows::WorkspaceOrchestrationSnapshot;
 use crate::models::runtime::AuditEvent;

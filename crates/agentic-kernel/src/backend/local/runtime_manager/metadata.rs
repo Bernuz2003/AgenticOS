@@ -1,4 +1,6 @@
-use crate::model_catalog::{infer_metadata_path, load_model_metadata, LocalLoadTarget, ModelMetadata};
+use crate::model_catalog::{
+    infer_metadata_path, load_model_metadata, LocalLoadTarget, ModelMetadata,
+};
 use crate::prompting::PromptFamily;
 
 use super::manager::RequestedLocalRuntime;

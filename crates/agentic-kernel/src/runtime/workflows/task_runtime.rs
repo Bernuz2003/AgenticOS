@@ -13,9 +13,13 @@ pub(super) fn record_spawn_failure(
     attempt: u32,
     error: &str,
 ) {
-    if let Err(storage_err) =
-        storage.record_workflow_task_spawn_failure(orch_id, task_id, attempt, error, current_timestamp_ms())
-    {
+    if let Err(storage_err) = storage.record_workflow_task_spawn_failure(
+        orch_id,
+        task_id,
+        attempt,
+        error,
+        current_timestamp_ms(),
+    ) {
         tracing::warn!(
             orch_id,
             task_id = %task_id,

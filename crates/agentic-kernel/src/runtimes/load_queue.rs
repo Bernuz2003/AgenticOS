@@ -1,7 +1,7 @@
 use rusqlite::params;
 
-use agentic_control_models::RuntimeLoadQueueEntryView;
 use crate::storage::{current_timestamp_ms, StorageError, StorageService};
+use agentic_control_models::RuntimeLoadQueueEntryView;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredRuntimeLoadQueueEntry {

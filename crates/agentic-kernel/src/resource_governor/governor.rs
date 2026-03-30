@@ -2,13 +2,13 @@ use super::admission::*;
 /// Core resource governor implementation handling activation queues.
 use super::state::*;
 
-use crate::diagnostics::audit::{self, AuditContext};
 use crate::backend::BackendClass;
 use crate::config::ResourceGovernorConfig;
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::model_catalog::ResolvedModelTarget;
+use crate::runtimes::StoredRuntimeLoadQueueEntry;
 use crate::runtimes::{runtime_key_for_target, RuntimeRegistry, RuntimeReservation};
 use crate::session::SessionRegistry;
-use crate::runtimes::StoredRuntimeLoadQueueEntry;
 use crate::storage::StorageService;
 
 pub(crate) struct ResourceGovernor {
@@ -51,9 +51,12 @@ impl ResourceGovernor {
         }
 
         if let Some(runtime_id) = runtime_registry.runtime_id_for_target(target) {
-            let same_runtime_target = runtime_registry
-                .descriptor(&runtime_id)
-                .is_some_and(|descriptor| descriptor.runtime_reference == target.runtime_reference());
+            let same_runtime_target =
+                runtime_registry
+                    .descriptor(&runtime_id)
+                    .is_some_and(|descriptor| {
+                        descriptor.runtime_reference == target.runtime_reference()
+                    });
             if runtime_registry.is_runtime_loaded(&runtime_id) && same_runtime_target {
                 return Ok(AdmissionPlan {
                     reservation,
@@ -141,11 +144,12 @@ impl ResourceGovernor {
 
         for candidate in candidates {
             if let Some(runtime_id) = runtime_registry.runtime_id_for_target(target) {
-                let same_runtime_target = runtime_registry
-                    .descriptor(&runtime_id)
-                    .is_some_and(|descriptor| {
-                        descriptor.runtime_reference == target.runtime_reference()
-                    });
+                let same_runtime_target =
+                    runtime_registry
+                        .descriptor(&runtime_id)
+                        .is_some_and(|descriptor| {
+                            descriptor.runtime_reference == target.runtime_reference()
+                        });
                 if candidate.runtime_id == runtime_id && same_runtime_target {
                     continue;
                 }

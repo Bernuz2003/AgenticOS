@@ -23,7 +23,9 @@ pub fn compose_workspace_snapshot_for_session(
             ensure_live_timeline_from_snapshot(workspace_root, timeline_store, snapshot.clone())?;
             return Ok(snapshot);
         }
-        if let Some(snapshot) = history::load_workspace_snapshot(workspace_root, session_id, Some(pid))? {
+        if let Some(snapshot) =
+            history::load_workspace_snapshot(workspace_root, session_id, Some(pid))?
+        {
             return Ok(snapshot);
         }
     }
@@ -33,7 +35,8 @@ pub fn compose_workspace_snapshot_for_session(
         return Ok(snapshot);
     }
 
-    let Some(persisted) = history::load_workspace_snapshot(workspace_root, session_id, None)? else {
+    let Some(persisted) = history::load_workspace_snapshot(workspace_root, session_id, None)?
+    else {
         return Err(format!(
             "No persisted workspace snapshot found for session {}",
             session_id

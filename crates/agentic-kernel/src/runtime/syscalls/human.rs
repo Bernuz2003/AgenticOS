@@ -1,10 +1,10 @@
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::engine::LLMEngine;
 use crate::process::ProcessState;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::tools::human_tools::{normalize_ask_human_request, AskHumanInput};
 use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
-use crate::diagnostics::audit::{self, AuditContext};
 use agentic_control_models::KernelEvent;
 
 use super::dispatch::SyscallDispatchOutcome;

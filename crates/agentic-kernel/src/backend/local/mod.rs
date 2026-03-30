@@ -140,7 +140,9 @@ pub(crate) fn diagnose_external_backend() -> Result<serde_json::Value> {
     }))
 }
 
-pub(crate) fn backend_for_target(target: &LocalLoadTarget) -> Result<ExternalLlamaCppBackend, String> {
+pub(crate) fn backend_for_target(
+    target: &LocalLoadTarget,
+) -> Result<ExternalLlamaCppBackend, String> {
     let lease = runtime_manager::ensure_runtime_for_target(target)?;
     Ok(ExternalLlamaCppBackend::from_runtime_lease(&lease))
 }
@@ -160,9 +162,7 @@ pub(crate) fn persist_context_slot_payload_for_backend(
     final_path: &Path,
 ) -> Result<SlotPersistenceKind, String> {
     match backend_id {
-        "external-llamacpp" => {
-            persist_external_context_slot_snapshot(family, slot_id, final_path)
-        }
+        "external-llamacpp" => persist_external_context_slot_snapshot(family, slot_id, final_path),
         other => Err(format!(
             "Backend '{}' is not a supported resident inference backend.",
             other

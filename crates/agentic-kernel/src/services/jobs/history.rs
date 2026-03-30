@@ -94,7 +94,10 @@ impl ScheduledJob {
     }
 
     pub(super) fn transition_after_success(&mut self, now_ms: i64) {
-        let is_one_shot = matches!(self.trigger, super::scheduler::ScheduledJobTrigger::At { .. });
+        let is_one_shot = matches!(
+            self.trigger,
+            super::scheduler::ScheduledJobTrigger::At { .. }
+        );
         self.state = if self.enabled {
             ScheduledJobState::Idle
         } else {
@@ -122,7 +125,10 @@ impl ScheduledJob {
     }
 
     pub(super) fn transition_after_failure(&mut self, status: &str, error: &str, now_ms: i64) {
-        let is_one_shot = matches!(self.trigger, super::scheduler::ScheduledJobTrigger::At { .. });
+        let is_one_shot = matches!(
+            self.trigger,
+            super::scheduler::ScheduledJobTrigger::At { .. }
+        );
         self.active_run_id = None;
         self.active_orchestration_id = None;
         self.active_deadline_at_ms = None;

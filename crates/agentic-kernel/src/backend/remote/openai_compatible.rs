@@ -7,17 +7,17 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokenizers::Tokenizer;
 
-use crate::services::accounting::{AccountingEventStatus, BackendAccountingEvent};
 use crate::config::RemoteProviderRuntimeConfig;
 use crate::model_catalog::RemoteModelEntry;
 use crate::prompting::PromptFamily;
+use crate::services::accounting::{AccountingEventStatus, BackendAccountingEvent};
 
+use super::streaming::{agent_invocation_end, drain_json_objects};
+use super::{groq::GROQ_RESPONSES_PROFILE, openrouter::OPENROUTER_PROFILE};
 use crate::backend::{
     BackendCapabilities, InferenceBackend, InferenceFinishReason, InferenceStepRequest,
     InferenceStepResult, StreamChunkObserver,
 };
-use super::streaming::{agent_invocation_end, drain_json_objects};
-use super::{groq::GROQ_RESPONSES_PROFILE, openrouter::OPENROUTER_PROFILE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RemoteOpenAITransport {

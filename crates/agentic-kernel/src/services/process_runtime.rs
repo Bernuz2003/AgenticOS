@@ -1,5 +1,5 @@
-use crate::diagnostics::audit::{self, AuditContext};
 use crate::backend::{ensure_runtime_backend_ready_for_target, BackendClass};
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;

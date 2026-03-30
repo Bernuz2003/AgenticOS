@@ -62,10 +62,7 @@ fn rebaseline_existing_schema(connection: &mut Connection) -> Result<(), Storage
     for table in LEGACY_TABLES {
         let legacy = legacy_table_name(table);
         if table_exists(&transaction, table)? {
-            transaction.execute(
-                &format!("ALTER TABLE {table} RENAME TO {legacy}"),
-                [],
-            )?;
+            transaction.execute(&format!("ALTER TABLE {table} RENAME TO {legacy}"), [])?;
         }
     }
 
@@ -539,8 +536,11 @@ fn ensure_process_runs_for_legacy_turns(transaction: &Transaction<'_>) -> Result
         return Ok(());
     }
 
-    let boot_id: i64 =
-        transaction.query_row("SELECT boot_id FROM kernel_boots ORDER BY boot_id DESC LIMIT 1", [], |row| row.get(0))?;
+    let boot_id: i64 = transaction.query_row(
+        "SELECT boot_id FROM kernel_boots ORDER BY boot_id DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
     let runtime_id_expr = if table_exists(transaction, &legacy_table_name("sessions"))?
         && column_exists(transaction, &legacy_table_name("sessions"), "runtime_id")?
     {
@@ -618,8 +618,10 @@ fn copy_runtime_instances(transaction: &Transaction<'_>) -> Result<(), StorageEr
     if !table_exists(transaction, &legacy)? {
         return Ok(());
     }
-    let reservation_ram_expr = legacy_column_expr(transaction, &legacy, "reservation_ram_bytes", "0")?;
-    let reservation_vram_expr = legacy_column_expr(transaction, &legacy, "reservation_vram_bytes", "0")?;
+    let reservation_ram_expr =
+        legacy_column_expr(transaction, &legacy, "reservation_ram_bytes", "0")?;
+    let reservation_vram_expr =
+        legacy_column_expr(transaction, &legacy, "reservation_vram_bytes", "0")?;
     let pinned_expr = legacy_column_expr(transaction, &legacy, "pinned", "0")?;
     let transition_expr = legacy_column_expr(transaction, &legacy, "transition_state", "NULL")?;
     transaction.execute(

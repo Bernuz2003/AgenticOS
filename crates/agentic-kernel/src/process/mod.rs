@@ -11,8 +11,8 @@
 //!
 //! Agent process management and context logic.
 
-mod model;
 mod context;
+mod model;
 mod quota;
 mod registry;
 mod retrieval;
@@ -22,6 +22,6 @@ mod states;
 #[path = "tests/mod.rs"]
 mod tests;
 
-pub use model::*;
 pub use context::*;
+pub use model::*;
 pub use states::*;

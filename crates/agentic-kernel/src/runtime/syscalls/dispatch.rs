@@ -2,6 +2,7 @@ use std::sync::mpsc;
 
 use agentic_control_models::KernelEvent;
 
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;
@@ -15,7 +16,6 @@ use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
 use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
-use crate::diagnostics::audit::{self, AuditContext};
 
 use super::human::dispatch_native_human_input_request;
 use super::ids::next_tool_call_id;
@@ -64,6 +64,18 @@ fn likely_superfluous_tool_call(content: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn scan_syscall_buffer(buffer: &mut String) -> Option<String> {
+    match crate::text_invocation::find_first_prefixed_json_invocation(buffer, &["ACTION:", "TOOL:"])
+    {
+        crate::text_invocation::PrefixedInvocationSearch::Parsed(found) => {
+            let consumed = found.start_offset + found.parsed.consumed_bytes;
+            let command = found.parsed.raw_invocation;
+            buffer.drain(..consumed);
+            return Some(command);
+        }
+        crate::text_invocation::PrefixedInvocationSearch::Incomplete { .. } => return None,
+        crate::text_invocation::PrefixedInvocationSearch::NotFound => {}
+    }
+
     let mut absolute_offset = 0usize;
     for line in buffer.split_inclusive('\n') {
         let trimmed = line.trim_start();
@@ -76,22 +88,15 @@ pub(crate) fn scan_syscall_buffer(buffer: &mut String) -> Option<String> {
             }
 
             let candidate = &buffer[marker_offset..];
-            match crate::text_invocation::extract_prefixed_json_invocation(candidate, prefix) {
-                crate::text_invocation::PrefixedInvocationExtract::Parsed(parsed) => {
-                    let consumed = marker_offset + parsed.consumed_bytes;
-                    let command = parsed.raw_invocation;
-                    buffer.drain(..consumed);
-                    return Some(command);
-                }
-                crate::text_invocation::PrefixedInvocationExtract::Incomplete => return None,
-                crate::text_invocation::PrefixedInvocationExtract::Invalid(_) => {
-                    let newline_rel = candidate.find('\n');
-                    let command_end = newline_rel.unwrap_or(candidate.len());
-                    let command = candidate[..command_end].trim_end_matches('\r').to_string();
-                    let consumed = marker_offset + newline_rel.map_or(command_end, |idx| idx + 1);
-                    buffer.drain(..consumed);
-                    return Some(command);
-                }
+            if let crate::text_invocation::PrefixedInvocationExtract::Invalid(_) =
+                crate::text_invocation::extract_prefixed_json_invocation(candidate, prefix)
+            {
+                let newline_rel = candidate.find('\n');
+                let command_end = newline_rel.unwrap_or(candidate.len());
+                let command = candidate[..command_end].trim_end_matches('\r').to_string();
+                let consumed = marker_offset + newline_rel.map_or(command_end, |idx| idx + 1);
+                buffer.drain(..consumed);
+                return Some(command);
             }
         }
 
@@ -666,7 +671,8 @@ fn dispatch_spawn_action(
                     Some(runtime_id),
                 ),
             );
-            let _ = engine.inject_context(pid, &engine.format_system_message(&format!("ERROR: {}", e)));
+            let _ =
+                engine.inject_context(pid, &engine.format_system_message(&format!("ERROR: {}", e)));
             SyscallDispatchOutcome::None
         }
     }

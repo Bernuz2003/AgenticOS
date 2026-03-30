@@ -66,8 +66,7 @@ pub(super) fn handle_stream_chunk(
         return;
     }
 
-    let fragment =
-        consume_stream_output_fragment(scheduler.checked_out_process_mut(pid), text);
+    let fragment = consume_stream_output_fragment(scheduler.checked_out_process_mut(pid), text);
 
     if let Some(command) = fragment.syscall_command.as_deref() {
         tracing::info!(

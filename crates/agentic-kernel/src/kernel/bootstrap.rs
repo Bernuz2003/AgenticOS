@@ -6,9 +6,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
-use crate::diagnostics::audit::{self, AuditContext};
 use crate::commands::MetricsState;
 use crate::config;
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::inference_worker::{self, InferenceCmd, InferenceResult};
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;

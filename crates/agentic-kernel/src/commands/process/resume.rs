@@ -238,7 +238,10 @@ pub(super) fn ensure_live_session_binding(
         let Some(engine) = ctx.runtime_registry.engine_mut(&runtime_id) else {
             return Err((
                 ControlErrorCode::NoModel,
-                format!("Runtime '{}' is not available for session resume", runtime_id),
+                format!(
+                    "Runtime '{}' is not available for session resume",
+                    runtime_id
+                ),
             ));
         };
 

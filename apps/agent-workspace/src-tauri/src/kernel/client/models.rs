@@ -17,10 +17,7 @@ impl KernelBridge {
         self.decode_response(&response.payload, &[agentic_protocol::schema::LIST_MODELS])
     }
 
-    pub fn select_model(
-        &mut self,
-        model_id: &str,
-    ) -> KernelBridgeResult<SelectModelResult> {
+    pub fn select_model(&mut self, model_id: &str) -> KernelBridgeResult<SelectModelResult> {
         let response = self.send_control_command(OpCode::SelectModel, model_id.as_bytes())?;
         if response.kind != "+OK" {
             self.drop_connection();
@@ -33,10 +30,7 @@ impl KernelBridge {
         self.decode_response(&response.payload, &[agentic_protocol::schema::SELECT_MODEL])
     }
 
-    pub fn load_model(
-        &mut self,
-        selector: &str,
-    ) -> KernelBridgeResult<LoadModelResult> {
+    pub fn load_model(&mut self, selector: &str) -> KernelBridgeResult<LoadModelResult> {
         let response = self.send_control_command(OpCode::Load, selector.as_bytes())?;
         if response.kind != "+OK" {
             self.drop_connection();

@@ -2,8 +2,8 @@ use agentic_control_models::{SendInputResult, TurnControlResult};
 use tauri::State;
 
 use super::run_blocking;
-use crate::kernel::composer;
 use crate::kernel::client::transport::KernelBridgeError;
+use crate::kernel::composer;
 use crate::kernel::{history, live_timeline};
 use crate::models::kernel::{StartSessionResult, TimelineSnapshot, WorkspaceSnapshot};
 use crate::state::AppState;

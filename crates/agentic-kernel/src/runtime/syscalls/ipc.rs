@@ -1,8 +1,8 @@
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::engine::LLMEngine;
 use crate::orchestrator::{Orchestrator, TaskPidBinding, TaskStatus};
 use crate::session::SessionRegistry;
 use crate::storage::{IpcMailboxSelector, NewIpcMessage, StorageService, StoredIpcMessage};
-use crate::diagnostics::audit::{self, AuditContext};
 
 use super::ids::next_ipc_message_id;
 
@@ -24,10 +24,7 @@ fn build_ipc_payload_preview(payload_text: &str) -> String {
     }
 }
 
-fn task_role_for_binding(
-    orchestrator: &Orchestrator,
-    binding: &TaskPidBinding,
-) -> Option<String> {
+fn task_role_for_binding(orchestrator: &Orchestrator, binding: &TaskPidBinding) -> Option<String> {
     orchestrator
         .get(binding.orch_id)
         .and_then(|orch| orch.tasks.get(&binding.task_id))

@@ -111,7 +111,8 @@ impl LogicalResidencyManager {
         let slot_id = self
             .slot_for_pid(pid)
             .ok_or(MemoryError::PidNotRegistered(pid))?;
-        self.swap.enqueue(pid, slot_id, backend_id, family, pressure_bytes)
+        self.swap
+            .enqueue(pid, slot_id, backend_id, family, pressure_bytes)
     }
 
     pub(super) fn poll_swap_events(&mut self) -> (Vec<SwapEvent>, SwapCounterDeltas) {

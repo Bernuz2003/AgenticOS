@@ -14,10 +14,10 @@ use crate::prompting::{
 };
 use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 
+use super::LLMEngine;
 use crate::backend::common::tokenizer::{
     build_remote_fallback_tokenizer, resolve_special_tokens, resolve_tokenizer_path,
 };
-use super::LLMEngine;
 
 impl LLMEngine {
     pub fn load_target(target: &ResolvedModelTarget) -> Result<Self> {

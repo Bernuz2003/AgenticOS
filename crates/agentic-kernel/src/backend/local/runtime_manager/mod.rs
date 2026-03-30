@@ -1,5 +1,5 @@
-pub(crate) mod manager;
 pub(crate) mod health;
+pub(crate) mod manager;
 pub(crate) mod metadata;
 pub(crate) mod paths;
 pub(crate) mod spawn;

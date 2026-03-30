@@ -4,9 +4,9 @@ use std::thread;
 
 use mio::Waker;
 
-use crate::services::accounting::BackendAccountingEvent;
 use crate::backend::{InferenceFinishReason, InferenceStepRequest};
 use crate::process::{AgentProcess, ProcessState};
+use crate::services::accounting::BackendAccountingEvent;
 
 /// Command sent from the main thread to the inference worker.
 pub enum InferenceCmd {

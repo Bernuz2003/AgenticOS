@@ -4,7 +4,9 @@ use std::path::Path;
 use crate::kernel::live_timeline::{parse_stream_segments, TimelineSeedSession, TimelineSeedTurn};
 use crate::models::kernel::{TimelineItem, TimelineItemKind, TimelineSnapshot};
 
-use super::db::{load_messages, load_session_identity, load_turns, open_connection, StoredMessage, StoredTurn};
+use super::db::{
+    load_messages, load_session_identity, load_turns, open_connection, StoredMessage, StoredTurn,
+};
 
 pub fn load_timeline_snapshot(
     workspace_root: &Path,

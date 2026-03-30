@@ -6,6 +6,7 @@ mod diagnostics;
 mod engine;
 mod errors;
 mod events;
+mod invocation;
 mod kernel;
 mod memory;
 mod model_catalog;
@@ -21,18 +22,17 @@ mod scheduler;
 mod services;
 mod session;
 mod storage;
+#[cfg(test)]
+mod test_support;
 mod tool_registry;
 mod tools;
 mod transport;
-mod invocation;
 mod workers;
-#[cfg(test)]
-mod test_support;
 
 #[allow(unused_imports)]
 pub(crate) use invocation::text as text_invocation;
 #[allow(unused_imports)]
-pub(crate) use prompt::agent_prompt as agent_prompt;
+pub(crate) use prompt::agent_prompt;
 #[allow(unused_imports)]
 pub(crate) use prompt::capabilities as agent_capabilities;
 #[allow(unused_imports)]

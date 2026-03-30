@@ -236,7 +236,6 @@ impl JobScheduler {
             trigger_kind: trigger.kind().to_string(),
         })
     }
-
 }
 
 impl ScheduledJob {
@@ -354,7 +353,6 @@ impl ScheduledJob {
             updated_at_ms: self.updated_at_ms,
         }
     }
-
 }
 
 fn validate_workflow_definition(workflow: &TaskGraphDef) -> Result<(), String> {

@@ -99,12 +99,13 @@ impl StorageService {
         let started_at_ms = current_timestamp_ms();
         let transaction = self.connection.transaction()?;
         let turn_index = next_turn_index(&transaction, session_id)?;
-        let run_id = active_run_id_for_session_pid(&transaction, session_id, pid)?.ok_or_else(|| {
-            StorageError::MissingProcessRun {
-                session_id: session_id.to_string(),
-                pid,
-            }
-        })?;
+        let run_id =
+            active_run_id_for_session_pid(&transaction, session_id, pid)?.ok_or_else(|| {
+                StorageError::MissingProcessRun {
+                    session_id: session_id.to_string(),
+                    pid,
+                }
+            })?;
 
         transaction.execute(
             r#"
@@ -156,8 +157,8 @@ impl StorageService {
     pub(crate) fn resume_turn(&mut self, turn_id: i64) -> Result<(), StorageError> {
         let updated_at_ms = current_timestamp_ms();
         let transaction = self.connection.transaction()?;
-        let (session_id, _) = turn_identity(&transaction, turn_id)?
-            .ok_or(StorageError::MissingTurn { turn_id })?;
+        let (session_id, _) =
+            turn_identity(&transaction, turn_id)?.ok_or(StorageError::MissingTurn { turn_id })?;
 
         transaction.execute(
             r#"
@@ -190,8 +191,8 @@ impl StorageService {
 
         let created_at_ms = current_timestamp_ms();
         let transaction = self.connection.transaction()?;
-        let (session_id, pid) = turn_identity(&transaction, turn_id)?
-            .ok_or(StorageError::MissingTurn { turn_id })?;
+        let (session_id, pid) =
+            turn_identity(&transaction, turn_id)?.ok_or(StorageError::MissingTurn { turn_id })?;
 
         if let Some(message_id) = assistant_message_id_for_turn(&transaction, turn_id)? {
             transaction.execute(
@@ -238,8 +239,8 @@ impl StorageService {
     ) -> Result<(), StorageError> {
         let ended_at_ms = current_timestamp_ms();
         let transaction = self.connection.transaction()?;
-        let (session_id, pid) = turn_identity(&transaction, turn_id)?
-            .ok_or(StorageError::MissingTurn { turn_id })?;
+        let (session_id, pid) =
+            turn_identity(&transaction, turn_id)?.ok_or(StorageError::MissingTurn { turn_id })?;
         let (current_status, current_finish_reason): (String, Option<String>) = transaction
             .query_row(
                 "SELECT status, finish_reason FROM session_turns WHERE turn_id = ?1",
@@ -301,15 +302,11 @@ impl StorageService {
         Ok(())
     }
 
-    pub(crate) fn error_turn(
-        &mut self,
-        turn_id: i64,
-        message: &str,
-    ) -> Result<(), StorageError> {
+    pub(crate) fn error_turn(&mut self, turn_id: i64, message: &str) -> Result<(), StorageError> {
         let ended_at_ms = current_timestamp_ms();
         let transaction = self.connection.transaction()?;
-        let (session_id, pid) = turn_identity(&transaction, turn_id)?
-            .ok_or(StorageError::MissingTurn { turn_id })?;
+        let (session_id, pid) =
+            turn_identity(&transaction, turn_id)?.ok_or(StorageError::MissingTurn { turn_id })?;
 
         transaction.execute(
             r#"

@@ -1,4 +1,6 @@
-use super::manager::{manager, LocalRuntimeManager, ManagedLocalRuntimeEntry, ManagedLocalRuntimeView};
+use super::manager::{
+    manager, LocalRuntimeManager, ManagedLocalRuntimeEntry, ManagedLocalRuntimeView,
+};
 use super::paths::family_label;
 
 impl ManagedLocalRuntimeEntry {
@@ -20,7 +22,10 @@ impl ManagedLocalRuntimeEntry {
 
 impl LocalRuntimeManager {
     pub(super) fn views(&self) -> Vec<ManagedLocalRuntimeView> {
-        self.entries.values().map(ManagedLocalRuntimeEntry::view).collect()
+        self.entries
+            .values()
+            .map(ManagedLocalRuntimeEntry::view)
+            .collect()
     }
 }
 

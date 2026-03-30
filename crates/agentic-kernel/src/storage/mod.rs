@@ -19,11 +19,13 @@ mod workflows;
 
 pub(crate) use accounting::StoredAccountingEvent;
 pub(crate) use audit::NewAuditEvent;
+pub(crate) use conversation::StoredReplayMessage;
 pub(crate) use conversation::StoredSessionRecord;
 pub(crate) use ipc::{IpcMailboxSelector, NewIpcMessage, StoredIpcMessage};
 #[allow(unused_imports)]
-pub(crate) use schema::{current_timestamp_ms, BootRecoveryReport, KernelBootRecord, StorageError, StorageService};
-pub(crate) use conversation::StoredReplayMessage;
+pub(crate) use schema::{
+    current_timestamp_ms, BootRecoveryReport, KernelBootRecord, StorageError, StorageService,
+};
 pub(crate) use workflows::{NewScheduledJobRecord, StoredScheduledJob, StoredScheduledJobRun};
 pub(crate) use workflows::{
     StoredWorkflowArtifact, StoredWorkflowArtifactInput, StoredWorkflowTaskAttempt,

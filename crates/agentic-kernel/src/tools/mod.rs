@@ -95,11 +95,6 @@ pub fn handle_syscall(
         should_kill_process: result.should_kill_process,
     }
 }
-
-pub(crate) fn validates_tool_invocation(command_block: &str) -> bool {
-    parser::parse_text_invocation(command_block).is_ok()
-}
-
 #[cfg(test)]
 #[path = "tests/macros.rs"]
 mod macro_tests;

@@ -71,10 +71,7 @@ impl KernelBridge {
         )
     }
 
-    pub fn orchestrate(
-        &mut self,
-        payload: &str,
-    ) -> KernelBridgeResult<OrchestrateResult> {
+    pub fn orchestrate(&mut self, payload: &str) -> KernelBridgeResult<OrchestrateResult> {
         let response = self.send_control_command(OpCode::Orchestrate, payload.as_bytes())?;
         if response.kind != "+OK" {
             self.drop_connection();

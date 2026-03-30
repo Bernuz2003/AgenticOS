@@ -172,3 +172,41 @@ fn agent_invocation_end_detects_action_line() {
 
     assert_eq!(&stream[..end], stream);
 }
+
+#[test]
+fn agent_invocation_end_truncates_tool_suffix_after_json_boundary() {
+    let stream = "Prelude\nTOOL:calc {\"expression\":\"1+1\"} trailing text";
+    let end = agent_invocation_end(stream).expect("tool marker");
+
+    assert_eq!(
+        &stream[..end],
+        "Prelude\nTOOL:calc {\"expression\":\"1+1\"}"
+    );
+}
+
+#[test]
+fn agent_invocation_end_truncates_action_suffix_after_json_boundary() {
+    let stream = "Prelude\nACTION:send {\"pid\":42,\"message\":\"hello\"} trailing text";
+    let end = agent_invocation_end(stream).expect("action marker");
+
+    assert_eq!(
+        &stream[..end],
+        "Prelude\nACTION:send {\"pid\":42,\"message\":\"hello\"}"
+    );
+}
+
+#[test]
+fn agent_invocation_end_detects_inline_tool_invocation() {
+    let stream = "Creo la cartella richiesta: TOOL:mkdir {\"path\":\"prova\"}";
+    let end = agent_invocation_end(stream).expect("tool marker");
+
+    assert_eq!(&stream[..end], stream);
+}
+
+#[test]
+fn agent_invocation_end_skips_invalid_inline_mention_before_real_invocation() {
+    let stream = "Uso la funzione TOOL:mkdir. Ecco la richiesta:\nTOOL:mkdir {\"path\":\"prova\"}";
+    let end = agent_invocation_end(stream).expect("tool marker");
+
+    assert_eq!(&stream[..end], stream);
+}

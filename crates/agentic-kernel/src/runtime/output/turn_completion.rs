@@ -37,7 +37,9 @@ pub(super) fn emit_turn_completion_events(
     };
     pending_events.push(KernelEvent::SessionFinished {
         pid,
-        tokens_generated: sched.as_ref().map(|snapshot| snapshot.tokens_generated as u64),
+        tokens_generated: sched
+            .as_ref()
+            .map(|snapshot| snapshot.tokens_generated as u64),
         elapsed_secs: sched.as_ref().map(|snapshot| snapshot.elapsed_secs),
         reason: reason.to_string(),
     });
@@ -54,8 +56,14 @@ pub(super) fn emit_turn_completion_events(
         format!(
             "state={:?} tokens={} elapsed={:.3}s reason={}",
             turn_state,
-            sched.as_ref().map(|snapshot| snapshot.tokens_generated).unwrap_or(0),
-            sched.as_ref().map(|snapshot| snapshot.elapsed_secs).unwrap_or(0.0),
+            sched
+                .as_ref()
+                .map(|snapshot| snapshot.tokens_generated)
+                .unwrap_or(0),
+            sched
+                .as_ref()
+                .map(|snapshot| snapshot.elapsed_secs)
+                .unwrap_or(0.0),
             reason
         ),
         audit_context,

@@ -15,6 +15,19 @@ pub(crate) enum PrefixedInvocationExtract {
     Invalid(String),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LocatedPrefixedInvocation {
+    pub(crate) start_offset: usize,
+    pub(crate) parsed: ExtractedPrefixedInvocation,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PrefixedInvocationSearch {
+    Parsed(LocatedPrefixedInvocation),
+    Incomplete { start_offset: usize },
+    NotFound,
+}
+
 pub(crate) fn parse_prefixed_json_invocation(
     text: &str,
     prefix: &str,
@@ -117,6 +130,60 @@ pub(crate) fn extract_prefixed_json_invocation(
     })
 }
 
+pub(crate) fn find_first_prefixed_json_invocation(
+    text: &str,
+    prefixes: &[&str],
+) -> PrefixedInvocationSearch {
+    let mut search_offset = 0usize;
+    let mut earliest_incomplete = None;
+
+    while search_offset < text.len() {
+        let Some((marker_offset, prefix)) = next_prefix_marker(text, search_offset, prefixes)
+        else {
+            break;
+        };
+
+        match extract_prefixed_json_invocation(&text[marker_offset..], prefix) {
+            PrefixedInvocationExtract::Parsed(parsed) => {
+                if let Some(start_offset) = earliest_incomplete {
+                    return PrefixedInvocationSearch::Incomplete { start_offset };
+                }
+                return PrefixedInvocationSearch::Parsed(LocatedPrefixedInvocation {
+                    start_offset: marker_offset,
+                    parsed,
+                });
+            }
+            PrefixedInvocationExtract::Incomplete => {
+                earliest_incomplete.get_or_insert(marker_offset);
+            }
+            PrefixedInvocationExtract::Invalid(_) => {}
+        }
+
+        search_offset = marker_offset + prefix.len();
+    }
+
+    if let Some(start_offset) = earliest_incomplete {
+        PrefixedInvocationSearch::Incomplete { start_offset }
+    } else {
+        PrefixedInvocationSearch::NotFound
+    }
+}
+
+fn next_prefix_marker<'a>(
+    text: &str,
+    search_offset: usize,
+    prefixes: &'a [&str],
+) -> Option<(usize, &'a str)> {
+    prefixes
+        .iter()
+        .filter_map(|prefix| {
+            text[search_offset..]
+                .find(prefix)
+                .map(|relative| (search_offset + relative, *prefix))
+        })
+        .min_by_key(|(offset, _)| *offset)
+}
+
 fn first_balanced_json_object_end(payload: &str) -> Option<usize> {
     let mut depth = 0usize;
     let mut in_string = false;
@@ -162,8 +229,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        extract_prefixed_json_invocation, is_streaming_prefixed_json_invocation,
-        parse_prefixed_json_invocation, PrefixedInvocationExtract,
+        extract_prefixed_json_invocation, find_first_prefixed_json_invocation,
+        is_streaming_prefixed_json_invocation, parse_prefixed_json_invocation,
+        PrefixedInvocationExtract, PrefixedInvocationSearch,
     };
 
     #[test]
@@ -207,5 +275,52 @@ mod tests {
             parse_prefixed_json_invocation(r#"TOOL:python {"code":"print(1)"}extra"#, "TOOL:")
                 .expect_err("expected trailing-text rejection");
         assert!(err.contains("trailing characters"));
+    }
+
+    #[test]
+    fn finds_first_inline_prefixed_invocation() {
+        let text = r#"Per creare la cartella: TOOL:mkdir {"path":"prova"}"#;
+
+        let search = find_first_prefixed_json_invocation(text, &["ACTION:", "TOOL:"]);
+        let PrefixedInvocationSearch::Parsed(found) = search else {
+            panic!("expected parsed invocation");
+        };
+
+        assert_eq!(found.start_offset, "Per creare la cartella: ".len());
+        assert_eq!(
+            found.parsed.raw_invocation,
+            r#"TOOL:mkdir {"path":"prova"}"#
+        );
+    }
+
+    #[test]
+    fn skips_invalid_mention_before_later_valid_invocation() {
+        let text = r#"Usero' la funzione TOOL:mkdir. Ecco la richiesta:
+
+TOOL:mkdir {"path":"prova"}"#;
+
+        let search = find_first_prefixed_json_invocation(text, &["ACTION:", "TOOL:"]);
+        let PrefixedInvocationSearch::Parsed(found) = search else {
+            panic!("expected parsed invocation");
+        };
+
+        assert_eq!(
+            found.parsed.raw_invocation,
+            r#"TOOL:mkdir {"path":"prova"}"#
+        );
+        assert!(text[..found.start_offset].contains("funzione TOOL:mkdir."));
+    }
+
+    #[test]
+    fn returns_incomplete_for_partial_inline_invocation() {
+        let text = r#"Per creare la cartella: TOOL:mkdir {"path":"prova""#;
+
+        let search = find_first_prefixed_json_invocation(text, &["ACTION:", "TOOL:"]);
+        assert_eq!(
+            search,
+            PrefixedInvocationSearch::Incomplete {
+                start_offset: "Per creare la cartella: ".len(),
+            }
+        );
     }
 }

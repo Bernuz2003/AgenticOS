@@ -97,6 +97,25 @@ fn scan_keeps_suffix_after_complete_tool_json_same_line() {
 }
 
 #[test]
+fn scan_finds_inline_tool_command_after_preamble() {
+    let mut buf = "Creo la cartella richiesta: TOOL:mkdir {\"path\":\"prova\"}".to_string();
+
+    let result = scan_syscall_buffer(&mut buf);
+    assert_eq!(result, Some("TOOL:mkdir {\"path\":\"prova\"}".to_string()));
+    assert!(buf.is_empty());
+}
+
+#[test]
+fn scan_skips_invalid_inline_mention_before_later_valid_command() {
+    let mut buf = "Uso la funzione TOOL:mkdir. Ecco la richiesta:\nTOOL:mkdir {\"path\":\"prova\"}"
+        .to_string();
+
+    let result = scan_syscall_buffer(&mut buf);
+    assert_eq!(result, Some("TOOL:mkdir {\"path\":\"prova\"}".to_string()));
+    assert!(buf.is_empty());
+}
+
+#[test]
 fn scan_keeps_next_action_after_first_action_on_same_line() {
     let mut buf = "ACTION:spawn {\"prompt\":\"worker\"}ACTION:send {\"pid\":7,\"message\":\"ok\"}"
         .to_string();

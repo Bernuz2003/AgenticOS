@@ -3,18 +3,18 @@ pub(crate) mod lifecycle;
 mod resume;
 mod targeting;
 
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::protocol;
 use crate::services::process_control::{
     request_process_kill_with_session, request_process_termination_with_session,
     ProcessSignalResult,
 };
-use crate::diagnostics::audit::{self, AuditContext};
 use agentic_control_models::{KernelEvent, TurnControlResult};
 use agentic_protocol::ControlErrorCode;
 
+use self::input::PidPayload;
 use super::context::ProcessCommandContext;
 use super::diagnostics::log_event;
-use self::input::PidPayload;
 
 pub(crate) use input::{handle_continue_output, handle_send_input};
 pub(crate) use resume::handle_resume_session;
@@ -245,7 +245,6 @@ pub(crate) fn handle_kill(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec
     }
 }
 
-
 pub(crate) fn handle_stop_output(ctx: ProcessCommandContext<'_>, payload: &[u8]) -> Vec<u8> {
     let payload = match serde_json::from_slice::<PidPayload>(payload).map_err(|err| err.to_string())
     {
@@ -379,7 +378,6 @@ pub(crate) fn handle_stop_output(ctx: ProcessCommandContext<'_>, payload: &[u8])
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -395,13 +393,17 @@ mod tests {
     use crate::commands::diagnostics::MetricsState;
     use crate::config::OpenAIResponsesConfig;
     use crate::memory::NeuralMemory;
-    use crate::model_catalog::{ModelCatalog, RemoteModelEntry, ResolvedModelTarget, WorkloadClass};
+    use crate::model_catalog::{
+        ModelCatalog, RemoteModelEntry, ResolvedModelTarget, WorkloadClass,
+    };
     use crate::process::ProcessLifecyclePolicy;
     use crate::prompting::PromptFamily;
     use crate::resource_governor::ResourceGovernor;
     use crate::runtimes::{RuntimeRegistry, RuntimeReservation};
     use crate::scheduler::{ProcessPriority, ProcessScheduler};
-    use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
+    use crate::services::process_runtime::{
+        spawn_managed_process_with_session, ManagedProcessRequest,
+    };
     use crate::session::SessionRegistry;
     use crate::storage::StorageService;
     use crate::tool_registry::ToolRegistry;

@@ -70,9 +70,8 @@ pub(super) struct RequestedLocalRuntime {
 }
 
 #[cfg(test)]
-type TestSpawnHook = std::sync::Arc<
-    dyn Fn(TestSpawnRequest) -> Result<ManagedRuntimeProcess, String> + Send + Sync,
->;
+type TestSpawnHook =
+    std::sync::Arc<dyn Fn(TestSpawnRequest) -> Result<ManagedRuntimeProcess, String> + Send + Sync>;
 
 #[cfg(test)]
 #[derive(Debug, Clone)]
@@ -107,7 +106,6 @@ impl ManagedLocalRuntimeEntry {
             family: self.family,
         })
     }
-
 }
 
 #[derive(Debug)]
@@ -203,7 +201,8 @@ impl LocalRuntimeManager {
                 entry.state = ManagedLocalRuntimeState::Unhealthy;
                 stop_runtime_entry(entry);
                 entry.state = ManagedLocalRuntimeState::Restarting;
-                entry.last_error = Some("Managed local runtime became unhealthy; restarting.".to_string());
+                entry.last_error =
+                    Some("Managed local runtime became unhealthy; restarting.".to_string());
             } else {
                 stop_runtime_entry(entry);
                 entry.logical_model_id = request.logical_model_id.clone();
@@ -255,20 +254,23 @@ impl LocalRuntimeManager {
             request.family,
         )?;
 
-        let entry = self.entries.entry(key.clone()).or_insert(ManagedLocalRuntimeEntry {
-            family: request.family,
-            logical_model_id: request.logical_model_id.clone(),
-            model_path: request.model_path.clone(),
-            endpoint: endpoint.clone(),
-            port: desired_port,
-            slot_save_dir: slot_save_dir.clone(),
-            state: ManagedLocalRuntimeState::Starting,
-            context_window_tokens: Some(context_window_tokens),
-            last_error: None,
-            managed_by_kernel: true,
-            process: None,
-            updated_at_ms: current_timestamp_ms(),
-        });
+        let entry = self
+            .entries
+            .entry(key.clone())
+            .or_insert(ManagedLocalRuntimeEntry {
+                family: request.family,
+                logical_model_id: request.logical_model_id.clone(),
+                model_path: request.model_path.clone(),
+                endpoint: endpoint.clone(),
+                port: desired_port,
+                slot_save_dir: slot_save_dir.clone(),
+                state: ManagedLocalRuntimeState::Starting,
+                context_window_tokens: Some(context_window_tokens),
+                last_error: None,
+                managed_by_kernel: true,
+                process: None,
+                updated_at_ms: current_timestamp_ms(),
+            });
         entry.logical_model_id = request.logical_model_id;
         entry.model_path = request.model_path.clone();
         entry.endpoint = endpoint.clone();
@@ -416,7 +418,6 @@ pub(crate) fn shutdown_all() {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .shutdown_all();
 }
-
 
 #[cfg(test)]
 pub(super) fn test_external_endpoint_override_get() -> Option<String> {
@@ -680,8 +681,8 @@ impl Drop for TestRuntimeDriverAvailabilityGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::managed_runtime_views;
+    use super::*;
     use crate::backend::{BackendCapabilities, BackendClass, DriverResolution};
     use crate::model_catalog::{LocalLoadTarget, ModelMetadata};
     use std::io::{Read, Write};
@@ -743,8 +744,8 @@ mod tests {
             spawn_count.fetch_add(1, Ordering::SeqCst);
             let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
             let handle = std::thread::spawn(move || {
-                let listener = TcpListener::bind(("127.0.0.1", request.port))
-                    .expect("bind mock llama-server");
+                let listener =
+                    TcpListener::bind(("127.0.0.1", request.port)).expect("bind mock llama-server");
                 listener
                     .set_nonblocking(true)
                     .expect("set mock llama-server nonblocking");
@@ -812,8 +813,10 @@ mod tests {
     fn managed_runtime_provisions_once_and_reuses_family_slot_runtime() {
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let port_base = reserve_port_base();
-        let _guard =
-            TestManagedRuntimeProvisionGuard::set(port_base, mock_runtime_spawn_hook(spawn_count.clone()));
+        let _guard = TestManagedRuntimeProvisionGuard::set(
+            port_base,
+            mock_runtime_spawn_hook(spawn_count.clone()),
+        );
         let target = test_target(PromptFamily::Qwen, "qwen-test-runtime", Some(131_072));
 
         let first = ensure_runtime_for_target(&target).expect("provision qwen runtime");
@@ -835,8 +838,10 @@ mod tests {
     fn managed_runtime_restarts_after_shutdown_when_same_family_is_requested_again() {
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let port_base = reserve_port_base();
-        let _guard =
-            TestManagedRuntimeProvisionGuard::set(port_base, mock_runtime_spawn_hook(spawn_count.clone()));
+        let _guard = TestManagedRuntimeProvisionGuard::set(
+            port_base,
+            mock_runtime_spawn_hook(spawn_count.clone()),
+        );
         let target = test_target(PromptFamily::Llama, "llama-test-runtime", Some(131_072));
 
         ensure_runtime_for_target(&target).expect("initial provision");
@@ -854,8 +859,10 @@ mod tests {
     fn managed_runtime_requires_max_context_metadata_to_spawn() {
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let port_base = reserve_port_base();
-        let _guard =
-            TestManagedRuntimeProvisionGuard::set(port_base, mock_runtime_spawn_hook(spawn_count.clone()));
+        let _guard = TestManagedRuntimeProvisionGuard::set(
+            port_base,
+            mock_runtime_spawn_hook(spawn_count.clone()),
+        );
         let target = test_target(PromptFamily::Qwen, "qwen-missing-context", None);
 
         let err = ensure_runtime_for_target(&target)

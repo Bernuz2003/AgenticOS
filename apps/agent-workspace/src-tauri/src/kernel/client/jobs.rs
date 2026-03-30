@@ -1,4 +1,6 @@
-use agentic_control_models::{ScheduleJobResult, ScheduledJobControlResult, ScheduledJobListResponse};
+use agentic_control_models::{
+    ScheduleJobResult, ScheduledJobControlResult, ScheduledJobListResponse,
+};
 use agentic_protocol::OpCode;
 
 use super::transport::{self, KernelBridge, KernelBridgeResult};
@@ -17,10 +19,7 @@ impl KernelBridge {
         self.decode_response(&response.payload, &[agentic_protocol::schema::LIST_JOBS])
     }
 
-    pub fn schedule_job(
-        &mut self,
-        payload: &str,
-    ) -> KernelBridgeResult<ScheduleJobResult> {
+    pub fn schedule_job(&mut self, payload: &str) -> KernelBridgeResult<ScheduleJobResult> {
         let response = self.send_control_command(OpCode::ScheduleJob, payload.as_bytes())?;
         if response.kind != "+OK" {
             self.drop_connection();
@@ -55,10 +54,7 @@ impl KernelBridge {
         )
     }
 
-    pub fn delete_job(
-        &mut self,
-        job_id: u64,
-    ) -> KernelBridgeResult<ScheduledJobControlResult> {
+    pub fn delete_job(&mut self, job_id: u64) -> KernelBridgeResult<ScheduledJobControlResult> {
         let payload = serde_json::json!({ "job_id": job_id });
         let response =
             self.send_control_command(OpCode::DeleteJob, payload.to_string().as_bytes())?;

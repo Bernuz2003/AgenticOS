@@ -158,7 +158,9 @@ pub fn execute_command(
                 return;
             }
         }
-        OpCode::ResumeSession => self::process_commands::handle_resume_session(ctx.process_view(), &payload),
+        OpCode::ResumeSession => {
+            self::process_commands::handle_resume_session(ctx.process_view(), &payload)
+        }
         OpCode::ScheduleJob => {
             if let Some(r) =
                 workflow_commands::jobs::handle_schedule_job(ctx.orchestration_view(), &payload)
@@ -186,33 +188,35 @@ pub fn execute_command(
                 return;
             }
         }
-        OpCode::SendInput => self::process_commands::handle_send_input(ctx.process_view(), &payload),
-        OpCode::ContinueOutput => self::process_commands::handle_continue_output(ctx.process_view(), &payload),
+        OpCode::SendInput => {
+            self::process_commands::handle_send_input(ctx.process_view(), &payload)
+        }
+        OpCode::ContinueOutput => {
+            self::process_commands::handle_continue_output(ctx.process_view(), &payload)
+        }
         OpCode::StopOrchestration => {
-            if let Some(r) =
-                workflow_commands::orchestration::handle_stop_orchestration(
-                    ctx.orchestration_view(),
-                    &payload,
-                )
-            {
+            if let Some(r) = workflow_commands::orchestration::handle_stop_orchestration(
+                ctx.orchestration_view(),
+                &payload,
+            ) {
                 r
             } else {
                 return;
             }
         }
         OpCode::DeleteOrchestration => {
-            if let Some(r) =
-                workflow_commands::orchestration::handle_delete_orchestration(
-                    ctx.orchestration_view(),
-                    &payload,
-                )
-            {
+            if let Some(r) = workflow_commands::orchestration::handle_delete_orchestration(
+                ctx.orchestration_view(),
+                &payload,
+            ) {
                 r
             } else {
                 return;
             }
         }
-        OpCode::StopOutput => self::process_commands::handle_stop_output(ctx.process_view(), &payload),
+        OpCode::StopOutput => {
+            self::process_commands::handle_stop_output(ctx.process_view(), &payload)
+        }
         OpCode::Status => runtime::handle_status(ctx.status_view(), &payload),
         OpCode::ListOrchestrations => {
             workflow_commands::control::handle_list_orchestrations(ctx.status_view(), &payload)
@@ -220,7 +224,9 @@ pub fn execute_command(
         OpCode::OrchestrationStatus => {
             workflow_commands::control::handle_orchestration_status(ctx.status_view(), &payload)
         }
-        OpCode::ListJobs => workflow_commands::control::handle_list_jobs(ctx.status_view(), &payload),
+        OpCode::ListJobs => {
+            workflow_commands::control::handle_list_jobs(ctx.status_view(), &payload)
+        }
         OpCode::ListArtifacts => {
             workflow_commands::control::handle_list_artifacts(ctx.status_view(), &payload)
         }
@@ -230,24 +236,32 @@ pub fn execute_command(
         OpCode::SetGen => misc::handle_set_gen(ctx.misc_view(), &payload),
         OpCode::GetGen => misc::handle_get_gen(ctx.misc_view()),
         OpCode::MemoryWrite => memory_cmd::handle_memory_write(ctx.memory_view(), &payload),
-        OpCode::SetPriority => self::process_commands::lifecycle::handle_set_priority(ctx.scheduler_view(), &payload),
-        OpCode::GetQuota => self::process_commands::lifecycle::handle_get_quota(ctx.scheduler_view(), &payload),
-        OpCode::SetQuota => self::process_commands::lifecycle::handle_set_quota(ctx.scheduler_view(), &payload),
+        OpCode::SetPriority => {
+            self::process_commands::lifecycle::handle_set_priority(ctx.scheduler_view(), &payload)
+        }
+        OpCode::GetQuota => {
+            self::process_commands::lifecycle::handle_get_quota(ctx.scheduler_view(), &payload)
+        }
+        OpCode::SetQuota => {
+            self::process_commands::lifecycle::handle_set_quota(ctx.scheduler_view(), &payload)
+        }
         OpCode::Checkpoint => checkpoint_cmd::handle_checkpoint(ctx.checkpoint_view(), &payload),
         OpCode::Restore => checkpoint_cmd::handle_restore(ctx.checkpoint_view(), &payload),
         OpCode::Orchestrate => {
-            if let Some(r) =
-                workflow_commands::orchestration::handle_orchestrate(ctx.orchestration_view(), &payload)
-            {
+            if let Some(r) = workflow_commands::orchestration::handle_orchestrate(
+                ctx.orchestration_view(),
+                &payload,
+            ) {
                 r
             } else {
                 return;
             }
         }
         OpCode::RetryTask => {
-            if let Some(r) =
-                workflow_commands::orchestration::handle_retry_task(ctx.orchestration_view(), &payload)
-            {
+            if let Some(r) = workflow_commands::orchestration::handle_retry_task(
+                ctx.orchestration_view(),
+                &payload,
+            ) {
                 r
             } else {
                 return;

@@ -9,7 +9,10 @@ use super::lobby::{
     try_fetch_live_snapshot_by_pid, try_fetch_live_snapshot_by_pid_for_session,
     try_fetch_live_snapshot_for_session,
 };
-use super::workspace::{ensure_live_timeline_from_snapshot, snapshot_live_timeline_for_pid, snapshot_live_timeline_for_session};
+use super::workspace::{
+    ensure_live_timeline_from_snapshot, snapshot_live_timeline_for_pid,
+    snapshot_live_timeline_for_session,
+};
 
 pub fn compose_timeline_snapshot_for_session(
     workspace_root: &Path,

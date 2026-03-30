@@ -57,7 +57,8 @@ impl JobScheduler {
             .values()
             .filter_map(|job| {
                 if job.enabled && job.state == ScheduledJobState::Running {
-                    job.active_deadline_at_ms.map(|deadline| (job.job_id, deadline))
+                    job.active_deadline_at_ms
+                        .map(|deadline| (job.job_id, deadline))
                 } else {
                     None
                 }

@@ -101,7 +101,7 @@ fn run_event_bridge(
             }
             Some(frame) if frame.kind == "-ERR" => {
                 return Err(
-                    transport::decode_protocol_error(&frame.code, &frame.payload).to_string()
+                    transport::decode_protocol_error(&frame.code, &frame.payload).to_string(),
                 );
             }
             Some(_) | None => continue,
@@ -388,7 +388,9 @@ fn authenticate(stream: &mut TcpStream, workspace_root: &Path) -> Result<(), Str
     let response = transport::read_single_frame(stream, Duration::from_secs(5))
         .map_err(|err| err.to_string())?;
     if response.kind != "+OK" {
-        return Err(transport::decode_protocol_error(&response.code, &response.payload).to_string());
+        return Err(
+            transport::decode_protocol_error(&response.code, &response.payload).to_string(),
+        );
     }
 
     Ok(())
@@ -405,7 +407,9 @@ fn negotiate_events_hello(stream: &mut TcpStream) -> Result<(), String> {
     let response = transport::read_single_frame(stream, Duration::from_secs(5))
         .map_err(|err| err.to_string())?;
     if response.kind != "+OK" {
-        return Err(transport::decode_protocol_error(&response.code, &response.payload).to_string());
+        return Err(
+            transport::decode_protocol_error(&response.code, &response.payload).to_string(),
+        );
     }
     Ok(())
 }
@@ -416,7 +420,9 @@ fn subscribe(stream: &mut TcpStream) -> Result<(), String> {
     let response = transport::read_single_frame(stream, Duration::from_secs(5))
         .map_err(|err| err.to_string())?;
     if response.kind != "+OK" {
-        return Err(transport::decode_protocol_error(&response.code, &response.payload).to_string());
+        return Err(
+            transport::decode_protocol_error(&response.code, &response.payload).to_string(),
+        );
     }
     let _ = transport::decode_protocol_data::<SubscribeResult>(&response.payload)
         .map_err(|err| err.to_string())?;

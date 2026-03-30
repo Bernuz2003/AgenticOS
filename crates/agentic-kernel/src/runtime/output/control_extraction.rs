@@ -40,7 +40,8 @@ pub(super) fn output_accumulator_for_token(
         captured_assistant_text: checked_out
             .map(|metadata| metadata.captured_assistant_text.clone())
             .unwrap_or_default(),
-        pending_stream_syscall: checked_out.and_then(|metadata| metadata.pending_stream_syscall.clone()),
+        pending_stream_syscall: checked_out
+            .and_then(|metadata| metadata.pending_stream_syscall.clone()),
     }
 }
 

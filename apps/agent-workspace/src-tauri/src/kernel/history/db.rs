@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub(crate) struct SessionIdentity {
@@ -255,7 +255,10 @@ pub(crate) fn map_session_identity_row(
     })
 }
 
-pub(crate) fn load_turns(connection: &Connection, session_id: &str) -> Result<Vec<StoredTurn>, String> {
+pub(crate) fn load_turns(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Vec<StoredTurn>, String> {
     let mut statement = connection
         .prepare(
             r#"

@@ -137,7 +137,13 @@ pub(super) fn spawn_orchestrator_request(
                     "ORCHESTRATOR: failed to register spawned pid"
                 );
             }
-            record_spawn_start(storage, orchestrator, pending_events, &req, &spawned_process);
+            record_spawn_start(
+                storage,
+                orchestrator,
+                pending_events,
+                &req,
+                &spawned_process,
+            );
             tracing::info!(
                 pid,
                 orch_id = req.orch_id,

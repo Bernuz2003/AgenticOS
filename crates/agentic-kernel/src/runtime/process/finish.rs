@@ -171,7 +171,9 @@ mod tests {
     use crate::prompting::PromptFamily;
     use crate::runtimes::{RuntimeRegistry, RuntimeReservation};
     use crate::scheduler::{ProcessPriority, ProcessScheduler};
-    use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
+    use crate::services::process_runtime::{
+        spawn_managed_process_with_session, ManagedProcessRequest,
+    };
     use crate::session::SessionRegistry;
     use crate::storage::StorageService;
     use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
@@ -186,10 +188,16 @@ mod tests {
         let root = make_temp_dir("agenticos-process-finish");
         let db_path = root.join("agenticos.db");
         let mut storage = StorageService::open(&db_path).expect("open storage");
-        let boot = storage.record_kernel_boot("0.5.0-test").expect("record boot");
+        let boot = storage
+            .record_kernel_boot("0.5.0-test")
+            .expect("record boot");
         let mut runtime_registry = RuntimeRegistry::load(&mut storage).expect("load runtimes");
         let runtime = runtime_registry
-            .activate_target(&mut storage, &remote_target(), RuntimeReservation::default())
+            .activate_target(
+                &mut storage,
+                &remote_target(),
+                RuntimeReservation::default(),
+            )
             .expect("activate runtime");
         let runtime_id = runtime.runtime_id.clone();
         let mut session_registry =

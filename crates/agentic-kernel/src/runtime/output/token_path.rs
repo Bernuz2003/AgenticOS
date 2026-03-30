@@ -4,14 +4,14 @@ use std::sync::mpsc;
 use agentic_control_models::KernelEvent;
 use mio::{Poll, Token};
 
-use crate::services::accounting::{AccountingEventStatus, BackendAccountingEvent};
-use crate::diagnostics::audit::{self, AuditContext};
 use crate::backend::InferenceFinishReason;
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::memory::NeuralMemory;
 use crate::orchestrator::Orchestrator;
 use crate::process::{AgentProcess, ProcessState};
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::{CheckedOutProcessMetadata, ProcessScheduler};
+use crate::services::accounting::{AccountingEventStatus, BackendAccountingEvent};
 use crate::services::process_runtime::kill_managed_process_with_session;
 use crate::session::SessionRegistry;
 use crate::storage::{StorageService, StoredAccountingEvent};
@@ -158,7 +158,10 @@ pub(super) fn handle_token_result(
         .runtime_id_for_pid(pid)
         .map(ToString::to_string)
     else {
-        tracing::warn!(pid, "RUNTIME: dropping worker token for unknown runtime pid");
+        tracing::warn!(
+            pid,
+            "RUNTIME: dropping worker token for unknown runtime pid"
+        );
         return;
     };
     persist_accounting_event(
@@ -174,7 +177,8 @@ pub(super) fn handle_token_result(
         .as_ref()
         .map(|metadata| metadata.owner_id)
         .unwrap_or(0);
-    let mut output_accumulator = output_accumulator_for_token(runtime_checked_out.as_ref(), &process);
+    let mut output_accumulator =
+        output_accumulator_for_token(runtime_checked_out.as_ref(), &process);
     let final_fragment = consume_assistant_output_fragment(&mut output_accumulator, &text_output);
     let complete_assistant_text = output_accumulator.captured_assistant_text.clone();
     process.syscall_buffer = output_accumulator.pending_output_buffer.clone();
@@ -244,7 +248,9 @@ pub(super) fn handle_token_result(
             );
             (0, crate::runtime::syscalls::SyscallDispatchOutcome::Killed)
         } else {
-            let owner_id = engine.process_owner_id(pid).unwrap_or(owner_id_from_checkout);
+            let owner_id = engine
+                .process_owner_id(pid)
+                .unwrap_or(owner_id_from_checkout);
             let pending_syscall =
                 resolve_pending_syscall(engine, pid, &output_accumulator, &final_fragment);
 
@@ -285,8 +291,7 @@ pub(super) fn handle_token_result(
 
     let token_quota_exceeded = (0..generated_tokens).any(|_| scheduler.record_token(pid));
 
-    if let crate::runtime::syscalls::SyscallDispatchOutcome::Spawned(spawned_pid) =
-        syscall_dispatch
+    if let crate::runtime::syscalls::SyscallDispatchOutcome::Spawned(spawned_pid) = syscall_dispatch
     {
         if let Err(err) = runtime_registry.register_pid(storage, &runtime_id, spawned_pid) {
             tracing::warn!(

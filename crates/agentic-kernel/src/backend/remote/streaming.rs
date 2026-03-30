@@ -39,30 +39,14 @@ pub(crate) fn drain_json_objects(buffer: &mut Vec<u8>) -> Result<Vec<serde_json:
 }
 
 pub(crate) fn agent_invocation_end(stream: &str) -> Option<usize> {
-    let mut offset = 0usize;
-    for line in stream.split_inclusive('\n') {
-        let trimmed = line.trim();
-        let is_action = trimmed.starts_with("ACTION:")
-            && crate::runtime::actions::parse_text_invocation(trimmed).is_ok();
-        let is_tool =
-            trimmed.starts_with("TOOL:") && crate::tools::validates_tool_invocation(trimmed);
-        if is_action || is_tool {
-            return Some(offset + line.len());
+    match crate::text_invocation::find_first_prefixed_json_invocation(stream, &["ACTION:", "TOOL:"])
+    {
+        crate::text_invocation::PrefixedInvocationSearch::Parsed(found) => {
+            Some(found.start_offset + found.parsed.consumed_bytes)
         }
-        offset += line.len();
+        crate::text_invocation::PrefixedInvocationSearch::Incomplete { .. }
+        | crate::text_invocation::PrefixedInvocationSearch::NotFound => None,
     }
-
-    let last_line_start = stream.rfind('\n').map(|index| index + 1).unwrap_or(0);
-    let last_line = stream[last_line_start..].trim();
-    let is_action = last_line.starts_with("ACTION:")
-        && crate::runtime::actions::parse_text_invocation(last_line).is_ok();
-    let is_tool =
-        last_line.starts_with("TOOL:") && crate::tools::validates_tool_invocation(last_line);
-    if is_action || is_tool {
-        return Some(stream.len());
-    }
-
-    None
 }
 
 fn find_complete_json_object_end(bytes: &[u8]) -> Option<usize> {

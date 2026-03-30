@@ -1,5 +1,5 @@
-use crate::protocol;
 use crate::diagnostics::audit::{self, AuditContext};
+use crate::protocol;
 use agentic_control_models::{KernelEvent, SendInputResult, TurnControlResult};
 use agentic_protocol::ControlErrorCode;
 use serde::Deserialize;
@@ -123,7 +123,9 @@ pub(crate) fn handle_send_input(mut ctx: ProcessCommandContext<'_>, payload: &[u
                     prompt,
                     "input",
                 ) {
-                    Ok(turn_id) => ctx.session_registry.remember_active_turn(target.pid, turn_id),
+                    Ok(turn_id) => ctx
+                        .session_registry
+                        .remember_active_turn(target.pid, turn_id),
                     Err(err) => {
                         tracing::warn!(
                             pid = target.pid,

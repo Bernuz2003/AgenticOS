@@ -192,7 +192,9 @@ mod tests {
     use crate::prompting::PromptFamily;
     use crate::runtimes::{RuntimeRegistry, RuntimeReservation};
     use crate::scheduler::{CheckedOutProcessMetadata, ProcessPriority, ProcessScheduler};
-    use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
+    use crate::services::process_runtime::{
+        spawn_managed_process_with_session, ManagedProcessRequest,
+    };
     use crate::session::SessionRegistry;
     use crate::storage::StorageService;
     use crate::tool_registry::ToolRegistry;
@@ -208,7 +210,9 @@ mod tests {
     fn local_style_tool_token_is_dispatched_without_finishing_turn() {
         let _openai = TestOpenAIConfigOverrideGuard::set(test_openai_config());
         let mut fixture = KernelToolDispatchFixture::new().expect("build fixture");
-        let pid = fixture.spawn_remote_interactive_process("use a tool").expect("spawn process");
+        let pid = fixture
+            .spawn_remote_interactive_process("use a tool")
+            .expect("spawn process");
 
         let mut process = fixture.take_process(pid);
         process.state = ProcessState::WaitingForInput;
@@ -229,15 +233,14 @@ mod tests {
         let processed = fixture.drain();
         assert_eq!(processed, 1);
 
-        let state = fixture.process_state(pid).expect("process state after dispatch");
+        let state = fixture
+            .process_state(pid)
+            .expect("process state after dispatch");
         assert_eq!(state, ProcessState::WaitingForSyscall);
         fixture.assert_no_turn_completed(pid);
         fixture.assert_no_timeline_chunk_contains("TOOL:find_files");
         fixture.assert_audit_kind_for_pid(pid, "dispatched");
-        fixture.assert_syscall_queued(
-            pid,
-            r#"TOOL:find_files {"pattern":"*.md"}"#,
-        );
+        fixture.assert_syscall_queued(pid, r#"TOOL:find_files {"pattern":"*.md"}"#);
     }
 
     #[test]
@@ -286,15 +289,77 @@ mod tests {
 
         let processed = fixture.drain();
         assert_eq!(processed, 1);
-        let state = fixture.process_state(pid).expect("process state after dispatch");
+        let state = fixture
+            .process_state(pid)
+            .expect("process state after dispatch");
         assert_eq!(state, ProcessState::WaitingForSyscall);
         fixture.assert_no_turn_completed(pid);
         fixture.assert_no_timeline_chunk_contains("TOOL:find_files");
         fixture.assert_audit_kind_for_pid(pid, "dispatched");
-        fixture.assert_syscall_queued(
-            pid,
-            r#"TOOL:find_files {"pattern":"*.md"}"#,
+        fixture.assert_syscall_queued(pid, r#"TOOL:find_files {"pattern":"*.md"}"#);
+    }
+
+    #[test]
+    fn streaming_split_tool_marker_is_dispatched_without_finishing_turn() {
+        let _openai = TestOpenAIConfigOverrideGuard::set(test_openai_config());
+        let mut fixture = KernelToolDispatchFixture::new().expect("build fixture");
+        let pid = fixture
+            .spawn_remote_interactive_process("stream a split tool")
+            .expect("spawn process");
+
+        for (index, text) in [
+            "Analizzo i file:\n\nTO",
+            "OL",
+            r#":find_files {"pattern":"*.md"}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            fixture
+                .result_tx
+                .send(InferenceResult::StreamChunk {
+                    pid,
+                    text: text.to_string(),
+                    first_chunk: index == 0,
+                })
+                .expect("send streaming chunk");
+            let processed = fixture.drain();
+            assert_eq!(processed, 1);
+        }
+
+        assert_eq!(
+            fixture
+                .scheduler
+                .checked_out_process(pid)
+                .and_then(|metadata| metadata.pending_stream_syscall.as_deref()),
+            Some(r#"TOOL:find_files {"pattern":"*.md"}"#)
         );
+
+        let mut process = fixture.take_process(pid);
+        process.state = ProcessState::WaitingForInput;
+        fixture
+            .result_tx
+            .send(InferenceResult::Token {
+                pid,
+                process: Box::new(process),
+                text_output: String::new(),
+                generated_tokens: 0,
+                finished: true,
+                finish_reason: Some(crate::backend::InferenceFinishReason::ModelStop),
+                accounting_event: None,
+            })
+            .expect("send worker token");
+
+        let processed = fixture.drain();
+        assert_eq!(processed, 1);
+        let state = fixture
+            .process_state(pid)
+            .expect("process state after dispatch");
+        assert_eq!(state, ProcessState::WaitingForSyscall);
+        fixture.assert_no_turn_completed(pid);
+        fixture.assert_no_timeline_chunk_contains("TOOL:find_files");
+        fixture.assert_audit_kind_for_pid(pid, "dispatched");
+        fixture.assert_syscall_queued(pid, r#"TOOL:find_files {"pattern":"*.md"}"#);
     }
 
     struct KernelToolDispatchFixture {
@@ -514,9 +579,9 @@ mod tests {
                 .recent_audit_events_for_session(session_id, 64)
                 .expect("recent session audit events");
             assert!(
-                events.iter().any(|event| {
-                    event.kind == expected_kind && event.pid == Some(pid)
-                }),
+                events
+                    .iter()
+                    .any(|event| { event.kind == expected_kind && event.pid == Some(pid) }),
                 "missing audit kind '{}' for pid {} in {:?}",
                 expected_kind,
                 pid,

@@ -2,7 +2,9 @@ use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 
-use super::scheduler::{CronField, CronSchedule, ScheduledJobState, ScheduledJobTrigger, ScheduledJobTriggerInput};
+use super::scheduler::{
+    CronField, CronSchedule, ScheduledJobState, ScheduledJobTrigger, ScheduledJobTriggerInput,
+};
 
 impl ScheduledJobTrigger {
     pub(crate) fn from_request(

@@ -13,7 +13,8 @@ use crate::models::kernel::{AgentSessionSummary, LobbySnapshot, WorkspaceSnapsho
 
 impl KernelBridge {
     pub fn fetch_lobby_snapshot(&mut self) -> LobbySnapshot {
-        let archived_sessions = history::load_lobby_sessions(&self.workspace_root).unwrap_or_default();
+        let archived_sessions =
+            history::load_lobby_sessions(&self.workspace_root).unwrap_or_default();
         let persisted_runtime_instances =
             history::load_runtime_instances(&self.workspace_root).unwrap_or_default();
         let persisted_runtime_load_queue =
@@ -118,10 +119,7 @@ impl KernelBridge {
             .map(|process| process.pid))
     }
 
-    pub fn find_live_pids_for_session(
-        &mut self,
-        session_id: &str,
-    ) -> KernelBridgeResult<Vec<u64>> {
+    pub fn find_live_pids_for_session(&mut self, session_id: &str) -> KernelBridgeResult<Vec<u64>> {
         let status = self.fetch_status()?;
         Ok(status
             .processes
@@ -132,10 +130,7 @@ impl KernelBridge {
             .collect())
     }
 
-    pub fn fetch_workspace_snapshot(
-        &mut self,
-        pid: u64,
-    ) -> KernelBridgeResult<WorkspaceSnapshot> {
+    pub fn fetch_workspace_snapshot(&mut self, pid: u64) -> KernelBridgeResult<WorkspaceSnapshot> {
         let payload = pid.to_string();
         let response = self.send_control_command(OpCode::Status, payload.as_bytes())?;
 
@@ -172,7 +167,8 @@ impl KernelBridge {
             orchestration,
             orchestration_fetch_error.map(|err| err.to_string()),
         );
-        if let Ok(audit_events) = history::load_session_audit_events(&self.workspace_root, &session_id, 64)
+        if let Ok(audit_events) =
+            history::load_session_audit_events(&self.workspace_root, &session_id, 64)
         {
             snapshot.audit_events = audit_events;
         }

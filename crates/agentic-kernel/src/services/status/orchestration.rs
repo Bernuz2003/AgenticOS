@@ -26,7 +26,9 @@ pub fn build_orchestration_status(
     let attempts_by_task = workflow_io.attempts.into_iter().fold(
         HashMap::<String, Vec<crate::storage::StoredWorkflowTaskAttempt>>::new(),
         |mut acc, attempt| {
-            acc.entry(attempt.task_id.clone()).or_default().push(attempt);
+            acc.entry(attempt.task_id.clone())
+                .or_default()
+                .push(attempt);
             acc
         },
     );
@@ -124,12 +126,16 @@ pub fn build_orchestration_status(
             let latest_output_preview = if let Some(running_output) = running_output {
                 (!running_output.text.is_empty()).then_some(running_output.text.clone())
             } else {
-                artifact_views.first().map(|artifact| artifact.preview.clone())
+                artifact_views
+                    .first()
+                    .map(|artifact| artifact.preview.clone())
             };
             let latest_output_text = if let Some(running_output) = running_output {
                 (!running_output.text.is_empty()).then_some(running_output.text.clone())
             } else {
-                artifact_views.first().map(|artifact| artifact.content.clone())
+                artifact_views
+                    .first()
+                    .map(|artifact| artifact.content.clone())
             };
             let latest_output_truncated = running_output
                 .map(|running_output| running_output.truncated)

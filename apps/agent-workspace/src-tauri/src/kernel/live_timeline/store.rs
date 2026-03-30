@@ -213,7 +213,6 @@ impl TimelineStore {
         session.error = Some(error.clone());
         session.system_events.push((error, "error".to_string()));
     }
-
 }
 
 pub fn start_exec_session(
@@ -287,7 +286,9 @@ fn authenticate(stream: &mut TcpStream, workspace_root: &Path) -> Result<(), Str
     let response = transport::read_single_frame(stream, Duration::from_secs(5))
         .map_err(|err| err.to_string())?;
     if response.kind != "+OK" {
-        return Err(transport::decode_protocol_error(&response.code, &response.payload).to_string());
+        return Err(
+            transport::decode_protocol_error(&response.code, &response.payload).to_string(),
+        );
     }
     Ok(())
 }

@@ -63,8 +63,14 @@ fn persist_event(
             workload,
             prompt,
         } => {
-            let turn_id =
-                storage.start_session_turn(session_id, *pid, workload, "kernel_event", prompt, "prompt")?;
+            let turn_id = storage.start_session_turn(
+                session_id,
+                *pid,
+                workload,
+                "kernel_event",
+                prompt,
+                "prompt",
+            )?;
             session_registry.remember_active_turn(*pid, turn_id);
             Ok(())
         }

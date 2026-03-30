@@ -43,6 +43,45 @@ fn line_start_syscall_marker_offset(buffer: &str) -> Option<usize> {
     None
 }
 
+fn malformed_line_start_syscall(buffer: &str) -> Option<String> {
+    let marker_offset = line_start_syscall_marker_offset(buffer)?;
+    let candidate = &buffer[marker_offset..];
+    let prefix = if candidate.trim_start().starts_with("ACTION:") {
+        "ACTION:"
+    } else {
+        "TOOL:"
+    };
+
+    match crate::text_invocation::extract_prefixed_json_invocation(candidate.trim_start(), prefix) {
+        crate::text_invocation::PrefixedInvocationExtract::Invalid(_) => Some(
+            candidate
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches('\r')
+                .to_string(),
+        ),
+        crate::text_invocation::PrefixedInvocationExtract::Parsed(_)
+        | crate::text_invocation::PrefixedInvocationExtract::Incomplete => None,
+    }
+}
+
+fn trailing_partial_syscall_marker_offset(buffer: &str) -> Option<usize> {
+    let prefixes = ["ACTION:", "TOOL:"];
+    let mut best: Option<usize> = None;
+
+    for prefix in prefixes {
+        for candidate_len in 1..prefix.len() {
+            if buffer.ends_with(&prefix[..candidate_len]) {
+                let start_offset = buffer.len() - candidate_len;
+                best = Some(best.map_or(start_offset, |current| current.min(start_offset)));
+            }
+        }
+    }
+
+    best
+}
+
 #[allow(clippy::never_loop)]
 pub(super) fn consume_assistant_output_fragment(
     accumulator: &mut AssistantOutputAccumulator,
@@ -60,41 +99,49 @@ pub(super) fn consume_assistant_output_fragment(
     let mut visible_text = String::new();
 
     loop {
-        let Some(marker_offset) = line_start_syscall_marker_offset(&accumulator.pending_output_buffer)
-        else {
-            visible_text.push_str(&accumulator.pending_output_buffer);
-            accumulator.pending_output_buffer.clear();
-            break;
-        };
+        match crate::text_invocation::find_first_prefixed_json_invocation(
+            &accumulator.pending_output_buffer,
+            &["ACTION:", "TOOL:"],
+        ) {
+            crate::text_invocation::PrefixedInvocationSearch::Parsed(found) => {
+                if found.start_offset > 0 {
+                    visible_text.push_str(&accumulator.pending_output_buffer[..found.start_offset]);
+                    accumulator
+                        .pending_output_buffer
+                        .drain(..found.start_offset);
+                }
 
-        if marker_offset > 0 {
-            visible_text.push_str(&accumulator.pending_output_buffer[..marker_offset]);
-            accumulator.pending_output_buffer.drain(..marker_offset);
-        }
-
-        let candidate = accumulator.pending_output_buffer.as_str();
-        let prefix = if candidate.trim_start().starts_with("ACTION:") {
-            "ACTION:"
-        } else {
-            "TOOL:"
-        };
-
-        match crate::text_invocation::extract_prefixed_json_invocation(candidate.trim_start(), prefix)
-        {
-            crate::text_invocation::PrefixedInvocationExtract::Parsed(parsed) => {
-                accumulator.pending_stream_syscall = Some(parsed.raw_invocation.clone());
+                accumulator.pending_stream_syscall = Some(found.parsed.raw_invocation.clone());
                 accumulator.pending_output_buffer.clear();
                 break;
             }
-            crate::text_invocation::PrefixedInvocationExtract::Incomplete => break,
-            crate::text_invocation::PrefixedInvocationExtract::Invalid(_) => {
-                let command = candidate
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .trim_end_matches('\r')
-                    .to_string();
-                accumulator.pending_stream_syscall = Some(command);
+            crate::text_invocation::PrefixedInvocationSearch::Incomplete { start_offset } => {
+                if start_offset > 0 {
+                    visible_text.push_str(&accumulator.pending_output_buffer[..start_offset]);
+                    accumulator.pending_output_buffer.drain(..start_offset);
+                }
+                break;
+            }
+            crate::text_invocation::PrefixedInvocationSearch::NotFound => {
+                if let Some(command) =
+                    malformed_line_start_syscall(&accumulator.pending_output_buffer)
+                {
+                    accumulator.pending_stream_syscall = Some(command);
+                    accumulator.pending_output_buffer.clear();
+                    break;
+                }
+
+                if let Some(start_offset) =
+                    trailing_partial_syscall_marker_offset(&accumulator.pending_output_buffer)
+                {
+                    if start_offset > 0 {
+                        visible_text.push_str(&accumulator.pending_output_buffer[..start_offset]);
+                        accumulator.pending_output_buffer.drain(..start_offset);
+                    }
+                    break;
+                }
+
+                visible_text.push_str(&accumulator.pending_output_buffer);
                 accumulator.pending_output_buffer.clear();
                 break;
             }
@@ -202,10 +249,8 @@ mod tests {
     fn partial_tool_stream_is_withheld_until_complete() {
         let mut accumulator = AssistantOutputAccumulator::default();
 
-        let first = consume_assistant_output_fragment(
-            &mut accumulator,
-            r#"TOOL:read_file {"path":"notes"#,
-        );
+        let first =
+            consume_assistant_output_fragment(&mut accumulator, r#"TOOL:read_file {"path":"notes"#);
         assert_eq!(first.visible_text, "");
         assert!(first.syscall_command.is_none());
         assert_eq!(
@@ -237,6 +282,85 @@ mod tests {
             Some(r#"TOOL:read_file {"path":"doc.txt"}"#)
         );
         assert_eq!(accumulator.captured_assistant_text, "Analizzo il file.\n");
+    }
+
+    #[test]
+    fn inline_tool_invocation_is_extracted_after_visible_preamble() {
+        let mut accumulator = AssistantOutputAccumulator::default();
+
+        let fragment = consume_assistant_output_fragment(
+            &mut accumulator,
+            r#"Creo la cartella richiesta: TOOL:mkdir {"path":"prova"}"#,
+        );
+
+        assert_eq!(fragment.visible_text, "Creo la cartella richiesta: ");
+        assert_eq!(
+            fragment.syscall_command.as_deref(),
+            Some(r#"TOOL:mkdir {"path":"prova"}"#)
+        );
+        assert_eq!(
+            accumulator.captured_assistant_text,
+            "Creo la cartella richiesta: "
+        );
+    }
+
+    #[test]
+    fn invalid_inline_mention_does_not_block_later_valid_tool_invocation() {
+        let mut accumulator = AssistantOutputAccumulator::default();
+
+        let fragment = consume_assistant_output_fragment(
+            &mut accumulator,
+            "Uso la funzione TOOL:mkdir. Ecco la chiamata:\nTOOL:mkdir {\"path\":\"prova\"}",
+        );
+
+        assert_eq!(
+            fragment.visible_text,
+            "Uso la funzione TOOL:mkdir. Ecco la chiamata:\n"
+        );
+        assert_eq!(
+            fragment.syscall_command.as_deref(),
+            Some(r#"TOOL:mkdir {"path":"prova"}"#)
+        );
+    }
+
+    #[test]
+    fn incomplete_inline_tool_retains_only_pending_command_suffix() {
+        let mut accumulator = AssistantOutputAccumulator::default();
+
+        let fragment = consume_assistant_output_fragment(
+            &mut accumulator,
+            r#"Creo la cartella: TOOL:mkdir {"path":"pro"#,
+        );
+
+        assert_eq!(fragment.visible_text, "Creo la cartella: ");
+        assert!(fragment.syscall_command.is_none());
+        assert_eq!(
+            accumulator.pending_output_buffer,
+            r#"TOOL:mkdir {"path":"pro"#
+        );
+    }
+
+    #[test]
+    fn split_tool_marker_is_buffered_across_stream_chunks() {
+        let mut accumulator = AssistantOutputAccumulator::default();
+
+        let first = consume_assistant_output_fragment(&mut accumulator, "Richiesta:\n\nTO");
+        assert_eq!(first.visible_text, "Richiesta:\n\n");
+        assert!(first.syscall_command.is_none());
+        assert_eq!(accumulator.pending_output_buffer, "TO");
+
+        let second = consume_assistant_output_fragment(&mut accumulator, "OL");
+        assert_eq!(second.visible_text, "");
+        assert!(second.syscall_command.is_none());
+        assert_eq!(accumulator.pending_output_buffer, "TOOL");
+
+        let third =
+            consume_assistant_output_fragment(&mut accumulator, r#":mkdir {"path":"prova"}"#);
+        assert_eq!(third.visible_text, "");
+        assert_eq!(
+            third.syscall_command.as_deref(),
+            Some(r#"TOOL:mkdir {"path":"prova"}"#)
+        );
     }
 
     #[test]

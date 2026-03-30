@@ -2,6 +2,7 @@ use std::sync::mpsc;
 
 use agentic_control_models::KernelEvent;
 
+use crate::diagnostics::audit::{self, AuditContext};
 use crate::memory::NeuralMemory;
 use crate::process::ProcessState;
 use crate::runtimes::RuntimeRegistry;
@@ -9,7 +10,6 @@ use crate::scheduler::ProcessScheduler;
 use crate::services::process_runtime::kill_managed_process_with_session;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
-use crate::diagnostics::audit::{self, AuditContext};
 
 use super::worker::SyscallCompletion;
 

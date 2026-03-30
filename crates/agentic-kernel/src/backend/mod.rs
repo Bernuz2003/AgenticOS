@@ -4,23 +4,25 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokenizers::Tokenizer;
 
-use crate::services::accounting::BackendAccountingEvent;
 use crate::memory::{ContextSlotId, SlotPersistenceKind};
 use crate::model_catalog::ResolvedModelTarget;
 use crate::prompting::{GenerationConfig, PromptFamily};
+use crate::services::accounting::BackendAccountingEvent;
 
 pub(crate) mod common;
 mod local;
 mod remote;
 
+pub(crate) use common::{HttpEndpoint, HttpJsonResponse, HttpRequestOptions, HttpStreamControl};
 pub(crate) use local::diagnose_external_backend;
 pub(crate) use local::managed_runtime_views;
 pub(crate) use local::shutdown_managed_runtimes;
 #[allow(unused_imports)]
 pub(crate) use local::ExternalLlamaCppBackend;
-pub(crate) use common::{HttpEndpoint, HttpJsonResponse, HttpRequestOptions, HttpStreamControl};
 use remote::RemoteOpenAICompatibleBackend;
 
+#[cfg(test)]
+use local::remote_adapter::{combine_completion_text, completion_is_finished, CompletionResponse};
 #[cfg(test)]
 pub(crate) use local::TestExternalEndpointOverrideGuard;
 #[cfg(test)]
@@ -29,8 +31,6 @@ pub(crate) use local::TestExternalRuntimeReadyGuard;
 pub(crate) use local::TestRuntimeDriverAvailabilityGuard;
 #[cfg(test)]
 pub(crate) use remote::{TestOpenAIConfigOverrideGuard, TestRemoteOpenAIConfigOverrideGuard};
-#[cfg(test)]
-use local::remote_adapter::{combine_completion_text, completion_is_finished, CompletionResponse};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -221,8 +221,9 @@ fn runtime_driver_flags(driver: &DriverDescriptor) -> (bool, bool) {
 
 fn driver_loadability_detail(driver: &DriverDescriptor) -> String {
     match driver.id {
-        "external-llamacpp" => local::runtime_driver_unavailability_reason()
-            .unwrap_or_else(|| driver.note.to_string()),
+        "external-llamacpp" => {
+            local::runtime_driver_unavailability_reason().unwrap_or_else(|| driver.note.to_string())
+        }
         _ => driver.note.to_string(),
     }
 }
@@ -528,9 +529,9 @@ impl RuntimeModel {
         let descriptor = resolve_loadable_driver_descriptor(backend_id, family)?;
 
         let backend: Box<dyn ModelBackend> = match descriptor.id {
-            "external-llamacpp" => Box::new(
-                local::backend_for_reference(reference, family).map_err(E::msg)?,
-            ),
+            "external-llamacpp" => {
+                Box::new(local::backend_for_reference(reference, family).map_err(E::msg)?)
+            }
             "openai-responses" | "groq-responses" | "openrouter" => Box::new(
                 RemoteOpenAICompatibleBackend::from_env(family, descriptor.id, reference)?,
             ),

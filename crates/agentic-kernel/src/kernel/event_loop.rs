@@ -7,13 +7,13 @@ use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::backend::shutdown_managed_runtimes;
 use crate::checkpoint;
 use crate::commands::MetricsState;
 use crate::config;
-use crate::backend::shutdown_managed_runtimes;
+use crate::engine::LLMEngine;
 use crate::events::flush_pending_events;
 use crate::inference_worker::{InferenceCmd, InferenceResult};
-use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
@@ -91,59 +91,6 @@ pub(crate) struct Kernel {
     pub(crate) storage: StorageService,
 }
 
-/// # Kernel Event Loop Implementation
-///
-/// ## Overview
-/// The `Kernel` struct manages the core event loop of AgenticOS, a single-threaded, 
-/// `mio`-based system that orchestrates:
-/// - Non-blocking I/O polling (network and worker thread wakeups)
-/// - Client connection acceptance and lifecycle management
-/// - LLM inference engine ticks (LLMEngine and resource management)
-/// - Timeout handling, network flushing, and periodic state checkpointing
-///
-/// ## Main Event Loop (`run`)
-/// The event loop operates in phases:
-/// 1. **Graceful Shutdown Check**: Monitors `shutdown_requested` flag
-/// 2. **Syscall Timeout Tracking**: Updates timeout metadata for in-flight syscalls
-/// 3. **Deadline Calculation**: Computes next wake-up time based on pending deadlines
-/// 4. **I/O Polling**: Blocks on `mio::Poll` with calculated timeout
-/// 5. **Network Event Dispatch**: Handles client I/O (accept, read, write)
-/// 6. **Engine Tick**: Advances LLM engine, scheduler, and orchestrator state
-/// 7. **Deadline Handling**: Processes elapsed timeouts (checkpoints, remote timeouts, etc.)
-/// 8. **Event Flushing**: Dispatches accumulated async events to subscribed clients (GUI, etc.)
-///
-/// ## Deadline Management
-/// Aggregates multiple deadline sources and selects the nearest:
-/// - **Checkpoint**: Periodic state snapshots (configurable interval)
-/// - **Remote Timeout**: External API call timeouts (OpenAI, Groq, etc.)
-/// - **Syscall Timeout**: In-flight system call timeouts
-/// - **Scheduled Jobs**: Cron-like job dispatcher deadlines
-/// - **Scheduled Job Timeouts**: Job execution deadline enforcements
-///
-/// ## Tracing & Debugging
-/// The kernel emits structured tracing logs at multiple levels:
-/// - `tracing::info!()`: Graceful shutdown events
-/// - `tracing::warn!()`: Timeout violations, dispatch failures
-/// - `tracing::error!()`: Persistent state failures, critical errors
-/// - `tracing::debug!()`: Event loop wake reasons (`KERNEL_LOOP_WAKE`)
-/// - `tracing::trace!()`: Deadline calculations, diagnostic details
-///
-/// **To view kernel logs in VSCode:**
-/// 1. Ensure tracing subscriber is initialized (typically in main or binary)
-/// 2. Set `RUST_LOG=agentic_kernel=debug` or higher level (trace, info, warn, error)
-/// 3. Use VSCode's "Debug Console" or redirect stdout/stderr to a file
-/// 4. Alternatively, attach to a running process or use `cargo run` with logging
-/// 5. Filter logs by component: `RUST_LOG=agentic_kernel::kernel::event_loop=debug`
-///
-/// ## Key Internal Methods
-/// - `next_deadline()`: Aggregates deadline candidates
-/// - `handle_elapsed_deadline()`: Dispatches deadline-based handlers
-/// - `dispatch_due_scheduled_jobs()`: Triggers scheduled job orchestrations
-/// - `reconcile_scheduled_job_runs()`: Finalizes completed job runs
-/// - `enforce_scheduled_job_timeouts()`: Kills timed-out job processes
-/// - `enforce_syscall_timeout()`: Terminates processes exceeding syscall limits
-/// - `prune_remote_timeout_reports()`: Cleanup stale remote timeout states
-/// - `drain_pending_diagnostics()`: Flushes diagnostic events to clients
 impl Kernel {
     pub(crate) fn new(config: &config::KernelConfig) -> io::Result<Self> {
         bootstrap::build_kernel(config)
