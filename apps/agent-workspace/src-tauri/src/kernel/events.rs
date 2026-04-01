@@ -149,7 +149,7 @@ fn handle_kernel_event(
             );
             maybe_emit_lobby_snapshot(app, bridge, last_lobby_refresh, true);
         }
-        KernelEvent::TimelineChunk { pid, .. } => {
+        KernelEvent::TimelineSegment { pid, .. } => {
             if let Ok(mut store) = timeline_store.lock() {
                 apply_timeline_store_event(&mut store, &event);
             }
@@ -241,7 +241,11 @@ pub(crate) fn apply_timeline_store_event(store: &mut TimelineStore, event: &Kern
         } => {
             store.insert_started_session(*pid, session_id.clone(), prompt.clone(), workload.clone())
         }
-        KernelEvent::TimelineChunk { pid, text } => store.append_assistant_chunk(*pid, text),
+        KernelEvent::TimelineSegment {
+            pid,
+            segment_kind,
+            text,
+        } => store.append_timeline_segment(*pid, segment_kind.clone(), text),
         KernelEvent::InvocationUpdated { pid, invocation } => {
             store.upsert_invocation(*pid, invocation.clone());
         }

@@ -1,9 +1,9 @@
 use super::{
-    combine_completion_text, completion_is_finished, diagnose_external_backend,
-    persist_context_slot_payload_for_backend, resolve_driver_for_family, resolve_driver_for_model,
-    runtime_backend_telemetry, BackendClass, CompletionResponse, ContextSlotPersistence,
-    ExternalLlamaCppBackend, InferenceBackend, InferenceStepRequest, InferenceStepResult,
-    PromptFamily, RuntimeModel, TestExternalEndpointOverrideGuard,
+    combine_completion_reasoning, combine_completion_text, completion_is_finished,
+    diagnose_external_backend, persist_context_slot_payload_for_backend, resolve_driver_for_family,
+    resolve_driver_for_model, runtime_backend_telemetry, BackendClass, CompletionResponse,
+    ContextSlotPersistence, ExternalLlamaCppBackend, InferenceBackend, InferenceStepRequest,
+    InferenceStepResult, PromptFamily, RuntimeModel, TestExternalEndpointOverrideGuard,
     TestRemoteOpenAIConfigOverrideGuard, TestRuntimeDriverAvailabilityGuard,
 };
 use crate::config::{RemoteAdapterKind, RemoteProviderRuntimeConfig};
@@ -1139,20 +1139,18 @@ fn external_backend_does_not_finish_on_stop_type_limit() {
 }
 
 #[test]
-fn external_backend_ignores_separate_reasoning_content() {
+fn external_backend_separates_reasoning_content_from_visible_text() {
     let response: CompletionResponse = serde_json::from_str(
             r#"{"content":"4","reasoning_content":"Step 1: add 2 and 2.","tokens":[1],"stop":false,"stop_type":"none"}"#,
         )
         .expect("deserialize completion response");
 
-    let emitted_text = combine_completion_text(
-        response.reasoning_content.as_deref(),
-        response.content.as_deref(),
-        None,
-        None,
-    );
+    let emitted_text = combine_completion_text(response.content.as_deref(), None);
+    let emitted_reasoning =
+        combine_completion_reasoning(response.reasoning_content.as_deref(), None);
 
     assert_eq!(emitted_text, "4");
+    assert_eq!(emitted_reasoning, "Step 1: add 2 and 2.");
 }
 
 #[test]

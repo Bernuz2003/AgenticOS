@@ -47,6 +47,7 @@ pub struct MockLocalCompletionChunk {
 pub struct LocalBackendStreamObservation {
     pub request_prompt: String,
     pub emitted_text: String,
+    pub emitted_reasoning_text: String,
     pub observed_chunks: Vec<String>,
     pub generated_tokens: usize,
     pub finished: bool,
@@ -84,6 +85,7 @@ pub fn run_local_backend_stream(
     Ok(LocalBackendStreamObservation {
         request_prompt: "hello".to_string(),
         emitted_text: step.emitted_text,
+        emitted_reasoning_text: step.emitted_reasoning_text,
         observed_chunks,
         generated_tokens: step.appended_tokens.len(),
         finished: step.finished,
@@ -156,6 +158,7 @@ fn run_live_local_completion_with_request(
     Ok(LocalBackendStreamObservation {
         request_prompt: rendered_prompt.to_string(),
         emitted_text: step.emitted_text,
+        emitted_reasoning_text: step.emitted_reasoning_text,
         observed_chunks,
         generated_tokens: step.appended_tokens.len(),
         finished: step.finished,
@@ -193,6 +196,7 @@ pub fn run_live_remote_completion(
     Ok(LocalBackendStreamObservation {
         request_prompt: prompt.to_string(),
         emitted_text: step.emitted_text,
+        emitted_reasoning_text: step.emitted_reasoning_text,
         observed_chunks,
         generated_tokens: step.appended_tokens.len(),
         finished: step.finished,
@@ -345,9 +349,19 @@ impl KernelE2eHarness {
         pid: u64,
         text_output: impl Into<String>,
     ) -> Result<(), String> {
+        self.send_finished_token_with_reasoning(pid, text_output, "")
+    }
+
+    pub fn send_finished_token_with_reasoning(
+        &mut self,
+        pid: u64,
+        text_output: impl Into<String>,
+        reasoning_output: impl Into<String>,
+    ) -> Result<(), String> {
         self.send_token_result(
             pid,
             text_output,
+            reasoning_output,
             0,
             true,
             Some(InferenceFinishReason::ModelStop),
@@ -358,6 +372,7 @@ impl KernelE2eHarness {
         &mut self,
         pid: u64,
         text_output: impl Into<String>,
+        reasoning_output: impl Into<String>,
         generated_tokens: usize,
         finished: bool,
         finish_reason: Option<InferenceFinishReason>,
@@ -373,6 +388,7 @@ impl KernelE2eHarness {
                 pid,
                 process: Box::new(process),
                 text_output: text_output.into(),
+                reasoning_output: reasoning_output.into(),
                 generated_tokens,
                 finished,
                 finish_reason,
@@ -515,6 +531,13 @@ impl KernelE2eHarness {
             .engine(&self.runtime_id)
             .and_then(|engine| engine.processes.get(&pid))
             .map(|process| process.prompt_text().to_string())
+    }
+
+    pub fn inference_prompt_text(&self, pid: u64) -> Option<String> {
+        self.runtime_registry
+            .engine(&self.runtime_id)
+            .and_then(|engine| engine.processes.get(&pid))
+            .map(|process| process.inference_prompt_text())
     }
 
     fn record_checked_out(&mut self, pid: u64) -> Result<(), String> {

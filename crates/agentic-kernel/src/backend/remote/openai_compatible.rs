@@ -98,6 +98,7 @@ struct UsageSnapshot {
 #[derive(Debug, Clone)]
 struct DecodedResponse {
     emitted_text: String,
+    emitted_reasoning_text: String,
     finished: bool,
     usage: UsageSnapshot,
 }
@@ -522,6 +523,7 @@ impl InferenceBackend for RemoteOpenAICompatibleBackend {
             return Ok(InferenceStepResult {
                 appended_tokens: Vec::new(),
                 emitted_text: String::new(),
+                emitted_reasoning_text: String::new(),
                 finished: true,
                 finish_reason: Some(InferenceFinishReason::TurnBudgetExhausted),
                 next_index_pos: index_pos.max(tokens.len()),
@@ -575,6 +577,7 @@ impl InferenceBackend for RemoteOpenAICompatibleBackend {
         Ok(InferenceStepResult {
             appended_tokens,
             emitted_text: decoded.emitted_text,
+            emitted_reasoning_text: decoded.emitted_reasoning_text,
             finished: decoded.finished || finished_due_to_budget,
             finish_reason: if decoded.finished {
                 Some(InferenceFinishReason::ModelStop)
@@ -897,6 +900,7 @@ fn finalize_responses_stream(
     if stop_early {
         return Ok(DecodedResponse {
             emitted_text: state.emitted_text,
+            emitted_reasoning_text: String::new(),
             finished: false,
             usage: UsageSnapshot::default(),
         });
@@ -909,6 +913,7 @@ fn finalize_responses_stream(
 
     Ok(DecodedResponse {
         emitted_text: state.emitted_text,
+        emitted_reasoning_text: String::new(),
         finished: finished && !state.incomplete,
         usage: UsageSnapshot::default(),
     })
@@ -976,6 +981,7 @@ fn finalize_chat_stream(
     if stop_early {
         return Ok(DecodedResponse {
             emitted_text: state.emitted_text,
+            emitted_reasoning_text: String::new(),
             finished: false,
             usage: state.usage,
         });
@@ -988,6 +994,7 @@ fn finalize_chat_stream(
 
     Ok(DecodedResponse {
         emitted_text: state.emitted_text,
+        emitted_reasoning_text: String::new(),
         finished: finished && !state.hit_length_limit,
         usage: state.usage,
     })
@@ -1016,6 +1023,7 @@ fn decode_non_streaming_response(
     match profile.transport {
         RemoteOpenAITransport::ResponsesApi => Ok(DecodedResponse {
             emitted_text: extract_responses_output_text(&json),
+            emitted_reasoning_text: String::new(),
             finished: !matches!(
                 json.get("status").and_then(|value| value.as_str()),
                 Some("incomplete")
@@ -1026,6 +1034,7 @@ fn decode_non_streaming_response(
             let finish_reason = extract_chat_completions_finish_reason(&json);
             Ok(DecodedResponse {
                 emitted_text: extract_chat_completions_text(&json).unwrap_or_default(),
+                emitted_reasoning_text: String::new(),
                 finished: !matches!(finish_reason.as_deref(), Some("length")),
                 usage: extract_usage_snapshot(&json),
             })

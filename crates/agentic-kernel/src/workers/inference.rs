@@ -34,6 +34,7 @@ pub enum InferenceResult {
         pid: u64,
         process: Box<AgentProcess>,
         text_output: String,
+        reasoning_output: String,
         generated_tokens: usize,
         finished: bool,
         finish_reason: Option<InferenceFinishReason>,
@@ -114,6 +115,7 @@ pub fn spawn_worker(
                                     pid,
                                     process: Box::new(process),
                                     text_output: String::new(),
+                                    reasoning_output: String::new(),
                                     generated_tokens: 0,
                                     finished: true,
                                     finish_reason: Some(InferenceFinishReason::TurnBudgetExhausted),
@@ -130,9 +132,8 @@ pub fn spawn_worker(
                         }
 
                         process.state = ProcessState::Running;
-                        let rendered_prompt = process.prompt_text().to_string();
-                        let resident_prompt_suffix =
-                            process.pending_resident_prompt_suffix().to_string();
+                        let rendered_prompt = process.inference_prompt_text();
+                        let resident_prompt_suffix = process.pending_inference_prompt_suffix();
 
                         let step = match process.model.generate_step(InferenceStepRequest {
                             context_slot_id: process.context_slot_id,
@@ -198,12 +199,14 @@ pub fn spawn_worker(
                                 .map(|suffix| suffix.to_string())
                                 .unwrap_or_default()
                         };
+                        let reasoning_output = step.emitted_reasoning_text;
 
                         if result_tx
                             .send(InferenceResult::Token {
                                 pid,
                                 process: Box::new(process),
                                 text_output,
+                                reasoning_output,
                                 generated_tokens,
                                 finished,
                                 finish_reason,

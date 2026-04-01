@@ -259,7 +259,7 @@ fn render_jinja_chat_template(
             eot_token => special_tokens.and_then(|tokens| tokens.get("eot")).cloned().unwrap_or_default(),
             pad_token => special_tokens.and_then(|tokens| tokens.get("pad")).cloned().unwrap_or_default(),
             assistant_preamble => metadata.and_then(|meta| meta.assistant_preamble.clone()).unwrap_or_default(),
-            enable_thinking => false,
+            enable_thinking => true,
             tools => Vec::<String>::new(),
             documents => Vec::<String>::new(),
         })

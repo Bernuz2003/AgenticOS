@@ -1,3 +1,5 @@
+use agentic_control_models::AssistantSegmentKind;
+
 use std::collections::HashMap;
 
 use agentic_control_models::KernelEvent;
@@ -11,7 +13,7 @@ use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::transport::Client;
 
-use super::assistant_output::emit_visible_assistant_output;
+use super::assistant_output::emit_assistant_timeline_output;
 use super::turn_assembly::TurnAssemblyStore;
 
 #[allow(clippy::too_many_arguments)]
@@ -67,7 +69,7 @@ pub(super) fn handle_stream_chunk(
         return;
     }
 
-    let fragment = turn_assembly.consume_stream_fragment(pid, text);
+    let fragment = turn_assembly.consume_stream_fragment(pid, AssistantSegmentKind::Message, text);
 
     if let Some(command) = fragment.syscall_command.as_deref() {
         tracing::info!(
@@ -78,10 +80,10 @@ pub(super) fn handle_stream_chunk(
         );
     }
 
-    emit_visible_assistant_output(
+    emit_assistant_timeline_output(
         pid,
         owner_id,
-        &fragment.visible_text,
+        &fragment.segments,
         clients,
         poll,
         orchestrator,

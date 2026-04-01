@@ -2,7 +2,6 @@ use agentic_control_models::{InvocationEvent, InvocationKind, InvocationStatus};
 
 use crate::models::kernel::{TimelineItem, TimelineItemKind, TimelineSnapshot, WorkspaceSnapshot};
 
-use super::parser::parse_stream_segments;
 use super::store::{TimelineSessionState, TimelineStore, TimelineTurnMessage};
 
 impl TimelineStore {
@@ -84,6 +83,7 @@ fn build_live_timeline_items(session: &TimelineSessionState) -> Vec<TimelineItem
     let mut items = Vec::new();
     for (turn_index, turn) in session.turns.iter().enumerate() {
         let turn_id = format!("{}-turn-{}", session.session_id, turn_index + 1);
+        let mut rendered_turn_messages = false;
         items.push(TimelineItem {
             id: format!("{turn_id}-user"),
             kind: TimelineItemKind::UserMessage,
@@ -93,12 +93,37 @@ fn build_live_timeline_items(session: &TimelineSessionState) -> Vec<TimelineItem
         let last_message_index = turn.messages.len().saturating_sub(1);
         for (message_index, message) in turn.messages.iter().enumerate() {
             match message {
-                TimelineTurnMessage::Assistant { text } => items.extend(parse_stream_segments(
-                    &format!("{turn_id}-assistant-{}", message_index + 1),
-                    text,
-                    turn.running && message_index == last_message_index,
-                )),
+                TimelineTurnMessage::Assistant { text } => {
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    rendered_turn_messages = true;
+                    items.push(TimelineItem {
+                        id: format!("{turn_id}-assistant-{}", message_index + 1),
+                        kind: TimelineItemKind::AssistantMessage,
+                        text: text.clone(),
+                        status: if turn.running && message_index == last_message_index {
+                            "streaming".to_string()
+                        } else {
+                            "complete".to_string()
+                        },
+                    });
+                }
+                TimelineTurnMessage::Thinking { text } => {
+                    rendered_turn_messages = true;
+                    items.push(TimelineItem {
+                        id: format!("{turn_id}-thinking-{}", message_index + 1),
+                        kind: TimelineItemKind::Thinking,
+                        text: text.clone(),
+                        status: if turn.running && message_index == last_message_index {
+                            "streaming".to_string()
+                        } else {
+                            "complete".to_string()
+                        },
+                    });
+                }
                 TimelineTurnMessage::Invocation { invocation } => {
+                    rendered_turn_messages = true;
                     items.push(TimelineItem {
                         id: format!("{turn_id}-invocation-{}", invocation.invocation_id),
                         kind: timeline_item_kind_for_invocation(invocation),
@@ -108,7 +133,7 @@ fn build_live_timeline_items(session: &TimelineSessionState) -> Vec<TimelineItem
                 }
             }
         }
-        if turn.messages.is_empty() && turn.running {
+        if !rendered_turn_messages && turn.running {
             items.push(TimelineItem {
                 id: format!("{turn_id}-assistant-waiting"),
                 kind: TimelineItemKind::AssistantMessage,

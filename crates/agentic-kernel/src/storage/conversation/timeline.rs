@@ -10,8 +10,11 @@ use super::turns::{
 };
 use crate::storage::schema::upsert_kernel_meta;
 use crate::storage::{current_timestamp_ms, StorageError, StorageService};
+use agentic_control_models::AssistantSegmentKind;
 
 const LEGACY_IMPORT_META_KEY: &str = "legacy_timeline_import_v1_completed_at_ms";
+const ASSISTANT_THINKING_NORMALIZATION_META_KEY: &str =
+    "assistant_thinking_normalization_v1_completed_at_ms";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LegacyTimelineImportReport {
@@ -38,7 +41,38 @@ struct LegacyTimelineSession {
     system_events: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StoredTimelineMessageRecord {
+    session_id: String,
+    pid: u64,
+    role: String,
+    kind: String,
+    content: String,
+    created_at_ms: i64,
+}
+
 impl StorageService {
+    pub(crate) fn normalize_inline_assistant_thinking_once(&mut self) -> Result<(), StorageError> {
+        if self.assistant_thinking_normalization_already_completed()? {
+            return Ok(());
+        }
+
+        let normalized_at_ms = current_timestamp_ms();
+        let transaction = self.connection.transaction()?;
+        for turn_id in legacy_assistant_turn_ids(&transaction)? {
+            normalize_inline_assistant_thinking_for_turn(&transaction, turn_id)?;
+        }
+        upsert_kernel_meta(
+            &transaction,
+            ASSISTANT_THINKING_NORMALIZATION_META_KEY,
+            &normalized_at_ms.to_string(),
+            normalized_at_ms,
+        )?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
     pub(crate) fn import_legacy_timelines_once(
         &mut self,
         timeline_dir: &Path,
@@ -184,7 +218,21 @@ impl StorageService {
         turn_id: i64,
         text: &str,
     ) -> Result<(), StorageError> {
-        self.append_turn_message(turn_id, "assistant", "message", text)
+        self.append_assistant_segment(turn_id, AssistantSegmentKind::Message, text)
+    }
+
+    pub(crate) fn append_assistant_segment(
+        &mut self,
+        turn_id: i64,
+        kind: AssistantSegmentKind,
+        text: &str,
+    ) -> Result<(), StorageError> {
+        self.append_turn_message(
+            turn_id,
+            "assistant",
+            assistant_segment_storage_kind(kind),
+            text,
+        )
     }
 
     pub(crate) fn append_system_message(
@@ -358,6 +406,18 @@ impl StorageService {
             .is_some())
     }
 
+    fn assistant_thinking_normalization_already_completed(&self) -> Result<bool, StorageError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT value FROM kernel_meta WHERE key = ?1",
+                params![ASSISTANT_THINKING_NORMALIZATION_META_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_some())
+    }
+
     fn import_single_legacy_timeline(
         &mut self,
         path: &Path,
@@ -447,18 +507,28 @@ impl StorageService {
             report.imported_messages += 1;
 
             if !turn.assistant_stream.trim().is_empty() {
-                insert_message(
-                    &transaction,
+                let mut ordinal = 2;
+                for message in expand_assistant_storage_messages(
                     &legacy.session_id,
-                    turn_id,
                     legacy.pid,
-                    2,
-                    "assistant",
                     "message",
                     &turn.assistant_stream,
                     turn_started_at_ms,
-                )?;
-                report.imported_messages += 1;
+                ) {
+                    insert_message(
+                        &transaction,
+                        &message.session_id,
+                        turn_id,
+                        message.pid,
+                        ordinal,
+                        &message.role,
+                        &message.kind,
+                        &message.content,
+                        message.created_at_ms,
+                    )?;
+                    ordinal += 1;
+                    report.imported_messages += 1;
+                }
             }
         }
 
@@ -522,10 +592,11 @@ impl StorageService {
     ) -> Result<Vec<StoredReplayMessage>, StorageError> {
         let mut statement = self.connection.prepare(
             r#"
-            SELECT role, kind, content
-            FROM session_messages
-            WHERE session_id = ?1
-            ORDER BY message_id ASC
+            SELECT sm.role, sm.kind, sm.content
+            FROM session_messages sm
+            JOIN session_turns st ON st.turn_id = sm.turn_id
+            WHERE sm.session_id = ?1
+            ORDER BY st.turn_index ASC, sm.ordinal ASC, sm.message_id ASC
             "#,
         )?;
         let rows = statement.query_map(params![session_id], |row| {
@@ -564,6 +635,236 @@ impl StorageService {
             .optional()
             .map_err(StorageError::from)
     }
+}
+
+fn assistant_segment_storage_kind(kind: AssistantSegmentKind) -> &'static str {
+    match kind {
+        AssistantSegmentKind::Message => "message",
+        AssistantSegmentKind::Thinking => "thinking",
+    }
+}
+
+fn legacy_assistant_turn_ids(transaction: &Transaction<'_>) -> Result<Vec<i64>, rusqlite::Error> {
+    let mut statement = transaction.prepare(
+        r#"
+        SELECT DISTINCT turn_id
+        FROM session_messages
+        WHERE role = 'assistant'
+          AND (
+              kind = 'chunk'
+              OR (kind = 'message' AND instr(content, '<think>') > 0)
+          )
+        ORDER BY turn_id ASC
+        "#,
+    )?;
+    let rows = statement.query_map([], |row| row.get(0))?;
+
+    let mut turn_ids = Vec::new();
+    for row in rows {
+        turn_ids.push(row?);
+    }
+
+    Ok(turn_ids)
+}
+
+fn normalize_inline_assistant_thinking_for_turn(
+    transaction: &Transaction<'_>,
+    turn_id: i64,
+) -> Result<(), StorageError> {
+    let mut statement = transaction.prepare(
+        r#"
+        SELECT session_id, pid, role, kind, content, created_at_ms
+        FROM session_messages
+        WHERE turn_id = ?1
+        ORDER BY ordinal ASC, message_id ASC
+        "#,
+    )?;
+    let rows = statement.query_map(params![turn_id], |row| {
+        Ok(StoredTimelineMessageRecord {
+            session_id: row.get(0)?,
+            pid: row.get(1)?,
+            role: row.get(2)?,
+            kind: row.get(3)?,
+            content: row.get(4)?,
+            created_at_ms: row.get(5)?,
+        })
+    })?;
+
+    let mut rebuilt = Vec::new();
+    let mut changed = false;
+    for row in rows {
+        let row = row?;
+        if row.role == "assistant"
+            && assistant_message_requires_normalization(&row.kind, &row.content)
+        {
+            changed = true;
+            rebuilt.extend(expand_assistant_storage_messages(
+                &row.session_id,
+                row.pid,
+                &row.kind,
+                &row.content,
+                row.created_at_ms,
+            ));
+        } else {
+            rebuilt.push(row);
+        }
+    }
+
+    if !changed {
+        return Ok(());
+    }
+
+    transaction.execute(
+        "DELETE FROM session_messages WHERE turn_id = ?1",
+        params![turn_id],
+    )?;
+    for (index, message) in rebuilt.into_iter().enumerate() {
+        insert_message(
+            transaction,
+            &message.session_id,
+            turn_id,
+            message.pid,
+            (index as i64) + 1,
+            &message.role,
+            &message.kind,
+            &message.content,
+            message.created_at_ms,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn assistant_message_requires_normalization(kind: &str, content: &str) -> bool {
+    kind == "chunk" || find_next_think_marker(content).is_some()
+}
+
+fn expand_assistant_storage_messages(
+    session_id: &str,
+    pid: u64,
+    kind: &str,
+    content: &str,
+    created_at_ms: i64,
+) -> Vec<StoredTimelineMessageRecord> {
+    if kind != "message" && kind != "chunk" {
+        return vec![StoredTimelineMessageRecord {
+            session_id: session_id.to_string(),
+            pid,
+            role: "assistant".to_string(),
+            kind: kind.to_string(),
+            content: content.to_string(),
+            created_at_ms,
+        }];
+    }
+
+    let segments = split_legacy_assistant_segments(content);
+    if segments.is_empty() {
+        return Vec::new();
+    }
+
+    segments
+        .into_iter()
+        .map(|segment| StoredTimelineMessageRecord {
+            session_id: session_id.to_string(),
+            pid,
+            role: "assistant".to_string(),
+            kind: assistant_segment_storage_kind(segment.kind).to_string(),
+            content: segment.text,
+            created_at_ms,
+        })
+        .collect()
+}
+
+fn split_legacy_assistant_segments(content: &str) -> Vec<AssistantOutputSegment> {
+    let mut segments = Vec::new();
+    let mut cursor = 0usize;
+
+    while cursor < content.len() {
+        let remaining = &content[cursor..];
+        let next_marker = find_next_think_marker(remaining);
+
+        match next_marker {
+            None => {
+                push_assistant_segment(
+                    &mut segments,
+                    AssistantSegmentKind::Message,
+                    remaining.to_string(),
+                );
+                break;
+            }
+            Some(offset) => {
+                if offset > 0 {
+                    push_assistant_segment(
+                        &mut segments,
+                        AssistantSegmentKind::Message,
+                        remaining[..offset].to_string(),
+                    );
+                }
+
+                let think_start = cursor + offset + "<think>".len();
+                let think_rest = &content[think_start..];
+                if let Some(end_offset) = think_rest.find("</think>") {
+                    push_assistant_segment(
+                        &mut segments,
+                        AssistantSegmentKind::Thinking,
+                        think_rest[..end_offset].to_string(),
+                    );
+                    cursor = think_start + end_offset + "</think>".len();
+                } else {
+                    push_assistant_segment(
+                        &mut segments,
+                        AssistantSegmentKind::Thinking,
+                        think_rest.to_string(),
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    segments
+}
+
+fn find_next_think_marker(stream: &str) -> Option<usize> {
+    let mut in_fenced_block = false;
+    let mut absolute_offset = 0usize;
+
+    for line in stream.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fenced_block = !in_fenced_block;
+            absolute_offset += line.len();
+            continue;
+        }
+
+        if !in_fenced_block {
+            if let Some(offset) = line.find("<think>") {
+                return Some(absolute_offset + offset);
+            }
+        }
+
+        absolute_offset += line.len();
+    }
+
+    None
+}
+
+fn push_assistant_segment(
+    segments: &mut Vec<AssistantOutputSegment>,
+    kind: AssistantSegmentKind,
+    text: String,
+) {
+    if text.is_empty() {
+        return;
+    }
+
+    segments.push(AssistantOutputSegment { kind, text });
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AssistantOutputSegment {
+    kind: AssistantSegmentKind,
+    text: String,
 }
 
 fn latest_kernel_boot_id(transaction: &Transaction<'_>) -> Result<Option<i64>, rusqlite::Error> {

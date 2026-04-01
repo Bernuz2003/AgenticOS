@@ -107,7 +107,7 @@ impl ExternalLlamaCppBackend {
         mut stream_observer: Option<&mut dyn StreamChunkObserver>,
     ) -> Result<StreamingCompletion> {
         let mut accumulator = StreamingCompletionAccumulator::default();
-        let response = self.endpoint.request_stream_with_options(
+        let response: HttpJsonResponse = self.endpoint.request_stream_with_options(
             "POST",
             &self.endpoint.joined_path("/completion"),
             Some(&payload),
@@ -194,6 +194,7 @@ impl InferenceBackend for ExternalLlamaCppBackend {
             return Ok(InferenceStepResult {
                 appended_tokens: Vec::new(),
                 emitted_text: String::new(),
+                emitted_reasoning_text: String::new(),
                 finished: true,
                 finish_reason: Some(InferenceFinishReason::TurnBudgetExhausted),
                 next_index_pos: index_pos.max(tokens.len()),
@@ -233,6 +234,7 @@ impl InferenceBackend for ExternalLlamaCppBackend {
         Ok(InferenceStepResult {
             next_index_pos: index_pos.max(tokens.len()),
             emitted_text: decoded.emitted_text,
+            emitted_reasoning_text: decoded.emitted_reasoning_text,
             finished: decoded.finished || finished_due_to_budget,
             finish_reason: if decoded.finished {
                 Some(InferenceFinishReason::ModelStop)
@@ -270,6 +272,7 @@ impl ContextSlotPersistence for ExternalLlamaCppBackend {
 struct StreamingCompletionAccumulator {
     body_buffer: Vec<u8>,
     emitted_text: String,
+    emitted_reasoning_text: String,
     finished: bool,
     stopped_on_tool_marker: bool,
 }
@@ -288,6 +291,13 @@ impl StreamingCompletionAccumulator {
             let delta = canonical_transport_delta(&self.emitted_text, &decoded.emitted_text);
             if !delta.is_empty() {
                 self.emitted_text.push_str(&delta);
+            }
+            let reasoning_delta = canonical_transport_delta(
+                &self.emitted_reasoning_text,
+                &decoded.emitted_reasoning_text,
+            );
+            if !reasoning_delta.is_empty() {
+                self.emitted_reasoning_text.push_str(&reasoning_delta);
             }
             self.finished = decoded.finished;
 
@@ -340,6 +350,7 @@ impl StreamingCompletionAccumulator {
 
         Ok(StreamingCompletion {
             emitted_text: self.emitted_text,
+            emitted_reasoning_text: self.emitted_reasoning_text,
             appended_tokens,
             finished: self.finished && !self.stopped_on_tool_marker,
         })
@@ -348,6 +359,7 @@ impl StreamingCompletionAccumulator {
 
 struct StreamingCompletion {
     emitted_text: String,
+    emitted_reasoning_text: String,
     appended_tokens: Vec<u32>,
     finished: bool,
 }

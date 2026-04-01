@@ -68,12 +68,14 @@ impl StorageService {
         })?;
         configure_connection(&path, &connection)?;
         migrations::apply_pending_migrations(&mut connection)?;
-
-        Ok(Self {
+        let mut service = Self {
             path,
             connection,
             pending_diagnostics: Vec::new(),
-        })
+        };
+        service.normalize_inline_assistant_thinking_once()?;
+
+        Ok(service)
     }
 
     #[allow(dead_code)]

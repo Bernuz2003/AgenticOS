@@ -745,6 +745,13 @@ pub enum InvocationKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum AssistantSegmentKind {
+    Message,
+    Thinking,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum InvocationStatus {
     Dispatched,
     Completed,
@@ -776,8 +783,9 @@ pub enum KernelEvent {
         workload: String,
         prompt: String,
     },
-    TimelineChunk {
+    TimelineSegment {
         pid: u64,
+        segment_kind: AssistantSegmentKind,
         text: String,
     },
     InvocationUpdated {

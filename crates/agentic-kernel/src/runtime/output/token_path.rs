@@ -18,7 +18,7 @@ use crate::storage::{StorageService, StoredAccountingEvent};
 use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
-use super::assistant_output::emit_visible_assistant_output;
+use super::assistant_output::emit_assistant_timeline_output;
 use super::turn_assembly::TurnAssemblyStore;
 use super::turn_completion::emit_turn_completion_events;
 
@@ -140,6 +140,7 @@ pub(super) fn handle_token_result(
     pid: u64,
     mut process: AgentProcess,
     text_output: String,
+    reasoning_output: String,
     generated_tokens: usize,
     finished: bool,
     finish_reason: Option<InferenceFinishReason>,
@@ -178,7 +179,8 @@ pub(super) fn handle_token_result(
         .as_ref()
         .map(|metadata| metadata.owner_id)
         .unwrap_or(0);
-    let finalized_step = turn_assembly.consume_final_fragment(pid, &text_output);
+    let finalized_step =
+        turn_assembly.consume_final_fragments(pid, &text_output, &reasoning_output);
     let pid_floor = runtime_registry.next_pid_floor();
     let audit_context = AuditContext::for_process(
         session_registry.session_id_for_pid(pid),
@@ -196,9 +198,8 @@ pub(super) fn handle_token_result(
             return;
         };
 
-        if generated_tokens > 0 || !finalized_step.complete_assistant_text.is_empty() {
-            process.record_model_output(&finalized_step.complete_assistant_text, generated_tokens);
-        }
+        process.accumulate_inflight_assistant_tokens(generated_tokens);
+        let mut turn_boundary_reached = finalized_step.syscall_command.is_some();
 
         if !finished
             && !text_output.is_empty()
@@ -214,6 +215,7 @@ pub(super) fn handle_token_result(
                 ProcessState::Finished
             };
             process.termination_reason = Some("stop_marker_detected".to_string());
+            turn_boundary_reached = true;
         } else if finished {
             process.termination_reason = Some(
                 finish_reason
@@ -221,6 +223,20 @@ pub(super) fn handle_token_result(
                     .as_str()
                     .to_string(),
             );
+            turn_boundary_reached = true;
+        }
+
+        if turn_boundary_reached {
+            if process.inflight_assistant_token_count() > 0
+                || !finalized_step.complete_assistant_text.is_empty()
+            {
+                process.finalize_inflight_assistant_output(&finalized_step.complete_assistant_text);
+            } else {
+                process.clear_inflight_assistant_output();
+            }
+            turn_assembly.reset_pid_output_state(pid);
+        } else {
+            process.update_inflight_assistant_continuation(&finalized_step.continuation_text);
         }
 
         process.mark_resident_prompt_checkpoint();
@@ -248,10 +264,10 @@ pub(super) fn handle_token_result(
             let owner_id = engine
                 .process_owner_id(pid)
                 .unwrap_or(owner_id_from_checkout);
-            emit_visible_assistant_output(
+            emit_assistant_timeline_output(
                 pid,
                 owner_id,
-                &finalized_step.visible_text,
+                &finalized_step.segments,
                 clients,
                 poll,
                 orchestrator,

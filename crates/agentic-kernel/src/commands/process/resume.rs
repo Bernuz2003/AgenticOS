@@ -330,7 +330,7 @@ fn render_prompt_from_replay_history(
                     ));
                 }
             }
-            "assistant" => {
+            "assistant" if message.kind != "thinking" => {
                 rendered.push_str(&message.content);
             }
             _ => {}

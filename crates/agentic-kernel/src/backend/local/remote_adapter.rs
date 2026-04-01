@@ -58,6 +58,7 @@ pub(crate) struct CompletionResponse {
 
 pub(crate) struct DecodedCompletion {
     pub(crate) emitted_text: String,
+    pub(crate) emitted_reasoning_text: String,
     #[allow(dead_code)]
     pub(crate) appended_tokens: Vec<u32>,
     pub(crate) finished: bool,
@@ -98,10 +99,12 @@ pub(crate) fn decode_completion_response(
         .choices
         .as_ref()
         .and_then(|choices| choices.first());
-    let emitted_text = combine_completion_text(
+    let emitted_reasoning_text = combine_completion_reasoning(
         response.reasoning_content.as_deref(),
-        response.content.as_deref(),
         choice.and_then(|item| item.reasoning_content.as_deref()),
+    );
+    let emitted_text = combine_completion_text(
+        response.content.as_deref(),
         choice.and_then(|item| item.text.as_deref()),
     );
     let finish_reason = choice.and_then(|item| item.finish_reason.as_deref());
@@ -120,18 +123,24 @@ pub(crate) fn decode_completion_response(
 
     Ok(DecodedCompletion {
         emitted_text,
+        emitted_reasoning_text,
         appended_tokens,
         finished,
     })
 }
 
-pub(crate) fn combine_completion_text(
-    _reasoning_content: Option<&str>,
-    content: Option<&str>,
-    _choice_reasoning_content: Option<&str>,
-    choice_text: Option<&str>,
-) -> String {
+pub(crate) fn combine_completion_text(content: Option<&str>, choice_text: Option<&str>) -> String {
     content.or(choice_text).unwrap_or_default().to_string()
+}
+
+pub(crate) fn combine_completion_reasoning(
+    reasoning_content: Option<&str>,
+    choice_reasoning_content: Option<&str>,
+) -> String {
+    reasoning_content
+        .or(choice_reasoning_content)
+        .unwrap_or_default()
+        .to_string()
 }
 
 pub(crate) fn completion_is_finished(

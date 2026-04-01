@@ -78,12 +78,12 @@ fn persist_event(
             session_registry.remember_active_turn(*pid, turn_id);
             Ok(())
         }
-        KernelEvent::TimelineChunk { .. } => Ok(()),
+        KernelEvent::TimelineSegment { .. } => Ok(()),
         KernelEvent::InvocationUpdated { pid, invocation } => {
             let Some(turn_id) = session_registry.active_turn_id_for_pid(*pid) else {
                 return Ok(());
             };
-            flush_pending_assistant_segment(storage, session_registry, turn_assembly, *pid)?;
+            flush_pending_assistant_segments(storage, session_registry, turn_assembly, *pid)?;
             let payload = serde_json::to_string(invocation).map_err(|err| {
                 crate::storage::StorageError::Sqlite(rusqlite::Error::ToSqlConversionFailure(
                     Box::new(err),
@@ -100,7 +100,7 @@ fn persist_event(
             let Some(turn_id) = session_registry.active_turn_id_for_pid(*pid) else {
                 return Ok(());
             };
-            flush_pending_assistant_segment(storage, session_registry, turn_assembly, *pid)?;
+            flush_pending_assistant_segments(storage, session_registry, turn_assembly, *pid)?;
             let (status, marker_text) =
                 finish_reason_to_turn_outcome(reason, *tokens_generated, *elapsed_secs);
             let result = storage.finish_turn(turn_id, status, reason, marker_text.as_deref());
@@ -114,7 +114,7 @@ fn persist_event(
             let Some(turn_id) = session_registry.active_turn_id_for_pid(*pid) else {
                 return Ok(());
             };
-            flush_pending_assistant_segment(storage, session_registry, turn_assembly, *pid)?;
+            flush_pending_assistant_segments(storage, session_registry, turn_assembly, *pid)?;
             let result = storage.error_turn(turn_id, message);
             if result.is_ok() {
                 session_registry.clear_active_turn(*pid);
@@ -126,7 +126,7 @@ fn persist_event(
     }
 }
 
-fn flush_pending_assistant_segment(
+fn flush_pending_assistant_segments(
     storage: &mut StorageService,
     session_registry: &mut SessionRegistry,
     turn_assembly: &mut TurnAssemblyStore,
@@ -135,10 +135,13 @@ fn flush_pending_assistant_segment(
     let Some(turn_id) = session_registry.active_turn_id_for_pid(pid) else {
         return Ok(());
     };
-    let Some(text) = turn_assembly.drain_pending_assistant_segment(pid) else {
+    let Some(segments) = turn_assembly.drain_pending_segments(pid) else {
         return Ok(());
     };
-    storage.append_assistant_message(turn_id, &text)
+    for segment in segments {
+        storage.append_assistant_segment(turn_id, segment.kind, &segment.text)?;
+    }
+    Ok(())
 }
 
 fn finish_reason_to_turn_outcome(

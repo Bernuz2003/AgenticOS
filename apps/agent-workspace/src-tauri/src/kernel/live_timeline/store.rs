@@ -1,3 +1,4 @@
+use agentic_control_models::AssistantSegmentKind;
 use std::collections::HashMap;
 use std::fs;
 use std::net::TcpStream;
@@ -28,6 +29,7 @@ pub(super) struct TimelineTurn {
 #[derive(Debug, Clone)]
 pub(super) enum TimelineTurnMessage {
     Assistant { text: String },
+    Thinking { text: String },
     Invocation { invocation: InvocationEvent },
 }
 
@@ -41,6 +43,7 @@ pub struct TimelineSeedTurn {
 #[derive(Debug, Clone)]
 pub enum TimelineSeedMessage {
     Assistant(String),
+    Thinking(String),
     Invocation(InvocationEvent),
 }
 
@@ -127,6 +130,9 @@ impl TimelineStore {
                             TimelineSeedMessage::Assistant(text) => {
                                 TimelineTurnMessage::Assistant { text }
                             }
+                            TimelineSeedMessage::Thinking(text) => {
+                                TimelineTurnMessage::Thinking { text }
+                            }
                             TimelineSeedMessage::Invocation(invocation) => {
                                 TimelineTurnMessage::Invocation { invocation }
                             }
@@ -186,7 +192,7 @@ impl TimelineStore {
         session.error = None;
     }
 
-    pub fn append_assistant_chunk(&mut self, pid: u64, text: &str) {
+    pub fn append_timeline_segment(&mut self, pid: u64, kind: AssistantSegmentKind, text: &str) {
         if text.is_empty() {
             return;
         }
@@ -197,9 +203,23 @@ impl TimelineStore {
             return;
         };
         match turn.messages.last_mut() {
-            Some(TimelineTurnMessage::Assistant { text: existing }) => existing.push_str(text),
-            _ => turn.messages.push(TimelineTurnMessage::Assistant {
-                text: text.to_string(),
+            Some(TimelineTurnMessage::Assistant { text: existing })
+                if kind == AssistantSegmentKind::Message =>
+            {
+                existing.push_str(text)
+            }
+            Some(TimelineTurnMessage::Thinking { text: existing })
+                if kind == AssistantSegmentKind::Thinking =>
+            {
+                existing.push_str(text)
+            }
+            _ => turn.messages.push(match kind {
+                AssistantSegmentKind::Message => TimelineTurnMessage::Assistant {
+                    text: text.to_string(),
+                },
+                AssistantSegmentKind::Thinking => TimelineTurnMessage::Thinking {
+                    text: text.to_string(),
+                },
             }),
         }
     }

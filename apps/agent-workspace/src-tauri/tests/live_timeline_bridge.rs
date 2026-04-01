@@ -2,10 +2,12 @@ use agent_workspace_lib::test_support::live_timeline::{
     apply_kernel_event, finish_session_with_reason, TimelineItemKind, TimelineSeedMessage,
     TimelineSeedSession, TimelineSeedTurn, TimelineStore,
 };
-use agentic_control_models::{InvocationEvent, InvocationKind, InvocationStatus, KernelEvent};
+use agentic_control_models::{
+    AssistantSegmentKind, InvocationEvent, InvocationKind, InvocationStatus, KernelEvent,
+};
 
 #[test]
-fn live_timeline_keeps_thinking_streaming_without_raw_tool_parsing() {
+fn live_timeline_keeps_thinking_streaming_from_structured_segments() {
     let mut store = TimelineStore::default();
     apply_kernel_event(
         &mut store,
@@ -18,9 +20,18 @@ fn live_timeline_keeps_thinking_streaming_without_raw_tool_parsing() {
     );
     apply_kernel_event(
         &mut store,
-        &KernelEvent::TimelineChunk {
+        &KernelEvent::TimelineSegment {
             pid: 1,
-            text: "Prelude\n<think>reasoning in progress".to_string(),
+            segment_kind: AssistantSegmentKind::Message,
+            text: "Prelude".to_string(),
+        },
+    );
+    apply_kernel_event(
+        &mut store,
+        &KernelEvent::TimelineSegment {
+            pid: 1,
+            segment_kind: AssistantSegmentKind::Thinking,
+            text: "reasoning in progress".to_string(),
         },
     );
 
@@ -53,8 +64,9 @@ fn live_timeline_does_not_infer_tool_blocks_from_raw_assistant_chunks() {
     for text in ["TO", "OL", ":calc {\"expression\":\"2+2\"}"] {
         apply_kernel_event(
             &mut store,
-            &KernelEvent::TimelineChunk {
+            &KernelEvent::TimelineSegment {
                 pid: 7,
+                segment_kind: AssistantSegmentKind::Message,
                 text: text.to_string(),
             },
         );
@@ -92,8 +104,9 @@ fn live_timeline_renders_tool_only_from_structured_invocation_events() {
     );
     apply_kernel_event(
         &mut store,
-        &KernelEvent::TimelineChunk {
+        &KernelEvent::TimelineSegment {
             pid: 55,
+            segment_kind: AssistantSegmentKind::Message,
             text: "\n\n".to_string(),
         },
     );
@@ -133,7 +146,7 @@ fn started_session_resets_live_state_when_pid_is_reused() {
         "old prompt".to_string(),
         "general".to_string(),
     );
-    store.append_assistant_chunk(42, "old output");
+    store.append_timeline_segment(42, AssistantSegmentKind::Message, "old output");
     finish_session_with_reason(&mut store, 42, Some("completed"));
 
     store.insert_started_session(

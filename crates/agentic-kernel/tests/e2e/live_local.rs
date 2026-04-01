@@ -59,6 +59,7 @@ fn live_local_tool_invocation_replays_cleanly_through_kernel_storage_and_audit()
         .send_token_result(
             pid,
             final_suffix,
+            "",
             observation.generated_tokens,
             observation.finished,
             None,

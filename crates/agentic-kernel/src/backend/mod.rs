@@ -22,7 +22,10 @@ pub(crate) use local::ExternalLlamaCppBackend;
 use remote::RemoteOpenAICompatibleBackend;
 
 #[cfg(test)]
-use local::remote_adapter::{combine_completion_text, completion_is_finished, CompletionResponse};
+use local::remote_adapter::{
+    combine_completion_reasoning, combine_completion_text, completion_is_finished,
+    CompletionResponse,
+};
 #[cfg(test)]
 pub(crate) use local::TestExternalEndpointOverrideGuard;
 #[cfg(test)]
@@ -416,6 +419,7 @@ pub trait InferenceBackend: Send {
 pub struct InferenceStepResult {
     pub appended_tokens: Vec<u32>,
     pub emitted_text: String,
+    pub emitted_reasoning_text: String,
     pub finished: bool,
     pub finish_reason: Option<InferenceFinishReason>,
     pub next_index_pos: usize,

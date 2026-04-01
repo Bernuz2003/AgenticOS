@@ -35,6 +35,7 @@ impl InferenceBackend for RecordingBackend {
         Ok(InferenceStepResult {
             appended_tokens: Vec::new(),
             emitted_text: String::new(),
+            emitted_reasoning_text: String::new(),
             finished: true,
             finish_reason: None,
             next_index_pos: 0,
@@ -191,6 +192,39 @@ fn resident_prompt_suffix_only_tracks_post_checkpoint_reinjection() {
     process.record_injected_context("\nOutput:\n2\n", 3);
 
     assert_eq!(process.pending_resident_prompt_suffix(), "\nOutput:\n2\n");
+}
+
+#[test]
+fn inference_prompt_includes_inflight_assistant_continuation_without_polluting_canonical_prompt() {
+    let policy = ContextPolicy::new(ContextStrategy::SlidingWindow, 32, 24, 16, 2);
+    let (mut process, _frees) = test_process(policy);
+
+    process.update_inflight_assistant_continuation("assistant<think>reasoning");
+
+    assert_eq!(process.prompt_text(), "user turn user");
+    assert_eq!(
+        process.inference_prompt_text(),
+        "user turn userassistant<think>reasoning"
+    );
+}
+
+#[test]
+fn pending_inference_prompt_suffix_includes_inflight_continuation_after_checkpoint() {
+    let policy = ContextPolicy::new(ContextStrategy::SlidingWindow, 32, 24, 16, 2);
+    let (mut process, _frees) = test_process(policy);
+
+    process.bind_context_slot(9, ResidentSlotPolicy::ParkAndResume);
+    process.mark_resident_prompt_checkpoint();
+    process.update_inflight_assistant_continuation("assistant<think>reasoning");
+
+    assert_eq!(
+        process.pending_inference_prompt_suffix(),
+        "assistant<think>reasoning"
+    );
+
+    process.mark_resident_prompt_checkpoint();
+
+    assert_eq!(process.pending_inference_prompt_suffix(), "");
 }
 
 #[test]
