@@ -23,6 +23,7 @@ use crate::runtime::deadlines::{
 };
 use crate::runtime::run_engine_tick;
 use crate::runtime::syscalls::{SyscallCmd, SyscallCompletion};
+use crate::runtime::TurnAssemblyStore;
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
 use crate::services::job_scheduler::{JobScheduler, SCHEDULER_SYSTEM_OWNER_ID};
@@ -78,6 +79,7 @@ pub(crate) struct Kernel {
     pub(crate) in_flight: HashSet<u64>,
     pub(crate) pending_kills: Vec<u64>,
     pub(crate) pending_events: Vec<agentic_control_models::KernelEvent>,
+    pub(crate) turn_assembly: TurnAssemblyStore,
     pub(crate) syscall_wait_since: HashMap<u64, Instant>,
     pub(crate) remote_timeout_reported: HashSet<u64>,
     pub(crate) next_event_sequence: u64,
@@ -167,6 +169,7 @@ impl Kernel {
                 &self.syscall_result_rx,
                 &mut self.session_registry,
                 &mut self.storage,
+                &mut self.turn_assembly,
                 &mut self.in_flight,
                 &mut self.pending_kills,
                 &mut self.pending_events,
@@ -205,6 +208,7 @@ impl Kernel {
                 &mut self.next_event_sequence,
                 &mut self.session_registry,
                 &mut self.storage,
+                &mut self.turn_assembly,
                 &mut self.pending_events,
             );
         }

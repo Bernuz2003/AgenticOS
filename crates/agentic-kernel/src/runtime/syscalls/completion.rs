@@ -1,6 +1,6 @@
 use std::sync::mpsc;
 
-use agentic_control_models::KernelEvent;
+use agentic_control_models::{InvocationKind, InvocationStatus, KernelEvent};
 
 use crate::diagnostics::audit::{self, AuditContext};
 use crate::memory::NeuralMemory;
@@ -11,6 +11,7 @@ use crate::services::process_runtime::kill_managed_process_with_session;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 
+use super::invocation_events::emit_invocation_updated;
 use super::worker::SyscallCompletion;
 
 pub(crate) fn drain_syscall_results(
@@ -79,6 +80,14 @@ pub(crate) fn drain_syscall_results(
                 pending_events.push(KernelEvent::LobbyChanged {
                     reason: "syscall_killed".to_string(),
                 });
+                emit_invocation_updated(
+                    pending_events,
+                    pid,
+                    &completion.tool_call_id,
+                    InvocationKind::Tool,
+                    &completion.command,
+                    InvocationStatus::Killed,
+                );
                 audit::record(
                     storage,
                     audit::TOOL_KILLED,
@@ -108,6 +117,18 @@ pub(crate) fn drain_syscall_results(
                             pid,
                             reason: "syscall_completed".to_string(),
                         });
+                        emit_invocation_updated(
+                            pending_events,
+                            pid,
+                            &completion.tool_call_id,
+                            InvocationKind::Tool,
+                            &completion.command,
+                            if completion.outcome.success {
+                                InvocationStatus::Completed
+                            } else {
+                                InvocationStatus::Failed
+                            },
+                        );
                     }
                     Err(err) => {
                         tracing::warn!(pid, %err, "OS: dropping syscall completion for missing process");

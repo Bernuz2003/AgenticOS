@@ -18,8 +18,8 @@ use crate::storage::{StorageService, StoredAccountingEvent};
 use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
-use super::assistant_output::{consume_assistant_output_fragment, emit_visible_assistant_output};
-use super::control_extraction::{output_accumulator_for_token, resolve_pending_syscall};
+use super::assistant_output::emit_visible_assistant_output;
+use super::turn_assembly::TurnAssemblyStore;
 use super::turn_completion::emit_turn_completion_events;
 
 pub(super) fn persist_accounting_event(
@@ -147,6 +147,7 @@ pub(super) fn handle_token_result(
     syscall_cmd_tx: &mpsc::Sender<crate::runtime::syscalls::SyscallCmd>,
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
+    turn_assembly: &mut TurnAssemblyStore,
     runtime_checked_out: Option<CheckedOutProcessMetadata>,
     in_flight: &mut HashSet<u64>,
     pending_kills: &mut Vec<u64>,
@@ -177,11 +178,7 @@ pub(super) fn handle_token_result(
         .as_ref()
         .map(|metadata| metadata.owner_id)
         .unwrap_or(0);
-    let mut output_accumulator =
-        output_accumulator_for_token(runtime_checked_out.as_ref(), &process);
-    let final_fragment = consume_assistant_output_fragment(&mut output_accumulator, &text_output);
-    let complete_assistant_text = output_accumulator.captured_assistant_text.clone();
-    process.syscall_buffer = output_accumulator.pending_output_buffer.clone();
+    let finalized_step = turn_assembly.consume_final_fragment(pid, &text_output);
     let pid_floor = runtime_registry.next_pid_floor();
     let audit_context = AuditContext::for_process(
         session_registry.session_id_for_pid(pid),
@@ -189,7 +186,7 @@ pub(super) fn handle_token_result(
         Some(&runtime_id),
     );
 
-    let (owner_id, syscall_dispatch) = {
+    let syscall_dispatch = {
         let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
             tracing::warn!(
                 pid,
@@ -199,8 +196,8 @@ pub(super) fn handle_token_result(
             return;
         };
 
-        if generated_tokens > 0 || !complete_assistant_text.is_empty() {
-            process.record_model_output(&complete_assistant_text, generated_tokens);
+        if generated_tokens > 0 || !finalized_step.complete_assistant_text.is_empty() {
+            process.record_model_output(&finalized_step.complete_assistant_text, generated_tokens);
         }
 
         if !finished
@@ -246,15 +243,24 @@ pub(super) fn handle_token_result(
                 "reason=queued_kill_in_flight",
                 audit_context.clone(),
             );
-            (0, crate::runtime::syscalls::SyscallDispatchOutcome::Killed)
+            crate::runtime::syscalls::SyscallDispatchOutcome::Killed
         } else {
             let owner_id = engine
                 .process_owner_id(pid)
                 .unwrap_or(owner_id_from_checkout);
-            let pending_syscall =
-                resolve_pending_syscall(engine, pid, &output_accumulator, &final_fragment);
+            emit_visible_assistant_output(
+                pid,
+                owner_id,
+                &finalized_step.visible_text,
+                clients,
+                poll,
+                orchestrator,
+                pending_events,
+                "model_output",
+            );
+            let pending_syscall = finalized_step.syscall_command.clone();
 
-            let syscall_dispatch = if let Some(full_command) = pending_syscall {
+            if let Some(full_command) = pending_syscall {
                 let content = full_command.trim().to_string();
                 tracing::info!(pid, owner_id, command = %full_command, "OS: SysCall intercepted");
                 crate::runtime::syscalls::dispatch_process_syscall(
@@ -274,8 +280,7 @@ pub(super) fn handle_token_result(
                 )
             } else {
                 crate::runtime::syscalls::SyscallDispatchOutcome::None
-            };
-            (owner_id, syscall_dispatch)
+            }
         }
     };
 
@@ -302,17 +307,6 @@ pub(super) fn handle_token_result(
             );
         }
     }
-
-    emit_visible_assistant_output(
-        pid,
-        owner_id,
-        &final_fragment.visible_text,
-        clients,
-        poll,
-        orchestrator,
-        pending_events,
-        "model_output",
-    );
 
     if token_quota_exceeded {
         tracing::warn!(pid, "SCHEDULER: token quota exceeded — terminating process");

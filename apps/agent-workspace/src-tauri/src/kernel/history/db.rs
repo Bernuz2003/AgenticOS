@@ -705,7 +705,13 @@ mod tests {
         assert_eq!(seed.pid, 44);
         assert_eq!(seed.turns.len(), 1);
         assert_eq!(seed.turns[0].prompt, "hello archive");
-        assert_eq!(seed.turns[0].assistant_stream, "archived answer");
+        assert_eq!(seed.turns[0].messages.len(), 1);
+        match &seed.turns[0].messages[0] {
+            crate::kernel::live_timeline::TimelineSeedMessage::Assistant(text) => {
+                assert_eq!(text, "archived answer")
+            }
+            other => panic!("unexpected seed message: {:?}", other),
+        }
         let _ = fs::remove_dir_all(root);
     }
 

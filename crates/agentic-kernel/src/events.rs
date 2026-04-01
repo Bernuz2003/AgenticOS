@@ -4,6 +4,7 @@ use agentic_control_models::{KernelEvent, KernelEventEnvelope};
 use mio::{Poll, Token};
 
 use crate::protocol;
+use crate::runtime::TurnAssemblyStore;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::transport::{writable_interest, Client};
@@ -14,6 +15,7 @@ pub fn flush_pending_events(
     next_sequence: &mut u64,
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
+    turn_assembly: &mut TurnAssemblyStore,
     pending_events: &mut Vec<KernelEvent>,
 ) {
     if pending_events.is_empty() {
@@ -21,7 +23,7 @@ pub fn flush_pending_events(
     }
 
     for event in pending_events.drain(..) {
-        if let Err(err) = persist_event(storage, session_registry, &event) {
+        if let Err(err) = persist_event(session_registry, storage, turn_assembly, &event) {
             tracing::error!(%err, "EVENTS: failed to persist kernel event");
         }
         *next_sequence = next_sequence.saturating_add(1);
@@ -52,8 +54,9 @@ pub fn flush_pending_events(
 }
 
 fn persist_event(
-    storage: &mut StorageService,
     session_registry: &mut SessionRegistry,
+    storage: &mut StorageService,
+    turn_assembly: &mut TurnAssemblyStore,
     event: &KernelEvent,
 ) -> Result<(), crate::storage::StorageError> {
     match event {
@@ -71,14 +74,22 @@ fn persist_event(
                 prompt,
                 "prompt",
             )?;
+            turn_assembly.clear_pid(*pid);
             session_registry.remember_active_turn(*pid, turn_id);
             Ok(())
         }
-        KernelEvent::TimelineChunk { pid, text } => {
+        KernelEvent::TimelineChunk { .. } => Ok(()),
+        KernelEvent::InvocationUpdated { pid, invocation } => {
             let Some(turn_id) = session_registry.active_turn_id_for_pid(*pid) else {
                 return Ok(());
             };
-            storage.append_assistant_message(turn_id, text)
+            flush_pending_assistant_segment(storage, session_registry, turn_assembly, *pid)?;
+            let payload = serde_json::to_string(invocation).map_err(|err| {
+                crate::storage::StorageError::Sqlite(rusqlite::Error::ToSqlConversionFailure(
+                    Box::new(err),
+                ))
+            })?;
+            storage.append_system_message(turn_id, "invocation", &payload)
         }
         KernelEvent::SessionFinished {
             pid,
@@ -89,11 +100,13 @@ fn persist_event(
             let Some(turn_id) = session_registry.active_turn_id_for_pid(*pid) else {
                 return Ok(());
             };
+            flush_pending_assistant_segment(storage, session_registry, turn_assembly, *pid)?;
             let (status, marker_text) =
                 finish_reason_to_turn_outcome(reason, *tokens_generated, *elapsed_secs);
             let result = storage.finish_turn(turn_id, status, reason, marker_text.as_deref());
             if result.is_ok() {
                 session_registry.clear_active_turn(*pid);
+                turn_assembly.clear_pid(*pid);
             }
             result
         }
@@ -101,14 +114,31 @@ fn persist_event(
             let Some(turn_id) = session_registry.active_turn_id_for_pid(*pid) else {
                 return Ok(());
             };
+            flush_pending_assistant_segment(storage, session_registry, turn_assembly, *pid)?;
             let result = storage.error_turn(turn_id, message);
             if result.is_ok() {
                 session_registry.clear_active_turn(*pid);
+                turn_assembly.clear_pid(*pid);
             }
             result
         }
         _ => Ok(()),
     }
+}
+
+fn flush_pending_assistant_segment(
+    storage: &mut StorageService,
+    session_registry: &mut SessionRegistry,
+    turn_assembly: &mut TurnAssemblyStore,
+    pid: u64,
+) -> Result<(), crate::storage::StorageError> {
+    let Some(turn_id) = session_registry.active_turn_id_for_pid(pid) else {
+        return Ok(());
+    };
+    let Some(text) = turn_assembly.drain_pending_assistant_segment(pid) else {
+        return Ok(());
+    };
+    storage.append_assistant_message(turn_id, &text)
 }
 
 fn finish_reason_to_turn_outcome(

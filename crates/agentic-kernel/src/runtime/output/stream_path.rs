@@ -12,7 +12,7 @@ use crate::storage::StorageService;
 use crate::transport::Client;
 
 use super::assistant_output::emit_visible_assistant_output;
-use super::control_extraction::consume_stream_output_fragment;
+use super::turn_assembly::TurnAssemblyStore;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_stream_chunk(
@@ -26,6 +26,7 @@ pub(super) fn handle_stream_chunk(
     first_chunk: bool,
     session_registry: &SessionRegistry,
     storage: &mut StorageService,
+    turn_assembly: &mut TurnAssemblyStore,
     pending_events: &mut Vec<KernelEvent>,
 ) {
     let Some(runtime_id) = runtime_registry
@@ -66,7 +67,7 @@ pub(super) fn handle_stream_chunk(
         return;
     }
 
-    let fragment = consume_stream_output_fragment(scheduler.checked_out_process_mut(pid), text);
+    let fragment = turn_assembly.consume_stream_fragment(pid, text);
 
     if let Some(command) = fragment.syscall_command.as_deref() {
         tracing::info!(

@@ -51,7 +51,7 @@ startup_timeout_ms = 120000
 health_poll_ms = 250
 legacy_endpoint_override = ""
 timeout_ms = 600000
-chunk_tokens = 1
+chunk_tokens = 64
 
 [openai_responses]
 endpoint = "https://api.openai.com/v1"

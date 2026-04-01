@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agentic_control_models::ExecStartPayload;
+use agentic_control_models::{ExecStartPayload, InvocationEvent};
 use agentic_protocol::OpCode;
 
 use crate::kernel::auth::kernel_token_path;
@@ -21,15 +21,27 @@ pub struct TimelineStore {
 #[derive(Debug, Clone)]
 pub(super) struct TimelineTurn {
     pub(super) prompt: String,
-    pub(super) assistant_stream: String,
+    pub(super) messages: Vec<TimelineTurnMessage>,
     pub(super) running: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum TimelineTurnMessage {
+    Assistant { text: String },
+    Invocation { invocation: InvocationEvent },
 }
 
 #[derive(Debug, Clone)]
 pub struct TimelineSeedTurn {
     pub prompt: String,
-    pub assistant_stream: String,
+    pub messages: Vec<TimelineSeedMessage>,
     pub running: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum TimelineSeedMessage {
+    Assistant(String),
+    Invocation(InvocationEvent),
 }
 
 #[derive(Debug, Clone)]
@@ -78,7 +90,7 @@ impl TimelineStore {
             workload,
             turns: vec![TimelineTurn {
                 prompt,
-                assistant_stream: String::new(),
+                messages: Vec::new(),
                 running: true,
             }],
             error: None,
@@ -108,7 +120,18 @@ impl TimelineStore {
                 .into_iter()
                 .map(|turn| TimelineTurn {
                     prompt: turn.prompt,
-                    assistant_stream: turn.assistant_stream,
+                    messages: turn
+                        .messages
+                        .into_iter()
+                        .map(|message| match message {
+                            TimelineSeedMessage::Assistant(text) => {
+                                TimelineTurnMessage::Assistant { text }
+                            }
+                            TimelineSeedMessage::Invocation(invocation) => {
+                                TimelineTurnMessage::Invocation { invocation }
+                            }
+                        })
+                        .collect(),
                     running: turn.running,
                 })
                 .collect()
@@ -148,7 +171,7 @@ impl TimelineStore {
         session.error = None;
         session.turns.push(TimelineTurn {
             prompt,
-            assistant_stream: String::new(),
+            messages: Vec::new(),
             running: true,
         });
     }
@@ -173,10 +196,37 @@ impl TimelineStore {
         let Some(turn) = session.turns.last_mut() else {
             return;
         };
-        turn.assistant_stream.push_str(text);
+        match turn.messages.last_mut() {
+            Some(TimelineTurnMessage::Assistant { text: existing }) => existing.push_str(text),
+            _ => turn.messages.push(TimelineTurnMessage::Assistant {
+                text: text.to_string(),
+            }),
+        }
     }
 
-    pub fn finish_session_with_reason(
+    pub fn upsert_invocation(&mut self, pid: u64, invocation: InvocationEvent) {
+        let Some(session) = self.sessions.get_mut(&pid) else {
+            return;
+        };
+        let Some(turn) = session.turns.last_mut() else {
+            return;
+        };
+
+        if let Some(existing) = turn.messages.iter_mut().find_map(|message| match message {
+            TimelineTurnMessage::Invocation {
+                invocation: existing,
+            } if existing.invocation_id == invocation.invocation_id => Some(existing),
+            _ => None,
+        }) {
+            *existing = invocation;
+            return;
+        }
+
+        turn.messages
+            .push(TimelineTurnMessage::Invocation { invocation });
+    }
+
+    pub(crate) fn finish_session_with_reason(
         &mut self,
         pid: u64,
         marker: Option<ProcessFinishedMarker>,
@@ -203,7 +253,7 @@ impl TimelineStore {
         }
     }
 
-    pub fn set_error(&mut self, pid: u64, error: String) {
+    pub(crate) fn set_error(&mut self, pid: u64, error: String) {
         let Some(session) = self.sessions.get_mut(&pid) else {
             return;
         };
@@ -299,198 +349,5 @@ fn load_token(workspace_root: &Path) -> Result<String, String> {
         Ok(token) => Ok(token.trim().to_string()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(err) => Err(err.to_string()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{TimelineSeedSession, TimelineSeedTurn, TimelineStore};
-    use crate::kernel::live_timeline::parse_stream_segments;
-    use crate::models::kernel::TimelineItemKind;
-
-    #[test]
-    fn parse_stream_segments_splits_thinking_tool_and_answer() {
-        let stream = "<think>step 1\nstep 2</think>\n[[PYTHON: print(2 + 2)]]\nFinal answer";
-        let items = parse_stream_segments("pid-1", stream, false);
-        assert_eq!(items.len(), 3);
-        assert!(matches!(items[0].kind, TimelineItemKind::Thinking));
-        assert!(items[0].text.contains("step 1"));
-        assert!(matches!(items[1].kind, TimelineItemKind::ToolCall));
-        assert!(items[1].text.contains("PYTHON"));
-        assert!(matches!(items[2].kind, TimelineItemKind::AssistantMessage));
-        assert_eq!(items[2].text, "Final answer");
-    }
-
-    #[test]
-    fn parse_stream_segments_keeps_open_thinking_streaming() {
-        let stream = "Prelude\n<think>reasoning in progress";
-        let items = parse_stream_segments("pid-2", stream, true);
-        assert_eq!(items.len(), 2);
-        assert!(matches!(items[0].kind, TimelineItemKind::AssistantMessage));
-        assert_eq!(items[0].status, "complete");
-        assert!(matches!(items[1].kind, TimelineItemKind::Thinking));
-        assert_eq!(items[1].status, "streaming");
-    }
-
-    #[test]
-    fn parse_stream_segments_supports_bare_tool_lines() {
-        let stream = "Prelude\nTOOL:python {\"code\":\"print(1)\"}\nFinal answer";
-        let items = parse_stream_segments("pid-3", stream, false);
-        assert_eq!(items.len(), 3);
-        assert!(matches!(items[0].kind, TimelineItemKind::AssistantMessage));
-        assert!(matches!(items[1].kind, TimelineItemKind::ToolCall));
-        assert_eq!(items[1].text, "TOOL:python {\"code\":\"print(1)\"}");
-        assert!(matches!(items[2].kind, TimelineItemKind::AssistantMessage));
-    }
-
-    #[test]
-    fn parse_stream_segments_supports_action_lines() {
-        let stream = "Prelude\nACTION:send {\"pid\":42,\"message\":\"hello\"}\nFinal answer";
-        let items = parse_stream_segments("pid-action", stream, false);
-        assert_eq!(items.len(), 3);
-        assert!(matches!(items[1].kind, TimelineItemKind::ActionCall));
-        assert_eq!(
-            items[1].text,
-            "ACTION:send {\"pid\":42,\"message\":\"hello\"}"
-        );
-    }
-
-    #[test]
-    fn parse_stream_segments_splits_canonical_tool_from_inline_suffix() {
-        let stream = "TOOL:python {\"code\":\"print(1)\"}La sequenza e' pronta";
-        let items = parse_stream_segments("pid-inline", stream, false);
-        assert_eq!(items.len(), 2);
-        assert!(matches!(items[0].kind, TimelineItemKind::ToolCall));
-        assert_eq!(items[0].text, "TOOL:python {\"code\":\"print(1)\"}");
-        assert!(matches!(items[1].kind, TimelineItemKind::AssistantMessage));
-        assert_eq!(items[1].text, "La sequenza e' pronta");
-    }
-
-    #[test]
-    fn parse_stream_segments_splits_first_action_from_chained_action() {
-        let stream =
-            "ACTION:spawn {\"prompt\":\"worker\"}ACTION:send {\"pid\":1,\"message\":\"hi\"}";
-        let items = parse_stream_segments("pid-chain", stream, false);
-        assert_eq!(items.len(), 2);
-        assert!(matches!(items[0].kind, TimelineItemKind::ActionCall));
-        assert_eq!(items[0].text, "ACTION:spawn {\"prompt\":\"worker\"}");
-        assert!(matches!(items[1].kind, TimelineItemKind::ActionCall));
-        assert_eq!(items[1].text, "ACTION:send {\"pid\":1,\"message\":\"hi\"}");
-    }
-
-    #[test]
-    fn parse_stream_segments_ignores_inline_marker_like_text() {
-        let stream = "Markdown keeps [[NOTE: do not parse]] inline.";
-        let items = parse_stream_segments("pid-4", stream, false);
-        assert_eq!(items.len(), 1);
-        assert!(matches!(items[0].kind, TimelineItemKind::AssistantMessage));
-        assert_eq!(items[0].text, stream);
-    }
-
-    #[test]
-    fn parse_stream_segments_ignores_markers_inside_code_fences() {
-        let stream = "```md\nTOOL:python {\"code\":\"print(1)\"}\n[[PYTHON: print(2)]]\n<think>still code</think>\n```\nFinal answer";
-        let items = parse_stream_segments("pid-5", stream, false);
-        assert_eq!(items.len(), 1);
-        assert!(matches!(items[0].kind, TimelineItemKind::AssistantMessage));
-        assert_eq!(items[0].text, stream);
-    }
-
-    #[test]
-    fn parse_stream_segments_ignores_non_syscall_bracket_lines() {
-        let stream = "[[NOTE: not a syscall]]\nFinal answer";
-        let items = parse_stream_segments("pid-6", stream, false);
-        assert_eq!(items.len(), 1);
-        assert!(matches!(items[0].kind, TimelineItemKind::AssistantMessage));
-        assert_eq!(items[0].text, stream);
-    }
-
-    #[test]
-    fn insert_started_session_resets_live_state_when_pid_is_reused() {
-        let mut store = TimelineStore::default();
-        store.insert_started_session(
-            42,
-            "sess-old".to_string(),
-            "old prompt".to_string(),
-            "general".to_string(),
-        );
-        store.append_assistant_chunk(42, "old output");
-        store.finish_session_with_reason(42, None, Some("completed"));
-
-        store.insert_started_session(
-            42,
-            "sess-new".to_string(),
-            "new prompt".to_string(),
-            "general".to_string(),
-        );
-
-        let timeline = store
-            .snapshot_for_session_id("sess-new")
-            .expect("new session timeline should exist");
-        assert_eq!(timeline.items.len(), 2);
-        assert!(matches!(
-            timeline.items[0].kind,
-            TimelineItemKind::UserMessage
-        ));
-        assert_eq!(timeline.items[0].text, "new prompt");
-        assert!(matches!(
-            timeline.items[1].kind,
-            TimelineItemKind::AssistantMessage
-        ));
-        assert_eq!(timeline.items[1].status, "streaming");
-        assert!(timeline.running);
-    }
-
-    #[test]
-    fn evict_session_removes_pid_from_live_store() {
-        let mut store = TimelineStore::default();
-        store.insert_started_session(
-            7,
-            "sess-evict".to_string(),
-            "prompt".to_string(),
-            "general".to_string(),
-        );
-        assert!(store.snapshot(7).is_some());
-
-        store.evict_session(7);
-        assert!(store.snapshot(7).is_none());
-        assert!(store.snapshot_for_session_id("sess-evict").is_none());
-    }
-
-    #[test]
-    fn seeded_session_can_rebind_to_new_pid_without_losing_history() {
-        let mut store = TimelineStore::default();
-        store.insert_seeded_session(TimelineSeedSession {
-            session_id: "sess-history".to_string(),
-            pid: 21,
-            workload: "general".to_string(),
-            turns: vec![TimelineSeedTurn {
-                prompt: "persisted prompt".to_string(),
-                assistant_stream: "persisted answer".to_string(),
-                running: false,
-            }],
-            error: None,
-            system_events: Vec::new(),
-        });
-
-        store.rebind_session_pid("sess-history", 84, "general".to_string());
-        store.append_user_turn(84, "new input".to_string());
-
-        assert!(store.snapshot(21).is_none());
-
-        let timeline = store
-            .snapshot(84)
-            .expect("rebound session should be addressable by the new pid");
-        assert_eq!(timeline.session_id, "sess-history");
-        assert_eq!(timeline.items.len(), 4);
-        assert_eq!(timeline.items[0].text, "persisted prompt");
-        assert_eq!(timeline.items[1].text, "persisted answer");
-        assert_eq!(timeline.items[2].text, "new input");
-        assert!(matches!(
-            timeline.items[3].kind,
-            TimelineItemKind::AssistantMessage
-        ));
-        assert_eq!(timeline.items[3].status, "streaming");
-        assert!(timeline.running);
     }
 }

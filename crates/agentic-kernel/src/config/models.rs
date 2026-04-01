@@ -222,7 +222,7 @@ impl Default for ExternalLlamaCppConfig {
             health_poll_ms: 250,
             legacy_endpoint_override: String::new(),
             timeout_ms: 300_000,
-            chunk_tokens: 1,
+            chunk_tokens: 64,
         }
     }
 }

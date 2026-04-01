@@ -1,7 +1,9 @@
+use agentic_control_models::{InvocationEvent, InvocationKind, InvocationStatus};
+
 use crate::models::kernel::{TimelineItem, TimelineItemKind, TimelineSnapshot, WorkspaceSnapshot};
 
 use super::parser::parse_stream_segments;
-use super::store::{TimelineSessionState, TimelineStore};
+use super::store::{TimelineSessionState, TimelineStore, TimelineTurnMessage};
 
 impl TimelineStore {
     pub fn snapshot(&self, pid: u64) -> Option<TimelineSnapshot> {
@@ -88,11 +90,32 @@ fn build_live_timeline_items(session: &TimelineSessionState) -> Vec<TimelineItem
             text: turn.prompt.clone(),
             status: "complete".to_string(),
         });
-        items.extend(parse_stream_segments(
-            &turn_id,
-            &turn.assistant_stream,
-            turn.running,
-        ));
+        let last_message_index = turn.messages.len().saturating_sub(1);
+        for (message_index, message) in turn.messages.iter().enumerate() {
+            match message {
+                TimelineTurnMessage::Assistant { text } => items.extend(parse_stream_segments(
+                    &format!("{turn_id}-assistant-{}", message_index + 1),
+                    text,
+                    turn.running && message_index == last_message_index,
+                )),
+                TimelineTurnMessage::Invocation { invocation } => {
+                    items.push(TimelineItem {
+                        id: format!("{turn_id}-invocation-{}", invocation.invocation_id),
+                        kind: timeline_item_kind_for_invocation(invocation),
+                        text: invocation.command.clone(),
+                        status: timeline_item_status_for_invocation(invocation).to_string(),
+                    });
+                }
+            }
+        }
+        if turn.messages.is_empty() && turn.running {
+            items.push(TimelineItem {
+                id: format!("{turn_id}-assistant-waiting"),
+                kind: TimelineItemKind::AssistantMessage,
+                text: String::new(),
+                status: "streaming".to_string(),
+            });
+        }
     }
 
     for (index, (text, status)) in session.system_events.iter().enumerate() {
@@ -105,4 +128,19 @@ fn build_live_timeline_items(session: &TimelineSessionState) -> Vec<TimelineItem
     }
 
     items
+}
+
+fn timeline_item_kind_for_invocation(invocation: &InvocationEvent) -> TimelineItemKind {
+    match invocation.kind {
+        InvocationKind::Action => TimelineItemKind::ActionCall,
+        InvocationKind::Tool => TimelineItemKind::ToolCall,
+    }
+}
+
+fn timeline_item_status_for_invocation(invocation: &InvocationEvent) -> &'static str {
+    match invocation.status {
+        InvocationStatus::Dispatched => "dispatching",
+        InvocationStatus::Completed => "complete",
+        InvocationStatus::Failed | InvocationStatus::Killed => "error",
+    }
 }

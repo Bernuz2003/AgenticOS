@@ -1,4 +1,3 @@
-mod markers;
 mod parser;
 mod session_binding;
 mod snapshot;

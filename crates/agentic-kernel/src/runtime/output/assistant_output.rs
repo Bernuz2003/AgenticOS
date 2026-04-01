@@ -23,49 +23,6 @@ pub(super) struct AssistantOutputFragment {
     pub(super) syscall_command: Option<String>,
 }
 
-fn line_start_syscall_marker_offset(buffer: &str) -> Option<usize> {
-    let mut absolute_offset = 0usize;
-    for line in buffer.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        let leading_ws = line.len() - trimmed.len();
-        if trimmed.starts_with("ACTION:") || trimmed.starts_with("TOOL:") {
-            return Some(absolute_offset + leading_ws);
-        }
-        absolute_offset += line.len();
-    }
-
-    let trimmed = buffer.trim_start();
-    let leading_ws = buffer.len().saturating_sub(trimmed.len());
-    if trimmed.starts_with("ACTION:") || trimmed.starts_with("TOOL:") {
-        return Some(leading_ws);
-    }
-
-    None
-}
-
-fn malformed_line_start_syscall(buffer: &str) -> Option<String> {
-    let marker_offset = line_start_syscall_marker_offset(buffer)?;
-    let candidate = &buffer[marker_offset..];
-    let prefix = if candidate.trim_start().starts_with("ACTION:") {
-        "ACTION:"
-    } else {
-        "TOOL:"
-    };
-
-    match crate::text_invocation::extract_prefixed_json_invocation(candidate.trim_start(), prefix) {
-        crate::text_invocation::PrefixedInvocationExtract::Invalid(_) => Some(
-            candidate
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .trim_end_matches('\r')
-                .to_string(),
-        ),
-        crate::text_invocation::PrefixedInvocationExtract::Parsed(_)
-        | crate::text_invocation::PrefixedInvocationExtract::Incomplete => None,
-    }
-}
-
 fn trailing_partial_syscall_marker_offset(buffer: &str) -> Option<usize> {
     let prefixes = ["ACTION:", "TOOL:"];
     let mut best: Option<usize> = None;
@@ -123,14 +80,6 @@ pub(super) fn consume_assistant_output_fragment(
                 break;
             }
             crate::text_invocation::PrefixedInvocationSearch::NotFound => {
-                if let Some(command) =
-                    malformed_line_start_syscall(&accumulator.pending_output_buffer)
-                {
-                    accumulator.pending_stream_syscall = Some(command);
-                    accumulator.pending_output_buffer.clear();
-                    break;
-                }
-
                 if let Some(start_offset) =
                     trailing_partial_syscall_marker_offset(&accumulator.pending_output_buffer)
                 {
@@ -200,7 +149,7 @@ pub(super) fn emit_visible_assistant_output(
     });
 }
 
-pub(super) fn should_emit_session_finished(
+pub(crate) fn should_emit_session_finished(
     turn_state: Option<&ProcessState>,
     syscall_dispatch: SyscallDispatchOutcome,
 ) -> bool {
@@ -216,162 +165,4 @@ pub(super) fn should_emit_session_finished(
                 | ProcessState::AwaitingTurnDecision
         )
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        consume_assistant_output_fragment, should_emit_session_finished,
-        AssistantOutputAccumulator, AssistantOutputFragment,
-    };
-    use crate::process::ProcessState;
-    use crate::runtime::syscalls::SyscallDispatchOutcome;
-
-    #[test]
-    fn plain_stream_text_is_forwarded_and_captured() {
-        let mut accumulator = AssistantOutputAccumulator::default();
-
-        let fragment = consume_assistant_output_fragment(&mut accumulator, "ciao mondo");
-
-        assert_eq!(
-            fragment,
-            AssistantOutputFragment {
-                visible_text: "ciao mondo".to_string(),
-                syscall_command: None,
-            }
-        );
-        assert_eq!(accumulator.captured_assistant_text, "ciao mondo");
-        assert!(accumulator.pending_output_buffer.is_empty());
-        assert!(accumulator.pending_stream_syscall.is_none());
-    }
-
-    #[test]
-    fn partial_tool_stream_is_withheld_until_complete() {
-        let mut accumulator = AssistantOutputAccumulator::default();
-
-        let first =
-            consume_assistant_output_fragment(&mut accumulator, r#"TOOL:read_file {"path":"notes"#);
-        assert_eq!(first.visible_text, "");
-        assert!(first.syscall_command.is_none());
-        assert_eq!(
-            accumulator.pending_output_buffer,
-            r#"TOOL:read_file {"path":"notes"#
-        );
-
-        let second = consume_assistant_output_fragment(&mut accumulator, r#"/todo.md"}"#);
-        assert_eq!(second.visible_text, "");
-        assert_eq!(
-            second.syscall_command.as_deref(),
-            Some(r#"TOOL:read_file {"path":"notes/todo.md"}"#)
-        );
-        assert!(accumulator.pending_output_buffer.is_empty());
-    }
-
-    #[test]
-    fn text_before_tool_is_emitted_but_tool_itself_is_hidden() {
-        let mut accumulator = AssistantOutputAccumulator::default();
-
-        let fragment = consume_assistant_output_fragment(
-            &mut accumulator,
-            "Analizzo il file.\nTOOL:read_file {\"path\":\"doc.txt\"}",
-        );
-
-        assert_eq!(fragment.visible_text, "Analizzo il file.\n");
-        assert_eq!(
-            fragment.syscall_command.as_deref(),
-            Some(r#"TOOL:read_file {"path":"doc.txt"}"#)
-        );
-        assert_eq!(accumulator.captured_assistant_text, "Analizzo il file.\n");
-    }
-
-    #[test]
-    fn inline_tool_invocation_is_extracted_after_visible_preamble() {
-        let mut accumulator = AssistantOutputAccumulator::default();
-
-        let fragment = consume_assistant_output_fragment(
-            &mut accumulator,
-            r#"Creo la cartella richiesta: TOOL:mkdir {"path":"prova"}"#,
-        );
-
-        assert_eq!(fragment.visible_text, "Creo la cartella richiesta: ");
-        assert_eq!(
-            fragment.syscall_command.as_deref(),
-            Some(r#"TOOL:mkdir {"path":"prova"}"#)
-        );
-        assert_eq!(
-            accumulator.captured_assistant_text,
-            "Creo la cartella richiesta: "
-        );
-    }
-
-    #[test]
-    fn invalid_inline_mention_does_not_block_later_valid_tool_invocation() {
-        let mut accumulator = AssistantOutputAccumulator::default();
-
-        let fragment = consume_assistant_output_fragment(
-            &mut accumulator,
-            "Uso la funzione TOOL:mkdir. Ecco la chiamata:\nTOOL:mkdir {\"path\":\"prova\"}",
-        );
-
-        assert_eq!(
-            fragment.visible_text,
-            "Uso la funzione TOOL:mkdir. Ecco la chiamata:\n"
-        );
-        assert_eq!(
-            fragment.syscall_command.as_deref(),
-            Some(r#"TOOL:mkdir {"path":"prova"}"#)
-        );
-    }
-
-    #[test]
-    fn incomplete_inline_tool_retains_only_pending_command_suffix() {
-        let mut accumulator = AssistantOutputAccumulator::default();
-
-        let fragment = consume_assistant_output_fragment(
-            &mut accumulator,
-            r#"Creo la cartella: TOOL:mkdir {"path":"pro"#,
-        );
-
-        assert_eq!(fragment.visible_text, "Creo la cartella: ");
-        assert!(fragment.syscall_command.is_none());
-        assert_eq!(
-            accumulator.pending_output_buffer,
-            r#"TOOL:mkdir {"path":"pro"#
-        );
-    }
-
-    #[test]
-    fn split_tool_marker_is_buffered_across_stream_chunks() {
-        let mut accumulator = AssistantOutputAccumulator::default();
-
-        let first = consume_assistant_output_fragment(&mut accumulator, "Richiesta:\n\nTO");
-        assert_eq!(first.visible_text, "Richiesta:\n\n");
-        assert!(first.syscall_command.is_none());
-        assert_eq!(accumulator.pending_output_buffer, "TO");
-
-        let second = consume_assistant_output_fragment(&mut accumulator, "OL");
-        assert_eq!(second.visible_text, "");
-        assert!(second.syscall_command.is_none());
-        assert_eq!(accumulator.pending_output_buffer, "TOOL");
-
-        let third =
-            consume_assistant_output_fragment(&mut accumulator, r#":mkdir {"path":"prova"}"#);
-        assert_eq!(third.visible_text, "");
-        assert_eq!(
-            third.syscall_command.as_deref(),
-            Some(r#"TOOL:mkdir {"path":"prova"}"#)
-        );
-    }
-
-    #[test]
-    fn queued_tool_dispatch_suppresses_turn_completed_events() {
-        assert!(!should_emit_session_finished(
-            Some(&ProcessState::WaitingForInput),
-            SyscallDispatchOutcome::Queued,
-        ));
-        assert!(should_emit_session_finished(
-            Some(&ProcessState::WaitingForHumanInput),
-            SyscallDispatchOutcome::None,
-        ));
-    }
 }

@@ -6,8 +6,7 @@ use serde::Deserialize;
 
 use super::messages::{insert_message, next_message_ordinal, StoredReplayMessage};
 use super::turns::{
-    active_run_id_for_session_pid, assistant_message_id_for_turn, latest_turn_id_for_session,
-    next_turn_index, turn_identity,
+    active_run_id_for_session_pid, latest_turn_id_for_session, next_turn_index, turn_identity,
 };
 use crate::storage::schema::upsert_kernel_meta;
 use crate::storage::{current_timestamp_ms, StorageError, StorageService};
@@ -185,6 +184,25 @@ impl StorageService {
         turn_id: i64,
         text: &str,
     ) -> Result<(), StorageError> {
+        self.append_turn_message(turn_id, "assistant", "message", text)
+    }
+
+    pub(crate) fn append_system_message(
+        &mut self,
+        turn_id: i64,
+        kind: &str,
+        text: &str,
+    ) -> Result<(), StorageError> {
+        self.append_turn_message(turn_id, "system", kind, text)
+    }
+
+    fn append_turn_message(
+        &mut self,
+        turn_id: i64,
+        role: &str,
+        kind: &str,
+        text: &str,
+    ) -> Result<(), StorageError> {
         if text.is_empty() {
             return Ok(());
         }
@@ -193,30 +211,18 @@ impl StorageService {
         let transaction = self.connection.transaction()?;
         let (session_id, pid) =
             turn_identity(&transaction, turn_id)?.ok_or(StorageError::MissingTurn { turn_id })?;
-
-        if let Some(message_id) = assistant_message_id_for_turn(&transaction, turn_id)? {
-            transaction.execute(
-                r#"
-                UPDATE session_messages
-                SET content = content || ?2
-                WHERE message_id = ?1
-                "#,
-                params![message_id, text],
-            )?;
-        } else {
-            let ordinal = next_message_ordinal(&transaction, turn_id)?;
-            insert_message(
-                &transaction,
-                &session_id,
-                turn_id,
-                pid,
-                ordinal,
-                "assistant",
-                "message",
-                text,
-                created_at_ms,
-            )?;
-        }
+        let ordinal = next_message_ordinal(&transaction, turn_id)?;
+        insert_message(
+            &transaction,
+            &session_id,
+            turn_id,
+            pid,
+            ordinal,
+            role,
+            kind,
+            text,
+            created_at_ms,
+        )?;
         transaction.execute(
             "UPDATE session_turns SET updated_at_ms = ?2 WHERE turn_id = ?1",
             params![turn_id, created_at_ms],
@@ -648,7 +654,3 @@ fn file_timestamp_ms(path: &Path) -> Option<i64> {
         .ok()
         .map(|duration| duration.as_millis() as i64)
 }
-
-#[cfg(test)]
-#[path = "tests/timeline.rs"]
-mod tests;

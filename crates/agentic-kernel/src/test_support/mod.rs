@@ -1,4 +1,8 @@
 #![allow(dead_code)]
 
-pub(crate) mod fixtures;
-pub(crate) mod helpers;
+pub mod e2e;
+pub mod fixtures;
+pub mod helpers;
+pub mod prompt_rendering;
+pub mod storage_timeline;
+pub mod turn_assembly;

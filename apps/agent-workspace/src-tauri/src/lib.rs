@@ -2,6 +2,7 @@ mod commands;
 mod kernel;
 mod models;
 mod state;
+pub mod test_support;
 mod utils;
 
 use state::AppState;

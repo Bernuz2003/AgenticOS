@@ -736,6 +736,30 @@ pub struct DiagnosticEvent {
     pub runtime_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InvocationKind {
+    Tool,
+    Action,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InvocationStatus {
+    Dispatched,
+    Completed,
+    Failed,
+    Killed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InvocationEvent {
+    pub invocation_id: String,
+    pub kind: InvocationKind,
+    pub command: String,
+    pub status: InvocationStatus,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KernelEvent {
@@ -755,6 +779,10 @@ pub enum KernelEvent {
     TimelineChunk {
         pid: u64,
         text: String,
+    },
+    InvocationUpdated {
+        pid: u64,
+        invocation: InvocationEvent,
     },
     SessionFinished {
         pid: u64,

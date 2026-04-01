@@ -1,7 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::kernel::live_timeline::{parse_stream_segments, TimelineSeedSession, TimelineSeedTurn};
+use agentic_control_models::{InvocationEvent, InvocationKind, InvocationStatus};
+
+use crate::kernel::live_timeline::{
+    parse_stream_segments, TimelineSeedMessage, TimelineSeedSession, TimelineSeedTurn,
+};
 use crate::models::kernel::{TimelineItem, TimelineItemKind, TimelineSnapshot};
 
 use super::db::{
@@ -107,8 +111,7 @@ fn build_timeline_items(
     for turn in turns {
         let turn_id = format!("{}-turn-{}", session_id, turn.turn_index);
         let mut prompt = String::new();
-        let mut assistant_stream = String::new();
-        let mut system_messages = Vec::new();
+        let mut ordered_turn_messages = Vec::new();
         let running = matches!(turn.status.as_str(), "running" | "awaiting_turn_decision");
 
         if let Some(turn_messages) = grouped.get(&turn.turn_id) {
@@ -120,20 +123,7 @@ fn build_timeline_items(
                     "user" if prompt.is_empty() => {
                         prompt = message.content.clone();
                     }
-                    "assistant" => {
-                        assistant_stream.push_str(&message.content);
-                    }
-                    "system" => {
-                        system_messages.push((
-                            message.content.clone(),
-                            if message.kind == "error" {
-                                "error".to_string()
-                            } else {
-                                "complete".to_string()
-                            },
-                        ));
-                    }
-                    _ => {}
+                    _ => ordered_turn_messages.push(message),
                 }
             }
         }
@@ -146,16 +136,50 @@ fn build_timeline_items(
                 status: "complete".to_string(),
             });
         }
-        items.extend(parse_stream_segments(&turn_id, &assistant_stream, running));
 
-        for (text, status) in system_messages {
-            system_index += 1;
-            items.push(TimelineItem {
-                id: format!("{}-system-{}", session_id, system_index),
-                kind: TimelineItemKind::SystemEvent,
-                text,
-                status,
-            });
+        let last_message_index = ordered_turn_messages.len().saturating_sub(1);
+        for (message_index, message) in ordered_turn_messages.into_iter().enumerate() {
+            match message.role.as_str() {
+                "assistant" => {
+                    items.extend(parse_stream_segments(
+                        &format!("{turn_id}-assistant-{}", message_index + 1),
+                        &message.content,
+                        running && message_index == last_message_index,
+                    ));
+                }
+                "system" if message.kind == "invocation" => {
+                    if let Some(invocation) = parse_invocation_message(&message.content) {
+                        items.push(TimelineItem {
+                            id: format!("{turn_id}-invocation-{}", invocation.invocation_id),
+                            kind: timeline_item_kind_for_invocation(&invocation),
+                            text: invocation.command.clone(),
+                            status: timeline_item_status_for_invocation(&invocation).to_string(),
+                        });
+                    } else {
+                        system_index += 1;
+                        items.push(TimelineItem {
+                            id: format!("{}-system-{}", session_id, system_index),
+                            kind: TimelineItemKind::SystemEvent,
+                            text: message.content.clone(),
+                            status: "error".to_string(),
+                        });
+                    }
+                }
+                "system" => {
+                    system_index += 1;
+                    items.push(TimelineItem {
+                        id: format!("{}-system-{}", session_id, system_index),
+                        kind: TimelineItemKind::SystemEvent,
+                        text: message.content.clone(),
+                        status: if message.kind == "error" {
+                            "error".to_string()
+                        } else {
+                            "complete".to_string()
+                        },
+                    });
+                }
+                _ => {}
+            }
         }
     }
 
@@ -180,11 +204,11 @@ fn build_timeline_seed(
 
     for turn in turns {
         let mut prompt = String::new();
-        let mut assistant_stream = String::new();
+        let mut turn_messages = Vec::new();
         let running = matches!(turn.status.as_str(), "running" | "awaiting_turn_decision");
 
-        if let Some(turn_messages) = grouped.remove(&turn.turn_id) {
-            let mut ordered = turn_messages;
+        if let Some(turn_messages_raw) = grouped.remove(&turn.turn_id) {
+            let mut ordered = turn_messages_raw;
             ordered.sort_by_key(|message| message.ordinal);
 
             for message in ordered {
@@ -193,7 +217,12 @@ fn build_timeline_seed(
                         prompt = message.content;
                     }
                     "assistant" => {
-                        assistant_stream.push_str(&message.content);
+                        turn_messages.push(TimelineSeedMessage::Assistant(message.content));
+                    }
+                    "system" if message.kind == "invocation" => {
+                        if let Some(invocation) = parse_invocation_message(&message.content) {
+                            turn_messages.push(TimelineSeedMessage::Invocation(invocation));
+                        }
                     }
                     "system" => {
                         system_events.push((
@@ -210,10 +239,10 @@ fn build_timeline_seed(
             }
         }
 
-        if !prompt.is_empty() || !assistant_stream.is_empty() {
+        if !prompt.is_empty() {
             seeded_turns.push(TimelineSeedTurn {
                 prompt,
-                assistant_stream,
+                messages: turn_messages,
                 running,
             });
         }
@@ -226,5 +255,24 @@ fn build_timeline_seed(
         turns: seeded_turns,
         error,
         system_events,
+    }
+}
+
+fn parse_invocation_message(content: &str) -> Option<InvocationEvent> {
+    serde_json::from_str(content).ok()
+}
+
+fn timeline_item_kind_for_invocation(invocation: &InvocationEvent) -> TimelineItemKind {
+    match invocation.kind {
+        InvocationKind::Action => TimelineItemKind::ActionCall,
+        InvocationKind::Tool => TimelineItemKind::ToolCall,
+    }
+}
+
+fn timeline_item_status_for_invocation(invocation: &InvocationEvent) -> &'static str {
+    match invocation.status {
+        InvocationStatus::Dispatched => "dispatching",
+        InvocationStatus::Completed => "complete",
+        InvocationStatus::Failed | InvocationStatus::Killed => "error",
     }
 }

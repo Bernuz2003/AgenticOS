@@ -1,6 +1,6 @@
 use std::sync::mpsc;
 
-use agentic_control_models::KernelEvent;
+use agentic_control_models::{InvocationKind, InvocationStatus, KernelEvent};
 
 use crate::diagnostics::audit::{self, AuditContext};
 use crate::engine::LLMEngine;
@@ -18,7 +18,8 @@ use crate::tool_registry::ToolRegistry;
 use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 
 use super::human::dispatch_native_human_input_request;
-use super::ids::next_tool_call_id;
+use super::ids::{next_action_call_id, next_tool_call_id};
+use super::invocation_events::emit_invocation_updated;
 use super::ipc::{
     dispatch_ack_action, dispatch_receive_action, dispatch_send_action, non_empty_input_str,
 };
@@ -59,52 +60,6 @@ fn likely_superfluous_tool_call(content: &str) -> Option<&'static str> {
             || trimmed.contains("4+4"))
     {
         return Some("calc_trivial_expression");
-    }
-    None
-}
-
-pub(crate) fn scan_syscall_buffer(buffer: &mut String) -> Option<String> {
-    match crate::text_invocation::find_first_prefixed_json_invocation(buffer, &["ACTION:", "TOOL:"])
-    {
-        crate::text_invocation::PrefixedInvocationSearch::Parsed(found) => {
-            let consumed = found.start_offset + found.parsed.consumed_bytes;
-            let command = found.parsed.raw_invocation;
-            buffer.drain(..consumed);
-            return Some(command);
-        }
-        crate::text_invocation::PrefixedInvocationSearch::Incomplete { .. } => return None,
-        crate::text_invocation::PrefixedInvocationSearch::NotFound => {}
-    }
-
-    let mut absolute_offset = 0usize;
-    for line in buffer.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        let leading_ws = line.len() - trimmed.len();
-        let marker_offset = absolute_offset + leading_ws;
-
-        for prefix in ["ACTION:", "TOOL:"] {
-            if !trimmed.starts_with(prefix) {
-                continue;
-            }
-
-            let candidate = &buffer[marker_offset..];
-            if let crate::text_invocation::PrefixedInvocationExtract::Invalid(_) =
-                crate::text_invocation::extract_prefixed_json_invocation(candidate, prefix)
-            {
-                let newline_rel = candidate.find('\n');
-                let command_end = newline_rel.unwrap_or(candidate.len());
-                let command = candidate[..command_end].trim_end_matches('\r').to_string();
-                let consumed = marker_offset + newline_rel.map_or(command_end, |idx| idx + 1);
-                buffer.drain(..consumed);
-                return Some(command);
-            }
-        }
-
-        absolute_offset += line.len();
-    }
-
-    if buffer.len() > 8000 {
-        buffer.clear();
     }
     None
 }
@@ -157,6 +112,7 @@ pub(crate) fn dispatch_process_syscall(
     }
 
     if content.starts_with("ACTION:") {
+        let action_call_id = next_action_call_id(pid);
         if !caller.can_orchestrate_actions() || !permissions.actions_allowed {
             audit::record(
                 storage,
@@ -172,6 +128,14 @@ pub(crate) fn dispatch_process_syscall(
                     pid,
                     Some(runtime_id),
                 ),
+            );
+            emit_invocation_updated(
+                pending_events,
+                pid,
+                action_call_id,
+                InvocationKind::Action,
+                content,
+                InvocationStatus::Failed,
             );
             let _ = engine.inject_context(
                 pid,
@@ -199,6 +163,14 @@ pub(crate) fn dispatch_process_syscall(
                         Some(runtime_id),
                     ),
                 );
+                emit_invocation_updated(
+                    pending_events,
+                    pid,
+                    action_call_id.clone(),
+                    InvocationKind::Action,
+                    content,
+                    InvocationStatus::Dispatched,
+                );
                 dispatch_action_invocation(
                     runtime_id,
                     pid_floor,
@@ -207,6 +179,8 @@ pub(crate) fn dispatch_process_syscall(
                     scheduler,
                     orchestrator,
                     pid,
+                    &action_call_id,
+                    content,
                     invocation,
                     session_registry,
                     storage,
@@ -231,6 +205,14 @@ pub(crate) fn dispatch_process_syscall(
                         Some(runtime_id),
                     ),
                 );
+                emit_invocation_updated(
+                    pending_events,
+                    pid,
+                    action_call_id,
+                    InvocationKind::Action,
+                    content,
+                    InvocationStatus::Failed,
+                );
                 let _ = engine.inject_context(
                     pid,
                     &engine.format_system_message(&format!("ACTION Error: {}", err)),
@@ -254,6 +236,14 @@ pub(crate) fn dispatch_process_syscall(
         ) {
             return outcome;
         }
+        emit_invocation_updated(
+            pending_events,
+            pid,
+            tool_call_id.clone(),
+            InvocationKind::Tool,
+            content,
+            InvocationStatus::Dispatched,
+        );
         audit::record(
             storage,
             audit::TOOL_DISPATCHED,
@@ -307,6 +297,14 @@ pub(crate) fn dispatch_process_syscall(
                 SyscallDispatchOutcome::Queued
             }
             Err(err) => {
+                emit_invocation_updated(
+                    pending_events,
+                    pid,
+                    tool_call_id,
+                    InvocationKind::Tool,
+                    content,
+                    InvocationStatus::Failed,
+                );
                 let _ = engine.inject_context(
                     pid,
                     &engine.format_system_message(&format!(
@@ -332,6 +330,8 @@ fn dispatch_action_invocation(
     scheduler: &mut ProcessScheduler,
     orchestrator: &Orchestrator,
     pid: u64,
+    invocation_id: &str,
+    command: &str,
     invocation: ActionInvocation,
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
@@ -355,6 +355,14 @@ fn dispatch_action_invocation(
                         Some(runtime_id),
                     ),
                 );
+                emit_invocation_updated(
+                    pending_events,
+                    pid,
+                    invocation_id,
+                    InvocationKind::Action,
+                    command,
+                    InvocationStatus::Failed,
+                );
                 let _ = engine.inject_context(
                     pid,
                     &engine.format_system_message(
@@ -370,6 +378,8 @@ fn dispatch_action_invocation(
                 memory,
                 scheduler,
                 pid,
+                invocation_id,
+                command,
                 prompt,
                 session_registry,
                 storage,
@@ -413,6 +423,14 @@ fn dispatch_action_invocation(
                         Some(runtime_id),
                     ),
                 );
+                emit_invocation_updated(
+                    pending_events,
+                    pid,
+                    invocation_id,
+                    InvocationKind::Action,
+                    command,
+                    InvocationStatus::Failed,
+                );
                 let _ = engine.inject_context(
                     pid,
                     &engine.format_system_message(
@@ -431,6 +449,14 @@ fn dispatch_action_invocation(
                         pid,
                         Some(runtime_id),
                     ),
+                );
+                emit_invocation_updated(
+                    pending_events,
+                    pid,
+                    invocation_id,
+                    InvocationKind::Action,
+                    command,
+                    InvocationStatus::Failed,
                 );
                 let _ = engine.inject_context(
                     pid,
@@ -455,6 +481,14 @@ fn dispatch_action_invocation(
                 channel,
                 session_registry,
                 storage,
+            );
+            emit_invocation_updated(
+                pending_events,
+                pid,
+                invocation_id,
+                InvocationKind::Action,
+                command,
+                InvocationStatus::Completed,
             );
             SyscallDispatchOutcome::None
         }
@@ -481,6 +515,14 @@ fn dispatch_action_invocation(
                 include_delivered,
                 session_registry,
                 storage,
+            );
+            emit_invocation_updated(
+                pending_events,
+                pid,
+                invocation_id,
+                InvocationKind::Action,
+                command,
+                InvocationStatus::Completed,
             );
             SyscallDispatchOutcome::None
         }
@@ -510,6 +552,14 @@ fn dispatch_action_invocation(
                         Some(runtime_id),
                     ),
                 );
+                emit_invocation_updated(
+                    pending_events,
+                    pid,
+                    invocation_id,
+                    InvocationKind::Action,
+                    command,
+                    InvocationStatus::Failed,
+                );
                 let _ = engine.inject_context(
                     pid,
                     &engine.format_system_message(
@@ -527,6 +577,14 @@ fn dispatch_action_invocation(
                 session_registry,
                 storage,
             );
+            emit_invocation_updated(
+                pending_events,
+                pid,
+                invocation_id,
+                InvocationKind::Action,
+                command,
+                InvocationStatus::Completed,
+            );
             SyscallDispatchOutcome::None
         }
     }
@@ -540,6 +598,8 @@ fn dispatch_spawn_action(
     memory: &mut NeuralMemory,
     scheduler: &mut ProcessScheduler,
     pid: u64,
+    invocation_id: &str,
+    command: &str,
     prompt: &str,
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
@@ -557,6 +617,14 @@ fn dispatch_spawn_action(
                 pid,
                 Some(runtime_id),
             ),
+        );
+        emit_invocation_updated(
+            pending_events,
+            pid,
+            invocation_id,
+            InvocationKind::Action,
+            command,
+            InvocationStatus::Failed,
         );
         let _ = engine.inject_context(
             pid,
@@ -596,6 +664,14 @@ fn dispatch_spawn_action(
                 pid,
                 Some(runtime_id),
             ),
+        );
+        emit_invocation_updated(
+            pending_events,
+            pid,
+            invocation_id,
+            InvocationKind::Action,
+            command,
+            InvocationStatus::Failed,
         );
         let _ = engine.inject_context(
             pid,
@@ -655,6 +731,14 @@ fn dispatch_spawn_action(
             pending_events.push(KernelEvent::LobbyChanged {
                 reason: "syscall_spawned".to_string(),
             });
+            emit_invocation_updated(
+                pending_events,
+                pid,
+                invocation_id,
+                InvocationKind::Action,
+                command,
+                InvocationStatus::Completed,
+            );
             let msg = format!("SUCCESS: Worker Created (PID {}).", new_pid.pid);
             let feedback = engine.format_system_message(&msg);
             let _ = engine.inject_context(pid, &feedback);
@@ -670,6 +754,14 @@ fn dispatch_spawn_action(
                     pid,
                     Some(runtime_id),
                 ),
+            );
+            emit_invocation_updated(
+                pending_events,
+                pid,
+                invocation_id,
+                InvocationKind::Action,
+                command,
+                InvocationStatus::Failed,
             );
             let _ =
                 engine.inject_context(pid, &engine.format_system_message(&format!("ERROR: {}", e)));

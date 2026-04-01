@@ -8,29 +8,15 @@ use super::{
 };
 use crate::config::{RemoteAdapterKind, RemoteProviderRuntimeConfig};
 use crate::memory::{ContextSlotId, SlotPersistenceKind};
-use crate::model_catalog::{ModelCatalog, RemoteModelEntry, ResolvedModelTarget, WorkloadClass};
-use crate::orchestrator::Orchestrator;
+use crate::model_catalog::{RemoteModelEntry, ResolvedModelTarget};
 use crate::prompting::GenerationConfig;
-use crate::resource_governor::ResourceGovernor;
-use crate::runtime::run_engine_tick;
-use crate::runtime::syscalls::{self, SyscallCmd, SyscallCompletion};
-use crate::scheduler::{ProcessPriority, ProcessScheduler};
-use crate::services::model_runtime::activate_model_target;
-use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
-use crate::session::SessionRegistry;
-use crate::storage::StorageService;
-use crate::tool_registry::ToolRegistry;
-use crate::tools::invocation::ToolCaller;
-use crate::tools::{cleanup_stale_temp_scripts, SyscallRateMap};
 use anyhow::Result;
-use mio::Poll;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 use tokenizers::models::wordlevel::WordLevel;
 use tokenizers::Tokenizer;
 
@@ -299,279 +285,6 @@ fn spawn_mock_diag_server() -> (String, SharedStringLog, MockServerHandle) {
     });
 
     (format!("http://{}", address), paths, handle)
-}
-
-#[test]
-#[ignore]
-fn live_groq_stream_dump_for_tool_invocation() {
-    let _ = crate::config::initialize().expect("load kernel config");
-
-    let registry = ToolRegistry::with_builtins();
-    let system_prompt =
-        crate::agent_prompt::build_agent_system_prompt(&registry, ToolCaller::AgentText);
-    let rendered_prompt = crate::prompting::format_initial_prompt_with_metadata(
-        Some(&system_prompt),
-        r#"Crea una cartella nel tuo workspace chiamata "prova" e dammi conferma una volta fatto"#,
-        PromptFamily::Llama,
-        None,
-    );
-
-    let mut model = RuntimeModel::load_from_reference(
-        "llama-3.3-70b-versatile",
-        PromptFamily::Llama,
-        "groq-responses",
-    )
-    .expect("load groq runtime model");
-    let tokenizer = test_tokenizer();
-    let generation = GenerationConfig {
-        temperature: 0.0,
-        top_p: 1.0,
-        seed: 7,
-        max_tokens: 96,
-    };
-
-    let mut observed_chunks = Vec::new();
-    let step = model
-        .generate_step(InferenceStepRequest {
-            context_slot_id: None,
-            tokens: &[1],
-            rendered_prompt: &rendered_prompt,
-            resident_prompt_suffix: &rendered_prompt,
-            index_pos: 0,
-            remaining_generation_budget: generation.max_tokens,
-            tokenizer: &tokenizer,
-            generation,
-            stream_observer: Some(&mut |chunk: &str| observed_chunks.push(chunk.to_string())),
-            eos_token_id: 2,
-            eot_token_id: 3,
-        })
-        .expect("generate step through groq backend");
-
-    println!("--- GROQ CHUNKS ---");
-    for (index, chunk) in observed_chunks.iter().enumerate() {
-        println!("[chunk {index}] {:?}", chunk);
-    }
-    println!("--- GROQ EMITTED TEXT ---");
-    println!("{:?}", step.emitted_text);
-    println!("finished={}", step.finished);
-
-    assert!(
-        !observed_chunks.is_empty(),
-        "expected at least one streamed chunk from live Groq backend"
-    );
-    assert!(
-        !step.emitted_text.is_empty(),
-        "expected non-empty emitted text from live Groq backend"
-    );
-}
-
-#[test]
-#[ignore]
-fn live_kernel_groq_dispatches_tool_invocation() {
-    let config = crate::config::initialize().expect("load kernel config");
-    cleanup_stale_temp_scripts();
-
-    let test_dir_name = format!("live-kernel-tool-{}", std::process::id());
-    let workspace_test_dir = config.paths.workspace_dir.join(&test_dir_name);
-    let _ = fs::remove_dir_all(&workspace_test_dir);
-
-    let root = crate::test_support::helpers::create_temp_dir("agenticos-live-kernel-groq")
-        .expect("temp dir");
-    let db_path = root.join("agenticos.db");
-    let mut storage = StorageService::open(&db_path).expect("open storage");
-    let boot = storage
-        .record_kernel_boot("0.5.0-test")
-        .expect("record boot");
-    let mut runtime_registry =
-        crate::runtimes::RuntimeRegistry::load(&mut storage).expect("load runtimes");
-    let mut model_catalog =
-        ModelCatalog::discover(config.paths.models_dir.clone()).expect("discover model catalog");
-    let mut resource_governor =
-        ResourceGovernor::load(&mut storage, config.resources.clone()).expect("load governor");
-    let mut session_registry =
-        SessionRegistry::load(&mut storage, boot.boot_id).expect("load sessions");
-    let mut memory = crate::memory::NeuralMemory::new().expect("memory init");
-    let mut scheduler = ProcessScheduler::new();
-    let mut orchestrator = Orchestrator::new();
-    let tool_registry = ToolRegistry::with_builtins();
-    let poll = Poll::new().expect("poll");
-    let mut clients = std::collections::HashMap::new();
-    let mut pending_kills = Vec::new();
-    let mut pending_events = Vec::new();
-    let mut in_flight = std::collections::HashSet::new();
-    let mut next_event_sequence = 0u64;
-
-    let target = model_catalog
-        .resolve_load_target("cloud:groq-responses:llama-3.3-70b-versatile")
-        .expect("resolve groq cloud target");
-    let loaded = activate_model_target(
-        &mut runtime_registry,
-        &mut resource_governor,
-        &session_registry,
-        &mut storage,
-        &mut model_catalog,
-        &target,
-    )
-    .expect("activate groq target");
-
-    let (cmd_tx, cmd_rx) = mpsc::channel();
-    let (result_tx, result_rx) = mpsc::channel();
-    let worker_handle = crate::inference_worker::spawn_worker(result_tx, cmd_rx, None);
-    let (syscall_cmd_tx, syscall_cmd_rx) = mpsc::channel::<SyscallCmd>();
-    let (syscall_result_tx, syscall_result_rx) = mpsc::channel::<SyscallCompletion>();
-    let syscall_worker_handle = syscalls::spawn_syscall_worker(
-        Arc::new(Mutex::new(SyscallRateMap::new())),
-        syscall_result_tx,
-        syscall_cmd_rx,
-        None,
-    );
-
-    let user_prompt = format!(
-        "Crea una cartella nel tuo workspace chiamata \"{}\" e dammi conferma una volta fatto",
-        test_dir_name
-    );
-    let system_prompt =
-        crate::agent_prompt::build_agent_system_prompt(&tool_registry, ToolCaller::AgentText);
-    let permission_policy =
-        crate::tools::invocation::ProcessPermissionPolicy::interactive_chat(&tool_registry)
-            .expect("interactive permissions");
-    let spawned = {
-        let pid_floor = runtime_registry.next_pid_floor();
-        let engine = runtime_registry
-            .engine_mut(&loaded.runtime_id)
-            .expect("runtime engine");
-        spawn_managed_process_with_session(
-            &loaded.runtime_id,
-            pid_floor,
-            engine,
-            &mut memory,
-            &mut scheduler,
-            &mut session_registry,
-            &mut storage,
-            ManagedProcessRequest {
-                prompt: user_prompt.clone(),
-                system_prompt: Some(system_prompt),
-                owner_id: 7,
-                tool_caller: ToolCaller::AgentText,
-                permission_policy: Some(permission_policy),
-                workload: WorkloadClass::General,
-                required_backend_class: None,
-                priority: ProcessPriority::Normal,
-                lifecycle_policy: crate::process::ProcessLifecyclePolicy::Interactive,
-                context_policy: None,
-            },
-        )
-        .expect("spawn process")
-    };
-    runtime_registry
-        .register_pid(&mut storage, &loaded.runtime_id, spawned.pid)
-        .expect("register pid");
-    let turn_id = storage
-        .start_session_turn(
-            &spawned.session_id,
-            spawned.pid,
-            "general",
-            "live_test",
-            &user_prompt,
-            "prompt",
-        )
-        .expect("start turn");
-    session_registry.remember_active_turn(spawned.pid, turn_id);
-
-    let mut saw_dispatch = false;
-    let mut last_state = None;
-    for tick in 0..80 {
-        let report = run_engine_tick(
-            &mut runtime_registry,
-            &mut resource_governor,
-            &mut memory,
-            &mut model_catalog,
-            &mut clients,
-            &poll,
-            &mut scheduler,
-            &mut orchestrator,
-            &cmd_tx,
-            &result_rx,
-            &syscall_cmd_tx,
-            &syscall_result_rx,
-            &mut session_registry,
-            &mut storage,
-            &mut in_flight,
-            &mut pending_kills,
-            &mut pending_events,
-            &tool_registry,
-        );
-        crate::events::flush_pending_events(
-            &mut clients,
-            &poll,
-            &mut next_event_sequence,
-            &mut session_registry,
-            &mut storage,
-            &mut pending_events,
-        );
-
-        let state = runtime_registry
-            .engine(&loaded.runtime_id)
-            .and_then(|engine| engine.processes.get(&spawned.pid))
-            .map(|process| process.state.clone());
-        last_state = state.clone();
-        let audit_rows = storage
-            .recent_audit_events_for_session(&spawned.session_id, 64)
-            .expect("recent audit rows");
-        saw_dispatch = audit_rows
-            .iter()
-            .any(|event| event.kind == "dispatched" && event.pid == Some(spawned.pid));
-
-        println!(
-            "tick={} worker_results={} syscall_results={} checked_out={} finished={} state={:?} saw_dispatch={}",
-            tick,
-            report.worker_results,
-            report.syscall_results,
-            report.checked_out_processes,
-            report.finished_processes,
-            state,
-            saw_dispatch
-        );
-
-        if saw_dispatch && workspace_test_dir.is_dir() {
-            break;
-        }
-        if matches!(state, Some(crate::process::ProcessState::WaitingForInput)) && !saw_dispatch {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    let assistant_message = storage
-        .load_replay_messages_for_session(&spawned.session_id)
-        .ok()
-        .and_then(|messages| {
-            messages
-                .into_iter()
-                .rev()
-                .find(|message| message.role == "assistant")
-                .map(|message| message.content)
-        });
-    println!("assistant_message={assistant_message:?}");
-
-    let _ = cmd_tx.send(crate::inference_worker::InferenceCmd::Shutdown);
-    let _ = syscall_cmd_tx.send(SyscallCmd::Shutdown);
-    let _ = worker_handle.join();
-    let _ = syscall_worker_handle.join();
-
-    assert!(
-        saw_dispatch,
-        "expected live kernel path to record tool dispatch for pid {} but last state was {:?}",
-        spawned.pid, last_state
-    );
-    assert!(
-        workspace_test_dir.is_dir(),
-        "expected mkdir tool to create {:?}",
-        workspace_test_dir
-    );
-
-    let _ = fs::remove_dir_all(&workspace_test_dir);
-    crate::test_support::helpers::remove_temp_dir(&root);
 }
 
 #[test]
@@ -1426,7 +1139,7 @@ fn external_backend_does_not_finish_on_stop_type_limit() {
 }
 
 #[test]
-fn external_backend_combines_separate_reasoning_content() {
+fn external_backend_ignores_separate_reasoning_content() {
     let response: CompletionResponse = serde_json::from_str(
             r#"{"content":"4","reasoning_content":"Step 1: add 2 and 2.","tokens":[1],"stop":false,"stop_type":"none"}"#,
         )
@@ -1439,7 +1152,7 @@ fn external_backend_combines_separate_reasoning_content() {
         None,
     );
 
-    assert_eq!(emitted_text, "<think>\nStep 1: add 2 and 2.\n</think>\n4");
+    assert_eq!(emitted_text, "4");
 }
 
 #[test]

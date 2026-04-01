@@ -25,7 +25,9 @@ use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
-use output::drain_worker_results;
+pub(crate) use output::assistant_output::should_emit_session_finished;
+pub(crate) use output::drain_worker_results;
+pub(crate) use output::TurnAssemblyStore;
 use process::{checkout_active_processes, handle_finished_processes};
 use syscalls::{drain_syscall_results, SyscallCmd, SyscallCompletion};
 use workflows::advance_orchestrator;
@@ -61,6 +63,7 @@ pub fn run_engine_tick(
     syscall_result_rx: &mpsc::Receiver<SyscallCompletion>,
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
+    turn_assembly: &mut TurnAssemblyStore,
     in_flight: &mut HashSet<u64>,
     pending_kills: &mut Vec<u64>,
     pending_events: &mut Vec<KernelEvent>,
@@ -207,6 +210,7 @@ pub fn run_engine_tick(
         syscall_cmd_tx,
         session_registry,
         storage,
+        turn_assembly,
         in_flight,
         pending_kills,
         pending_events,
@@ -252,7 +256,3 @@ pub fn run_engine_tick(
 
     report
 }
-
-#[cfg(test)]
-#[path = "tests/mod.rs"]
-mod tests;

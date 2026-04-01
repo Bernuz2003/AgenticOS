@@ -75,9 +75,6 @@ pub(crate) fn checkout_active_processes(
                     backend_capabilities: Some(process.model.backend_capabilities()),
                     context: process.context_status_snapshot(),
                     pending_human_request: process.pending_human_request.clone(),
-                    pending_output_buffer: process.syscall_buffer.clone(),
-                    captured_assistant_text: String::new(),
-                    pending_stream_syscall: None,
                 },
             );
             if process.model.backend_class().as_str() == "remote_stateless" {

@@ -22,8 +22,7 @@ mod scheduler;
 mod services;
 mod session;
 mod storage;
-#[cfg(test)]
-mod test_support;
+pub mod test_support;
 mod tool_registry;
 mod tools;
 mod transport;

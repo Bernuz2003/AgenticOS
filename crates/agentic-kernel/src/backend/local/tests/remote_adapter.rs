@@ -80,7 +80,7 @@ fn transport_strategy_falls_back_to_full_prompt_for_llamacpp() {
 }
 
 #[test]
-fn decode_captured_reasoning_payload_combines_reasoning_and_content() {
+fn decode_captured_reasoning_payload_ignores_reasoning_content() {
     let tokenizer = test_tokenizer();
     let decoded = decode_completion_response(
         serde_json::json!({
@@ -94,8 +94,7 @@ fn decode_captured_reasoning_payload_combines_reasoning_and_content() {
     )
     .expect("decode completion");
 
-    assert!(decoded.emitted_text.contains("<think>"));
-    assert!(decoded.emitted_text.contains("hello"));
+    assert_eq!(decoded.emitted_text, "hello");
     assert_eq!(decoded.appended_tokens, vec![1]);
     assert!(decoded.finished);
 }

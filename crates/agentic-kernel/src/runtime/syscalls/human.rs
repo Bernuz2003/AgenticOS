@@ -5,9 +5,10 @@ use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::tools::human_tools::{normalize_ask_human_request, AskHumanInput};
 use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
-use agentic_control_models::KernelEvent;
+use agentic_control_models::{InvocationKind, InvocationStatus, KernelEvent};
 
 use super::dispatch::SyscallDispatchOutcome;
+use super::invocation_events::emit_invocation_updated;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_native_human_input_request(
@@ -43,6 +44,14 @@ pub(super) fn dispatch_native_human_input_request(
         ),
         audit_context.clone(),
     );
+    emit_invocation_updated(
+        pending_events,
+        pid,
+        tool_call_id,
+        InvocationKind::Tool,
+        content,
+        InvocationStatus::Dispatched,
+    );
 
     if !permissions.allows_tool("ask_human") {
         let _ = engine.inject_context(
@@ -64,6 +73,14 @@ pub(super) fn dispatch_native_human_input_request(
                 caller.as_str()
             ),
             audit_context,
+        );
+        emit_invocation_updated(
+            pending_events,
+            pid,
+            tool_call_id,
+            InvocationKind::Tool,
+            content,
+            InvocationStatus::Failed,
         );
         return Some(SyscallDispatchOutcome::None);
     }
@@ -92,6 +109,14 @@ pub(super) fn dispatch_native_human_input_request(
                 ),
                 audit_context,
             );
+            emit_invocation_updated(
+                pending_events,
+                pid,
+                tool_call_id,
+                InvocationKind::Tool,
+                content,
+                InvocationStatus::Failed,
+            );
             return Some(SyscallDispatchOutcome::None);
         }
     };
@@ -117,6 +142,14 @@ pub(super) fn dispatch_native_human_input_request(
                     err
                 ),
                 audit_context,
+            );
+            emit_invocation_updated(
+                pending_events,
+                pid,
+                tool_call_id,
+                InvocationKind::Tool,
+                content,
+                InvocationStatus::Failed,
             );
             return Some(SyscallDispatchOutcome::None);
         }
@@ -155,6 +188,14 @@ pub(super) fn dispatch_native_human_input_request(
             caller.as_str()
         ),
         audit_context,
+    );
+    emit_invocation_updated(
+        pending_events,
+        pid,
+        tool_call_id,
+        InvocationKind::Tool,
+        content,
+        InvocationStatus::Completed,
     );
     Some(SyscallDispatchOutcome::None)
 }

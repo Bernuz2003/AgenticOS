@@ -64,23 +64,3 @@ pub(super) fn turn_identity(
         )
         .optional()
 }
-
-pub(super) fn assistant_message_id_for_turn(
-    transaction: &Transaction<'_>,
-    turn_id: i64,
-) -> Result<Option<i64>, rusqlite::Error> {
-    transaction
-        .query_row(
-            r#"
-            SELECT message_id
-            FROM session_messages
-            WHERE turn_id = ?1
-              AND role = 'assistant'
-            ORDER BY ordinal ASC, message_id ASC
-            LIMIT 1
-            "#,
-            params![turn_id],
-            |row| row.get(0),
-        )
-        .optional()
-}

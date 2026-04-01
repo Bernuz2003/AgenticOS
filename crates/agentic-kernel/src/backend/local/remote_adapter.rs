@@ -125,32 +125,13 @@ pub(crate) fn decode_completion_response(
     })
 }
 
-fn wrap_reasoning_content(reasoning: &str) -> String {
-    format!("<think>\n{}\n</think>", reasoning)
-}
-
 pub(crate) fn combine_completion_text(
-    reasoning_content: Option<&str>,
+    _reasoning_content: Option<&str>,
     content: Option<&str>,
-    choice_reasoning_content: Option<&str>,
+    _choice_reasoning_content: Option<&str>,
     choice_text: Option<&str>,
 ) -> String {
-    let content = content.or(choice_text).unwrap_or_default();
-    let reasoning = reasoning_content
-        .or(choice_reasoning_content)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
-    match reasoning {
-        Some(reasoning) if !content.contains("<think>") => {
-            if content.is_empty() {
-                wrap_reasoning_content(reasoning)
-            } else {
-                format!("{}\n{}", wrap_reasoning_content(reasoning), content)
-            }
-        }
-        _ => content.to_string(),
-    }
+    content.or(choice_text).unwrap_or_default().to_string()
 }
 
 pub(crate) fn completion_is_finished(

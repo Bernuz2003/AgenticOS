@@ -15,6 +15,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::resource_governor::ResourceGovernor;
 use crate::runtime::syscalls::{self, SyscallCmd, SyscallCompletion};
+use crate::runtime::TurnAssemblyStore;
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
 use crate::services::job_scheduler::JobScheduler;
@@ -149,6 +150,7 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         in_flight: HashSet::new(),
         pending_kills: Vec::new(),
         pending_events: Vec::new(),
+        turn_assembly: TurnAssemblyStore::default(),
         syscall_wait_since: HashMap::new(),
         remote_timeout_reported: HashSet::new(),
         next_event_sequence: 0,

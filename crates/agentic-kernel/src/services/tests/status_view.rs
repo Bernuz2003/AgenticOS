@@ -119,9 +119,6 @@ fn checked_out_status_preserves_backend_slot_metadata() {
             }),
             context,
             pending_human_request: None,
-            pending_output_buffer: String::new(),
-            captured_assistant_text: String::new(),
-            pending_stream_syscall: None,
         },
     );
 

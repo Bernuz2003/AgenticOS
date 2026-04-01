@@ -13,7 +13,7 @@ use crate::backend::local::runtime_manager::ManagedLocalRuntimeLease;
 use crate::backend::remote::streaming::{agent_invocation_end, drain_json_objects};
 use crate::backend::{
     ContextSlotPersistence, InferenceBackend, InferenceFinishReason, InferenceStepRequest,
-    InferenceStepResult, ModelBackend,
+    InferenceStepResult, ModelBackend, StreamChunkObserver,
 };
 use crate::backend::{HttpEndpoint, HttpJsonResponse, HttpRequestOptions, HttpStreamControl};
 
@@ -104,6 +104,7 @@ impl ExternalLlamaCppBackend {
         &self,
         payload: serde_json::Value,
         tokenizer: &tokenizers::Tokenizer,
+        mut stream_observer: Option<&mut dyn StreamChunkObserver>,
     ) -> Result<StreamingCompletion> {
         let mut accumulator = StreamingCompletionAccumulator::default();
         let response = self.endpoint.request_stream_with_options(
@@ -116,7 +117,7 @@ impl ExternalLlamaCppBackend {
                 max_response_bytes: usize::MAX,
                 extra_headers: None,
             },
-            |fragment| accumulator.push(fragment, tokenizer),
+            |fragment| accumulator.push(fragment, tokenizer, &mut stream_observer),
         )?;
         if response.status_code != 200 {
             return Err(E::msg(format!(
@@ -185,7 +186,7 @@ impl InferenceBackend for ExternalLlamaCppBackend {
             remaining_generation_budget,
             tokenizer,
             generation,
-            stream_observer: _,
+            stream_observer,
             eos_token_id: _,
             eot_token_id: _,
         } = request;
@@ -223,6 +224,7 @@ impl InferenceBackend for ExternalLlamaCppBackend {
                 true,
             ),
             tokenizer,
+            stream_observer,
         )?;
 
         let finished_due_to_budget =
@@ -277,18 +279,39 @@ impl StreamingCompletionAccumulator {
         &mut self,
         fragment: &[u8],
         tokenizer: &tokenizers::Tokenizer,
+        stream_observer: &mut Option<&mut dyn StreamChunkObserver>,
     ) -> Result<HttpStreamControl> {
         self.body_buffer.extend_from_slice(fragment);
         for object in drain_json_objects(&mut self.body_buffer)? {
             let decoded = decode_completion_response(object, tokenizer)?;
-            self.emitted_text.push_str(&decoded.emitted_text);
+            let previous_len = self.emitted_text.len();
+            let delta = canonical_transport_delta(&self.emitted_text, &decoded.emitted_text);
+            if !delta.is_empty() {
+                self.emitted_text.push_str(&delta);
+            }
             self.finished = decoded.finished;
 
             if let Some(end) = agent_invocation_end(&self.emitted_text) {
+                let observed_delta = if end > previous_len {
+                    self.emitted_text[previous_len..end].to_string()
+                } else {
+                    String::new()
+                };
                 self.emitted_text.truncate(end);
+                if let Some(observer) = stream_observer.as_deref_mut() {
+                    if !observed_delta.is_empty() {
+                        observer.on_chunk(&observed_delta);
+                    }
+                }
                 self.stopped_on_tool_marker = true;
                 self.finished = false;
                 return Ok(HttpStreamControl::Stop);
+            }
+
+            if let Some(observer) = stream_observer.as_deref_mut() {
+                if !delta.is_empty() {
+                    observer.on_chunk(&delta);
+                }
             }
 
             if self.finished {
@@ -327,4 +350,99 @@ struct StreamingCompletion {
     emitted_text: String,
     appended_tokens: Vec<u32>,
     finished: bool,
+}
+
+fn canonical_transport_delta(current: &str, fragment: &str) -> String {
+    if fragment.is_empty() {
+        return String::new();
+    }
+
+    if current.is_empty() {
+        return fragment.to_string();
+    }
+
+    if let Some(delta) = fragment.strip_prefix(current) {
+        return delta.to_string();
+    }
+
+    let overlap = longest_suffix_prefix_overlap(current, fragment);
+    let raw_candidate = format!("{current}{fragment}");
+    let overlap_candidate = (overlap > 0 && overlap < fragment.len())
+        .then(|| format!("{current}{}", &fragment[overlap..]));
+
+    let chosen = choose_canonical_transport_text(
+        current,
+        fragment,
+        &raw_candidate,
+        overlap_candidate.as_deref(),
+        overlap,
+    );
+
+    if let Some(delta) = chosen.strip_prefix(current) {
+        return delta.to_string();
+    }
+
+    fragment.to_string()
+}
+
+fn longest_suffix_prefix_overlap(current: &str, fragment: &str) -> usize {
+    let mut boundaries = fragment
+        .char_indices()
+        .map(|(idx, _)| idx)
+        .collect::<Vec<_>>();
+    if boundaries.first().copied() != Some(0) {
+        boundaries.insert(0, 0);
+    }
+    if boundaries.last().copied() != Some(fragment.len()) {
+        boundaries.push(fragment.len());
+    }
+
+    for boundary in boundaries.into_iter().rev() {
+        if boundary == 0 {
+            continue;
+        }
+        if current.ends_with(&fragment[..boundary]) {
+            return boundary;
+        }
+    }
+
+    0
+}
+
+fn choose_canonical_transport_text<'a>(
+    _current: &str,
+    _fragment: &str,
+    raw_candidate: &'a str,
+    overlap_candidate: Option<&'a str>,
+    overlap: usize,
+) -> &'a str {
+    let Some(overlap_candidate) = overlap_candidate else {
+        return raw_candidate;
+    };
+
+    let raw_rank = invocation_rank(raw_candidate);
+    let overlap_rank = invocation_rank(overlap_candidate);
+    if raw_rank > overlap_rank {
+        return raw_candidate;
+    }
+    if overlap_rank > raw_rank {
+        return overlap_candidate;
+    }
+
+    if overlap > 1 {
+        return overlap_candidate;
+    }
+
+    raw_candidate
+}
+
+fn invocation_rank(candidate: &str) -> u8 {
+    match crate::text_invocation::find_first_prefixed_json_invocation(
+        candidate,
+        &["ACTION:", "TOOL:"],
+    ) {
+        crate::text_invocation::PrefixedInvocationSearch::Parsed(_) => 3,
+        crate::text_invocation::PrefixedInvocationSearch::Incomplete { .. } => 2,
+        crate::text_invocation::PrefixedInvocationSearch::NotFound => 1,
+    }
 }

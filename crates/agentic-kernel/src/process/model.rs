@@ -27,7 +27,6 @@ pub struct AgentProcess {
     pub index_pos: usize,
     pub turn_start_index: usize,
     pub max_tokens: usize,
-    pub syscall_buffer: String,
     pub context_policy: ContextPolicy,
     pub context_state: ContextState,
     pub pending_human_request: Option<HumanInputRequest>,
@@ -69,7 +68,6 @@ impl AgentProcess {
             index_pos: 0,
             turn_start_index: initial_token_count,
             max_tokens: generation.max_tokens,
-            syscall_buffer: String::new(),
             context_policy: context_seed.policy,
             context_state: ContextState {
                 tokens_used: initial_token_count,
@@ -206,16 +204,13 @@ impl AgentProcess {
 
     pub fn begin_next_turn(&mut self) {
         self.turn_start_index = self.tokens.len();
-        self.syscall_buffer.clear();
     }
 
     pub fn extend_current_turn_budget(&mut self) {
         self.turn_start_index = self.tokens.len();
     }
 
-    pub fn abandon_current_turn(&mut self) {
-        self.syscall_buffer.clear();
-    }
+    pub fn abandon_current_turn(&mut self) {}
 
     pub fn enforce_context_budget(&mut self) -> Option<ContextCompactionEvent> {
         self.context_state.tokens_used = self.tokens.len();

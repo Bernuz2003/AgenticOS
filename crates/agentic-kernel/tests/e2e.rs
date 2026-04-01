@@ -1,0 +1,16 @@
+#[path = "e2e/live_local.rs"]
+mod live_local;
+#[path = "e2e/live_protocol.rs"]
+mod live_protocol;
+#[path = "e2e/live_remote.rs"]
+mod live_remote;
+#[path = "e2e/local_transport.rs"]
+mod local_transport;
+#[path = "e2e/prompt_rendering.rs"]
+mod prompt_rendering;
+#[path = "e2e/storage_timeline.rs"]
+mod storage_timeline;
+#[path = "e2e/tool_dispatch.rs"]
+mod tool_dispatch;
+#[path = "e2e/turn_assembly.rs"]
+mod turn_assembly;

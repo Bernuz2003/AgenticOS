@@ -118,7 +118,7 @@ fn handle_kernel_event(
     last_lobby_refresh: &mut Instant,
     last_workspace_refresh: &mut std::collections::HashMap<u64, Instant>,
 ) {
-    match event {
+    match &event {
         KernelEvent::LobbyChanged { .. } | KernelEvent::ModelChanged { .. } => {
             maybe_emit_lobby_snapshot(app, bridge, last_lobby_refresh, false);
         }
@@ -128,81 +128,65 @@ fn handle_kernel_event(
                 workspace_root,
                 bridge,
                 timeline_store,
-                pid,
+                *pid,
                 last_workspace_refresh,
                 false,
             );
         }
-        KernelEvent::SessionStarted {
-            session_id,
-            pid,
-            workload,
-            prompt,
-        } => {
+        KernelEvent::SessionStarted { pid, .. } => {
             if let Ok(mut store) = timeline_store.lock() {
-                store.insert_started_session(pid, session_id, prompt, workload);
+                apply_timeline_store_event(&mut store, &event);
             }
-            emit_timeline_snapshot(app, bridge, timeline_store, workspace_root, pid);
+            emit_timeline_snapshot(app, bridge, timeline_store, workspace_root, *pid);
             maybe_emit_workspace_snapshot(
                 app,
                 workspace_root,
                 bridge,
                 timeline_store,
-                pid,
+                *pid,
                 last_workspace_refresh,
                 true,
             );
             maybe_emit_lobby_snapshot(app, bridge, last_lobby_refresh, true);
         }
-        KernelEvent::TimelineChunk { pid, text } => {
+        KernelEvent::TimelineChunk { pid, .. } => {
             if let Ok(mut store) = timeline_store.lock() {
-                store.append_assistant_chunk(pid, &text);
+                apply_timeline_store_event(&mut store, &event);
             }
-            emit_timeline_snapshot(app, bridge, timeline_store, workspace_root, pid);
+            emit_timeline_snapshot(app, bridge, timeline_store, workspace_root, *pid);
             maybe_emit_workspace_snapshot(
                 app,
                 workspace_root,
                 bridge,
                 timeline_store,
-                pid,
+                *pid,
                 last_workspace_refresh,
                 false,
             );
         }
-        KernelEvent::SessionFinished {
-            pid,
-            tokens_generated,
-            elapsed_secs,
-            reason,
-        } => {
+        KernelEvent::InvocationUpdated { pid, .. } => {
             if let Ok(mut store) = timeline_store.lock() {
-                if reason == "turn_completed" || reason == "awaiting_turn_decision" {
-                    store.finish_session_with_reason(pid, None, None);
-                } else {
-                    store.finish_session_with_reason(
-                        pid,
-                        match (tokens_generated, elapsed_secs) {
-                            (Some(tokens_generated), Some(elapsed_secs)) => {
-                                Some(live_timeline::ProcessFinishedMarker {
-                                    pid,
-                                    tokens_generated,
-                                    elapsed_secs,
-                                })
-                            }
-                            _ => None,
-                        },
-                        if reason == "completed" {
-                            None
-                        } else {
-                            Some(reason.as_str())
-                        },
-                    );
-                }
+                apply_timeline_store_event(&mut store, &event);
             }
-            emit_timeline_snapshot(app, bridge, timeline_store, workspace_root, pid);
-            if should_evict_live_timeline(&reason) {
+            emit_timeline_snapshot(app, bridge, timeline_store, workspace_root, *pid);
+            maybe_emit_workspace_snapshot(
+                app,
+                workspace_root,
+                bridge,
+                timeline_store,
+                *pid,
+                last_workspace_refresh,
+                false,
+            );
+        }
+        KernelEvent::SessionFinished { pid, reason, .. } => {
+            if let Ok(mut store) = timeline_store.lock() {
+                apply_timeline_store_event(&mut store, &event);
+            }
+            emit_timeline_snapshot(app, bridge, timeline_store, workspace_root, *pid);
+            if should_evict_live_timeline(reason) {
                 if let Ok(mut store) = timeline_store.lock() {
-                    store.evict_session(pid);
+                    store.evict_session(*pid);
                 }
             }
             maybe_emit_workspace_snapshot(
@@ -210,26 +194,26 @@ fn handle_kernel_event(
                 workspace_root,
                 bridge,
                 timeline_store,
-                pid,
+                *pid,
                 last_workspace_refresh,
                 true,
             );
             maybe_emit_lobby_snapshot(app, bridge, last_lobby_refresh, true);
         }
-        KernelEvent::SessionErrored { pid, message } => {
+        KernelEvent::SessionErrored { pid, .. } => {
             if let Ok(mut store) = timeline_store.lock() {
-                store.set_error(pid, message);
+                apply_timeline_store_event(&mut store, &event);
             }
-            emit_timeline_snapshot(app, bridge, timeline_store, workspace_root, pid);
+            emit_timeline_snapshot(app, bridge, timeline_store, workspace_root, *pid);
             if let Ok(mut store) = timeline_store.lock() {
-                store.evict_session(pid);
+                store.evict_session(*pid);
             }
             maybe_emit_workspace_snapshot(
                 app,
                 workspace_root,
                 bridge,
                 timeline_store,
-                pid,
+                *pid,
                 last_workspace_refresh,
                 true,
             );
@@ -244,6 +228,54 @@ fn handle_kernel_event(
         KernelEvent::KernelShutdownRequested => {
             emit_bridge_status(app, false, None);
         }
+    }
+}
+
+pub(crate) fn apply_timeline_store_event(store: &mut TimelineStore, event: &KernelEvent) {
+    match event {
+        KernelEvent::SessionStarted {
+            session_id,
+            pid,
+            workload,
+            prompt,
+        } => {
+            store.insert_started_session(*pid, session_id.clone(), prompt.clone(), workload.clone())
+        }
+        KernelEvent::TimelineChunk { pid, text } => store.append_assistant_chunk(*pid, text),
+        KernelEvent::InvocationUpdated { pid, invocation } => {
+            store.upsert_invocation(*pid, invocation.clone());
+        }
+        KernelEvent::SessionFinished {
+            pid,
+            tokens_generated,
+            elapsed_secs,
+            reason,
+        } => {
+            if reason == "turn_completed" || reason == "awaiting_turn_decision" {
+                store.finish_session_with_reason(*pid, None, None);
+            } else {
+                store.finish_session_with_reason(
+                    *pid,
+                    match (tokens_generated, elapsed_secs) {
+                        (Some(tokens_generated), Some(elapsed_secs)) => {
+                            Some(live_timeline::ProcessFinishedMarker {
+                                pid: *pid,
+                                tokens_generated: *tokens_generated,
+                                elapsed_secs: *elapsed_secs,
+                            })
+                        }
+                        _ => None,
+                    },
+                    if reason == "completed" {
+                        None
+                    } else {
+                        Some(reason.as_str())
+                    },
+                );
+            }
+        }
+        KernelEvent::SessionErrored { pid, message } => store.set_error(*pid, message.clone()),
+        _ => {}
     }
 }
 
