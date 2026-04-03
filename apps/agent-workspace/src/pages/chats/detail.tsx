@@ -60,6 +60,7 @@ export function WorkspacePage() {
   const [composerError, setComposerError] = useState<string | null>(null);
   const [turnActionLoading, setTurnActionLoading] = useState(false);
   const [turnActionError, setTurnActionError] = useState<string | null>(null);
+  const [stopRequestPending, setStopRequestPending] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
 
   const routePid =
@@ -129,9 +130,33 @@ export function WorkspacePage() {
     setComposerLoading(false);
     setTurnActionLoading(false);
     setTurnActionError(null);
+    setStopRequestPending(false);
   }, [session?.pid]);
 
   const awaitingContinuation = snapshot?.state === "AwaitingTurnDecision";
+  const canRequestStopWhileRunning =
+    !!activePid &&
+    !awaitingContinuation &&
+    (snapshot?.state === "InFlight" ||
+      snapshot?.state === "AwaitingRemoteResponse" ||
+      snapshot?.state === "Running");
+  const backendSupportsImmediateCancel =
+    snapshot?.backendCapabilities?.cancelGeneration ?? false;
+
+  useEffect(() => {
+    if (!canRequestStopWhileRunning) {
+      setStopRequestPending(false);
+    }
+  }, [canRequestStopWhileRunning]);
+
+  const stopButtonTitle = stopRequestPending
+    ? backendSupportsImmediateCancel
+      ? "Interruzione gia' richiesta"
+      : "Stop gia' richiesto: il turno si chiudera' alla prossima boundary sicura"
+    : backendSupportsImmediateCancel
+      ? "Interrompi subito la generazione"
+      : "Richiedi stop alla prossima boundary sicura";
+
   const canResumeFromHistory =
     !activePid &&
     !awaitingContinuation &&
@@ -169,6 +194,7 @@ export function WorkspacePage() {
     setComposerLoading(true);
     setComposerError(null);
     setTurnActionError(null);
+    setStopRequestPending(false);
     try {
       const result = await sendSessionInput({
         pid: activePid,
@@ -202,6 +228,7 @@ export function WorkspacePage() {
     setTurnActionLoading(true);
     setTurnActionError(null);
     setComposerError(null);
+    setStopRequestPending(false);
     try {
       await continueSessionOutput(activePid);
       await refreshWorkspace(session.sessionId, activePid);
@@ -223,12 +250,14 @@ export function WorkspacePage() {
 
     setTurnActionLoading(true);
     setTurnActionError(null);
+    setComposerError(null);
     try {
-      await stopSessionOutput(activePid);
+      const result = await stopSessionOutput(activePid);
+      setStopRequestPending(result.action === "request_stop_output");
       await refreshWorkspace(session.sessionId, activePid);
     } catch (error) {
       setTurnActionError(
-        error instanceof Error ? error.message : "Failed to stop truncated assistant output",
+        error instanceof Error ? error.message : "Failed to stop assistant output",
       );
     } finally {
       setTurnActionLoading(false);
@@ -281,6 +310,9 @@ export function WorkspacePage() {
               loading={timelineLoading}
               error={timelineError}
               awaitingContinuation={awaitingContinuation}
+              canRequestStopWhileRunning={canRequestStopWhileRunning}
+              stopButtonTitle={stopButtonTitle}
+              stopRequestPending={stopRequestPending}
               composerValue={composerValue}
               composerLoading={composerLoading}
               composerError={composerError}

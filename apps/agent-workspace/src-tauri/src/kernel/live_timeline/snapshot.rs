@@ -94,7 +94,7 @@ fn build_live_timeline_items(session: &TimelineSessionState) -> Vec<TimelineItem
         for (message_index, message) in turn.messages.iter().enumerate() {
             match message {
                 TimelineTurnMessage::Assistant { text } => {
-                    if text.trim().is_empty() {
+                    if !is_renderable_timeline_text(text) {
                         continue;
                     }
                     rendered_turn_messages = true;
@@ -110,6 +110,9 @@ fn build_live_timeline_items(session: &TimelineSessionState) -> Vec<TimelineItem
                     });
                 }
                 TimelineTurnMessage::Thinking { text } => {
+                    if !is_renderable_timeline_text(text) {
+                        continue;
+                    }
                     rendered_turn_messages = true;
                     items.push(TimelineItem {
                         id: format!("{turn_id}-thinking-{}", message_index + 1),
@@ -153,6 +156,10 @@ fn build_live_timeline_items(session: &TimelineSessionState) -> Vec<TimelineItem
     }
 
     items
+}
+
+fn is_renderable_timeline_text(text: &str) -> bool {
+    !text.trim().is_empty()
 }
 
 fn timeline_item_kind_for_invocation(invocation: &InvocationEvent) -> TimelineItemKind {

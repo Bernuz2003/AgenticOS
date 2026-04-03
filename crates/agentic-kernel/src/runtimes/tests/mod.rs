@@ -79,6 +79,7 @@ fn parallel_sessions_can_bind_to_different_runtime_backends() {
                 priority: ProcessPriority::Normal,
                 lifecycle_policy: ProcessLifecyclePolicy::Interactive,
                 context_policy: None,
+                quota_override: None,
             },
         )
         .expect("spawn remote session")
@@ -111,6 +112,7 @@ fn parallel_sessions_can_bind_to_different_runtime_backends() {
                 priority: ProcessPriority::Normal,
                 lifecycle_policy: ProcessLifecyclePolicy::Interactive,
                 context_policy: None,
+                quota_override: None,
             },
         )
         .expect("spawn local session")
@@ -197,6 +199,7 @@ fn session_title_uses_user_prompt_not_system_prompt() {
                 priority: ProcessPriority::Normal,
                 lifecycle_policy: ProcessLifecyclePolicy::Interactive,
                 context_policy: None,
+                quota_override: None,
             },
         )
         .expect("spawn remote session")

@@ -13,6 +13,9 @@ interface TimelinePaneProps {
   loading: boolean;
   error: string | null;
   awaitingContinuation: boolean;
+  canRequestStopWhileRunning: boolean;
+  stopButtonTitle: string;
+  stopRequestPending: boolean;
   composerValue: string;
   composerLoading: boolean;
   composerError: string | null;
@@ -33,6 +36,9 @@ export function TimelinePane({
   loading,
   error,
   awaitingContinuation,
+  canRequestStopWhileRunning,
+  stopButtonTitle,
+  stopRequestPending,
   composerValue,
   composerLoading,
   composerError,
@@ -191,6 +197,13 @@ export function TimelinePane({
             )}
           </div>
         )}
+
+        {turnActionError && !awaitingContinuation && (
+          <div className="mx-auto max-w-xl rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-800 shadow-sm">
+            {turnActionError}
+          </div>
+        )}
+
       </div>
 
       <WorkspaceComposer
@@ -199,12 +212,18 @@ export function TimelinePane({
         disabled={!canSendText || composerLoading || turnActionLoading}
         loading={composerLoading}
         error={composerError}
+        showStopButton={canRequestStopWhileRunning}
+        stopLoading={turnActionLoading && canRequestStopWhileRunning}
+        stopDisabled={turnActionLoading || stopRequestPending}
+        stopRequested={stopRequestPending}
+        stopTitle={stopButtonTitle}
         onChange={onComposerChange}
         onSubmit={() => {
           if (canSendText && !composerLoading && composerValue.trim()) {
             void onComposerSubmit();
           }
         }}
+        onStop={() => void onStopOutput()}
       />
     </section>
   );

@@ -26,6 +26,7 @@ use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
 pub(crate) use output::assistant_output::should_emit_session_finished;
+pub(crate) use output::assistant_turn_store::AssistantTurnRuntimeBoundary;
 pub(crate) use output::drain_worker_results;
 pub(crate) use output::TurnAssemblyStore;
 use process::{checkout_active_processes, handle_finished_processes};
@@ -232,6 +233,7 @@ pub fn run_engine_tick(
         runtime_registry,
         scheduler,
         cmd_tx,
+        turn_assembly,
         in_flight,
         session_registry,
         storage,

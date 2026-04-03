@@ -4,7 +4,7 @@ use agentic_control_models::{KernelEvent, KernelEventEnvelope};
 use mio::{Poll, Token};
 
 use crate::protocol;
-use crate::runtime::TurnAssemblyStore;
+use crate::runtime::{AssistantTurnRuntimeBoundary, TurnAssemblyStore};
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::transport::{writable_interest, Client};
@@ -74,7 +74,7 @@ fn persist_event(
                 prompt,
                 "prompt",
             )?;
-            turn_assembly.clear_pid(*pid);
+            turn_assembly.apply_runtime_boundary(*pid, AssistantTurnRuntimeBoundary::RuntimeClosed);
             session_registry.remember_active_turn(*pid, turn_id);
             Ok(())
         }
@@ -101,12 +101,21 @@ fn persist_event(
                 return Ok(());
             };
             flush_pending_assistant_segments(storage, session_registry, turn_assembly, *pid)?;
+            if reason == "awaiting_turn_decision" {
+                let result = storage.mark_turn_awaiting_decision(turn_id);
+                if result.is_ok() {
+                    turn_assembly
+                        .apply_runtime_boundary(*pid, AssistantTurnRuntimeBoundary::RuntimeClosed);
+                }
+                return result;
+            }
             let (status, marker_text) =
                 finish_reason_to_turn_outcome(reason, *tokens_generated, *elapsed_secs);
             let result = storage.finish_turn(turn_id, status, reason, marker_text.as_deref());
             if result.is_ok() {
                 session_registry.clear_active_turn(*pid);
-                turn_assembly.clear_pid(*pid);
+                turn_assembly
+                    .apply_runtime_boundary(*pid, AssistantTurnRuntimeBoundary::RuntimeClosed);
             }
             result
         }
@@ -118,7 +127,8 @@ fn persist_event(
             let result = storage.error_turn(turn_id, message);
             if result.is_ok() {
                 session_registry.clear_active_turn(*pid);
-                turn_assembly.clear_pid(*pid);
+                turn_assembly
+                    .apply_runtime_boundary(*pid, AssistantTurnRuntimeBoundary::RuntimeClosed);
             }
             result
         }
@@ -151,7 +161,7 @@ fn finish_reason_to_turn_outcome(
 ) -> (&'static str, Option<String>) {
     match reason {
         "turn_completed" => ("completed", None),
-        "awaiting_turn_decision" => ("awaiting_turn_decision", None),
+        "output_stopped" => ("completed", None),
         "completed" => (
             "completed",
             tokens_generated

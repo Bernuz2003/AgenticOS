@@ -121,8 +121,8 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
     toolCaller: snapshot.tool_caller,
     indexPos: snapshot.index_pos,
     priority: snapshot.priority,
-    quotaTokens: snapshot.quota_tokens,
-    quotaSyscalls: snapshot.quota_syscalls,
+    quotaTokens: normalizeQuotaLimit(snapshot.quota_tokens),
+    quotaSyscalls: normalizeQuotaLimit(snapshot.quota_syscalls),
     contextSlotId: snapshot.context_slot_id,
     residentSlotPolicy: snapshot.resident_slot_policy,
     residentSlotState: snapshot.resident_slot_state,
@@ -170,6 +170,14 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
       : null,
     auditEvents: snapshot.audit_events.map(normalizeAuditEvent),
   };
+}
+
+function normalizeQuotaLimit(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return value >= Number.MAX_SAFE_INTEGER ? null : value;
 }
 
 export function normalizeTimelineSnapshot(snapshot: TimelineSnapshotDto): TimelineSnapshot {

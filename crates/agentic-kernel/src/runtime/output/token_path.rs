@@ -19,6 +19,7 @@ use crate::tool_registry::ToolRegistry;
 use crate::transport::Client;
 
 use super::assistant_output::emit_assistant_timeline_output;
+use super::assistant_turn_store::AssistantTurnRuntimeBoundary;
 use super::turn_assembly::TurnAssemblyStore;
 use super::turn_completion::emit_turn_completion_events;
 
@@ -181,6 +182,7 @@ pub(super) fn handle_token_result(
         .unwrap_or(0);
     let finalized_step =
         turn_assembly.consume_final_fragments(pid, &text_output, &reasoning_output);
+    let stop_requested = turn_assembly.take_output_stop_request(pid);
     let pid_floor = runtime_registry.next_pid_floor();
     let audit_context = AuditContext::for_process(
         session_registry.session_id_for_pid(pid),
@@ -198,10 +200,18 @@ pub(super) fn handle_token_result(
             return;
         };
 
-        process.accumulate_inflight_assistant_tokens(generated_tokens);
+        turn_assembly.accumulate_generated_tokens(pid, generated_tokens);
         let mut turn_boundary_reached = finalized_step.syscall_command.is_some();
 
-        if !finished
+        if stop_requested {
+            process.state = if process.lifecycle_policy.is_interactive() {
+                ProcessState::WaitingForInput
+            } else {
+                ProcessState::Finished
+            };
+            process.termination_reason = Some("output_stopped".to_string());
+            turn_boundary_reached = true;
+        } else if !finished
             && !text_output.is_empty()
             && crate::prompting::should_stop_on_text_with_metadata(
                 engine.family,
@@ -227,19 +237,25 @@ pub(super) fn handle_token_result(
         }
 
         if turn_boundary_reached {
-            if process.inflight_assistant_token_count() > 0
+            turn_assembly
+                .apply_runtime_boundary(pid, AssistantTurnRuntimeBoundary::AwaitingCanonicalCommit);
+            if finalized_step.generated_token_count > 0
                 || !finalized_step.complete_assistant_text.is_empty()
             {
-                process.finalize_inflight_assistant_output(&finalized_step.complete_assistant_text);
-            } else {
-                process.clear_inflight_assistant_output();
+                process.record_model_output(
+                    &finalized_step.complete_assistant_text,
+                    finalized_step.generated_token_count,
+                );
             }
-            turn_assembly.reset_pid_output_state(pid);
+            turn_assembly
+                .apply_runtime_boundary(pid, AssistantTurnRuntimeBoundary::CanonicalCommitApplied);
+            process.mark_resident_prompt_checkpoint();
         } else {
-            process.update_inflight_assistant_continuation(&finalized_step.continuation_text);
+            process.mark_resident_prompt_checkpoint_len(
+                process.prompt_text().len() + finalized_step.continuation_text.len(),
+            );
         }
 
-        process.mark_resident_prompt_checkpoint();
         engine.processes.insert(pid, process);
 
         if pending_kills.contains(&pid) {
@@ -275,6 +291,11 @@ pub(super) fn handle_token_result(
                 "model_output",
             );
             let pending_syscall = finalized_step.syscall_command.clone();
+            let pending_syscall = if stop_requested {
+                None
+            } else {
+                pending_syscall
+            };
 
             if let Some(full_command) = pending_syscall {
                 let content = full_command.trim().to_string();
@@ -339,6 +360,7 @@ pub(super) fn handle_token_result(
         scheduler,
         pid,
         &runtime_id,
+        stop_requested.then_some("output_stopped"),
         syscall_dispatch,
         pending_events,
         storage,

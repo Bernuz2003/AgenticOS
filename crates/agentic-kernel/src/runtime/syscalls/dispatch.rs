@@ -702,6 +702,7 @@ fn dispatch_spawn_action(
             priority,
             lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
             context_policy: inherited_context_policy,
+            quota_override: None,
         },
     ) {
         Ok(new_pid) => {

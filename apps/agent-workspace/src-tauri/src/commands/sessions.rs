@@ -33,7 +33,8 @@ pub async fn fetch_workspace_snapshot(
 #[tauri::command]
 pub async fn start_session(
     prompt: String,
-    workload: String,
+    quota_tokens: Option<u64>,
+    quota_syscalls: Option<u64>,
     state: State<'_, AppState>,
 ) -> Result<StartSessionResult, String> {
     let kernel_addr = state.kernel_addr.clone();
@@ -44,7 +45,8 @@ pub async fn start_session(
             kernel_addr,
             workspace_root,
             prompt,
-            workload,
+            quota_tokens,
+            quota_syscalls,
             timeline_store,
         )
     })

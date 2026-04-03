@@ -53,6 +53,21 @@ pub struct LocalBackendStreamObservation {
     pub finished: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HarnessProcessState {
+    Running,
+    WaitingForInput,
+    AwaitingTurnDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnRecordObservation {
+    pub turn_id: i64,
+    pub status: String,
+    pub finish_reason: Option<String>,
+    pub completed_at_ms: Option<i64>,
+}
+
 pub fn run_local_backend_stream(
     chunks: &[MockLocalCompletionChunk],
 ) -> Result<LocalBackendStreamObservation, String> {
@@ -305,6 +320,7 @@ impl KernelE2eHarness {
                     priority: ProcessPriority::Normal,
                     lifecycle_policy: ProcessLifecyclePolicy::Interactive,
                     context_policy: None,
+                    quota_override: None,
                 },
             )?
         };
@@ -377,11 +393,37 @@ impl KernelE2eHarness {
         finished: bool,
         finish_reason: Option<InferenceFinishReason>,
     ) -> Result<(), String> {
-        let mut process = self.take_process(pid)?;
-        process.state = if finished {
-            ProcessState::WaitingForInput
+        let state = if finished {
+            HarnessProcessState::WaitingForInput
         } else {
-            ProcessState::Running
+            HarnessProcessState::Running
+        };
+        self.send_token_result_with_state(
+            pid,
+            text_output,
+            reasoning_output,
+            generated_tokens,
+            finished,
+            finish_reason,
+            state,
+        )
+    }
+
+    pub fn send_token_result_with_state(
+        &mut self,
+        pid: u64,
+        text_output: impl Into<String>,
+        reasoning_output: impl Into<String>,
+        generated_tokens: usize,
+        finished: bool,
+        finish_reason: Option<InferenceFinishReason>,
+        state: HarnessProcessState,
+    ) -> Result<(), String> {
+        let mut process = self.take_process(pid)?;
+        process.state = match state {
+            HarnessProcessState::Running => ProcessState::Running,
+            HarnessProcessState::WaitingForInput => ProcessState::WaitingForInput,
+            HarnessProcessState::AwaitingTurnDecision => ProcessState::AwaitingTurnDecision,
         };
         self.result_tx
             .send(InferenceResult::Token {
@@ -395,6 +437,27 @@ impl KernelE2eHarness {
                 accounting_event: None,
             })
             .map_err(|err| err.to_string())
+    }
+
+    pub fn continue_current_turn(&mut self, pid: u64) -> Result<(), String> {
+        let Some(engine) = self.runtime_registry.engine_mut(&self.runtime_id) else {
+            return Err("runtime engine missing".to_string());
+        };
+        engine
+            .continue_current_turn(pid)
+            .map_err(|err| err.to_string())?;
+
+        if let Some(turn_id) = self.session_registry.active_turn_id_for_pid(pid) {
+            self.storage
+                .resume_turn(turn_id)
+                .map_err(|err| err.to_string())?;
+        }
+
+        Ok(())
+    }
+
+    pub fn request_output_stop(&mut self, pid: u64) {
+        self.turn_assembly.request_output_stop(pid);
     }
 
     pub fn drain_worker(&mut self) -> usize {
@@ -501,6 +564,22 @@ impl KernelE2eHarness {
             .map(ToString::to_string)
     }
 
+    pub fn active_turn_id(&self, pid: u64) -> Option<i64> {
+        self.session_registry.active_turn_id_for_pid(pid)
+    }
+
+    pub fn turn_record(&self, turn_id: i64) -> Result<TurnRecordObservation, String> {
+        self.storage
+            .load_turn_record(turn_id)
+            .map(|record| TurnRecordObservation {
+                turn_id: record.turn_id,
+                status: record.status,
+                finish_reason: record.finish_reason,
+                completed_at_ms: record.completed_at_ms,
+            })
+            .map_err(|err| err.to_string())
+    }
+
     pub fn replay_messages(
         &self,
         session_id: &str,
@@ -534,10 +613,19 @@ impl KernelE2eHarness {
     }
 
     pub fn inference_prompt_text(&self, pid: u64) -> Option<String> {
-        self.runtime_registry
+        let process = self
+            .runtime_registry
             .engine(&self.runtime_id)
-            .and_then(|engine| engine.processes.get(&pid))
-            .map(|process| process.inference_prompt_text())
+            .and_then(|engine| engine.processes.get(&pid))?;
+        Some(
+            self.turn_assembly
+                .render_inference_prompt(
+                    pid,
+                    process.prompt_text(),
+                    process.resident_prompt_checkpoint_bytes(),
+                )
+                .full_prompt,
+        )
     }
 
     fn record_checked_out(&mut self, pid: u64) -> Result<(), String> {

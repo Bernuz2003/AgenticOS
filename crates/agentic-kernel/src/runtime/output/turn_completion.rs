@@ -14,6 +14,7 @@ pub(super) fn emit_turn_completion_events(
     scheduler: &ProcessScheduler,
     pid: u64,
     runtime_id: &str,
+    completion_reason_override: Option<&str>,
     syscall_dispatch: crate::runtime::syscalls::SyscallDispatchOutcome,
     pending_events: &mut Vec<KernelEvent>,
     storage: &mut StorageService,
@@ -28,13 +29,15 @@ pub(super) fn emit_turn_completion_events(
     }
 
     let sched = scheduler.snapshot(pid);
-    let reason = if matches!(turn_state, Some(ProcessState::AwaitingTurnDecision)) {
-        "awaiting_turn_decision"
-    } else if matches!(turn_state, Some(ProcessState::WaitingForHumanInput)) {
-        "human_input_requested"
-    } else {
-        "turn_completed"
-    };
+    let reason = completion_reason_override.unwrap_or_else(|| {
+        if matches!(turn_state, Some(ProcessState::AwaitingTurnDecision)) {
+            "awaiting_turn_decision"
+        } else if matches!(turn_state, Some(ProcessState::WaitingForHumanInput)) {
+            "human_input_requested"
+        } else {
+            "turn_completed"
+        }
+    });
     pending_events.push(KernelEvent::SessionFinished {
         pid,
         tokens_generated: sched

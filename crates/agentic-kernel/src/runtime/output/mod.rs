@@ -1,4 +1,5 @@
 pub(crate) mod assistant_output;
+pub(crate) mod assistant_turn_store;
 pub(crate) mod drain;
 mod stream_path;
 mod token_path;

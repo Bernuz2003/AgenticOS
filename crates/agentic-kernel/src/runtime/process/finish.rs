@@ -233,6 +233,7 @@ mod tests {
                     priority: ProcessPriority::Normal,
                     lifecycle_policy: ProcessLifecyclePolicy::Interactive,
                     context_policy: None,
+                    quota_override: None,
                 },
             )
             .expect("spawn process")

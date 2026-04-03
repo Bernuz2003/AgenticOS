@@ -49,6 +49,44 @@ fn live_timeline_keeps_thinking_streaming_from_structured_segments() {
 }
 
 #[test]
+fn live_timeline_ignores_empty_thinking_segments() {
+    let mut store = TimelineStore::default();
+    apply_kernel_event(
+        &mut store,
+        &KernelEvent::SessionStarted {
+            session_id: "sess-empty-think".to_string(),
+            pid: 2,
+            workload: "general".to_string(),
+            prompt: "prompt".to_string(),
+        },
+    );
+    apply_kernel_event(
+        &mut store,
+        &KernelEvent::TimelineSegment {
+            pid: 2,
+            segment_kind: AssistantSegmentKind::Thinking,
+            text: " \n\t ".to_string(),
+        },
+    );
+    apply_kernel_event(
+        &mut store,
+        &KernelEvent::TimelineSegment {
+            pid: 2,
+            segment_kind: AssistantSegmentKind::Message,
+            text: "Visible".to_string(),
+        },
+    );
+
+    let timeline = store.snapshot(2).expect("live snapshot");
+    assert_eq!(timeline.items.len(), 2);
+    assert!(matches!(
+        timeline.items[1].kind,
+        TimelineItemKind::AssistantMessage
+    ));
+    assert_eq!(timeline.items[1].text, "Visible");
+}
+
+#[test]
 fn live_timeline_does_not_infer_tool_blocks_from_raw_assistant_chunks() {
     let mut store = TimelineStore::default();
     apply_kernel_event(
@@ -88,6 +126,39 @@ fn live_timeline_does_not_infer_tool_blocks_from_raw_assistant_chunks() {
         .items
         .iter()
         .any(|item| item.text.contains("TOTOOLOL")));
+}
+
+#[test]
+fn live_timeline_keeps_fake_system_output_as_assistant_text() {
+    let mut store = TimelineStore::default();
+    apply_kernel_event(
+        &mut store,
+        &KernelEvent::SessionStarted {
+            session_id: "sess-fake-system".to_string(),
+            pid: 8,
+            workload: "general".to_string(),
+            prompt: "prompt".to_string(),
+        },
+    );
+    apply_kernel_event(
+        &mut store,
+        &KernelEvent::TimelineSegment {
+            pid: 8,
+            segment_kind: AssistantSegmentKind::Message,
+            text: "[system] Output: Success: Python script executed. [/system]".to_string(),
+        },
+    );
+
+    let timeline = store.snapshot(8).expect("live snapshot");
+    assert_eq!(timeline.items.len(), 2);
+    assert!(matches!(
+        timeline.items[1].kind,
+        TimelineItemKind::AssistantMessage
+    ));
+    assert_eq!(
+        timeline.items[1].text,
+        "[system] Output: Success: Python script executed. [/system]"
+    );
 }
 
 #[test]

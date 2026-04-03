@@ -10,6 +10,110 @@ import { deleteSession, startSession } from "../../lib/api";
 import { useState } from "react";
 import { SessionsList } from "./list";
 
+type QuotaMode = "unlimited" | "limit";
+
+interface SessionQuotaFieldProps {
+  label: string;
+  description: string;
+  mode: QuotaMode;
+  value: string;
+  disabled: boolean;
+  onModeChange: (mode: QuotaMode) => void;
+  onValueChange: (value: string) => void;
+}
+
+function SessionQuotaField({
+  label,
+  description,
+  mode,
+  value,
+  disabled,
+  onModeChange,
+  onValueChange,
+}: SessionQuotaFieldProps) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-slate-900">{label}</div>
+          <div className="mt-1 text-xs leading-relaxed text-slate-500">{description}</div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onModeChange("unlimited")}
+          className={`rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+            mode === "unlimited"
+              ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+              : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+          } disabled:opacity-50`}
+        >
+          No Limit
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onModeChange("limit")}
+          className={`rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+            mode === "limit"
+              ? "border-indigo-300 bg-indigo-50 text-indigo-800"
+              : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+          } disabled:opacity-50`}
+        >
+          Limit
+        </button>
+      </div>
+
+      {mode === "limit" && (
+        <div className="mt-3">
+          <input
+            type="number"
+            min={1}
+            step={1}
+            inputMode="numeric"
+            value={value}
+            disabled={disabled}
+            onChange={(event) => onValueChange(event.target.value)}
+            placeholder="Inserisci un limite positivo"
+            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 disabled:bg-slate-100"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function parseQuotaInput(
+  label: string,
+  mode: QuotaMode,
+  value: string,
+): { value: number | null; error: string | null } {
+  if (mode === "unlimited") {
+    return { value: null, error: null };
+  }
+
+  const normalized = value.trim();
+  if (!normalized) {
+    return {
+      value: null,
+      error: `${label}: inserisci un numero intero positivo oppure seleziona No Limit.`,
+    };
+  }
+
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return {
+      value: null,
+      error: `${label}: il limite deve essere un intero positivo.`,
+    };
+  }
+
+  return { value: parsed, error: null };
+}
+
 export function SessionsPage() {
   const sessions = useSessionsStore((state) => state.sessions);
   const refreshLobby = useSessionsStore((state) => state.refresh);
@@ -17,9 +121,23 @@ export function SessionsPage() {
   
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newPrompt, setNewPrompt] = useState("");
+  const [tokenQuotaMode, setTokenQuotaMode] = useState<QuotaMode>("unlimited");
+  const [tokenQuotaValue, setTokenQuotaValue] = useState("");
+  const [syscallQuotaMode, setSyscallQuotaMode] = useState<QuotaMode>("unlimited");
+  const [syscallQuotaValue, setSyscallQuotaValue] = useState("");
   const [isStarting, setIsStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  const closeStartModal = () => {
+    setIsModalOpen(false);
+    setNewPrompt("");
+    setTokenQuotaMode("unlimited");
+    setTokenQuotaValue("");
+    setSyscallQuotaMode("unlimited");
+    setSyscallQuotaValue("");
+    setStartError(null);
+  };
 
   const handleDelete = async (sessionId: string) => {
     if (!confirm("Are you sure you want to permanently delete this session?")) return;
@@ -38,15 +156,35 @@ export function SessionsPage() {
 
   const handleStartSession = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPrompt.trim()) return;
+    const prompt = newPrompt.trim();
+    if (!prompt) return;
+
+    const tokenQuota = parseQuotaInput("Quota token", tokenQuotaMode, tokenQuotaValue);
+    if (tokenQuota.error) {
+      setStartError(tokenQuota.error);
+      return;
+    }
+
+    const syscallQuota = parseQuotaInput(
+      "Quota syscall",
+      syscallQuotaMode,
+      syscallQuotaValue,
+    );
+    if (syscallQuota.error) {
+      setStartError(syscallQuota.error);
+      return;
+    }
 
     try {
       setIsStarting(true);
       setStartError(null);
-      const res = await startSession(newPrompt, "sliding_window");
+      const res = await startSession({
+        prompt,
+        quotaTokens: tokenQuota.value,
+        quotaSyscalls: syscallQuota.value,
+      });
       await refreshLobby();
-      setIsModalOpen(false);
-      setNewPrompt("");
+      closeStartModal();
       navigate(`/workspace/${res.sessionId}`);
     } catch (error) {
       console.error("Failed to start session:", error);
@@ -71,11 +209,14 @@ export function SessionsPage() {
             to="/workflows"
             className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-2.5 font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-sm"
           >
-            <Waypoints className="w-5 h-5" />
+           <Waypoints className="w-5 h-5" />
             New Workflow
           </Link>
           <button
-            onClick={() => setIsModalOpen(true)}
+            onClick={() => {
+              setStartError(null);
+              setIsModalOpen(true);
+            }}
             className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-colors shadow-sm"
           >
             <Plus className="w-5 h-5" />
@@ -88,7 +229,10 @@ export function SessionsPage() {
         sessions={sessions}
         deletingSessionId={isDeleting}
         onDelete={handleDelete}
-        onCreateSession={() => setIsModalOpen(true)}
+        onCreateSession={() => {
+          setStartError(null);
+          setIsModalOpen(true);
+        }}
       />
 
       {/* Modal Nuova Sessione */}
@@ -98,7 +242,7 @@ export function SessionsPage() {
              <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
                <h3 className="text-lg font-bold text-slate-900">Inizia Nuova Chat</h3>
                <button 
-                 onClick={() => setIsModalOpen(false)}
+                 onClick={closeStartModal}
                  className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"
                >
                  <X className="w-5 h-5" />
@@ -115,9 +259,30 @@ export function SessionsPage() {
                  className="w-full min-h-[120px] resize-y rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm leading-relaxed text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 disabled:bg-slate-50 disabled:text-slate-500 mb-2"
                  autoFocus
                />
+
+               <div className="mt-5 space-y-4">
+                 <SessionQuotaField
+                   label="Quota token"
+                   description="Guardrail di sessione sui token generati. No Limit rimuove la quota della sessione, ma non alza automaticamente il cap tecnico di generation del singolo turno."
+                   mode={tokenQuotaMode}
+                   value={tokenQuotaValue}
+                   disabled={isStarting}
+                   onModeChange={setTokenQuotaMode}
+                   onValueChange={setTokenQuotaValue}
+                 />
+                 <SessionQuotaField
+                   label="Quota syscall"
+                   description="Numero massimo di syscall o tool call consentite durante la sessione."
+                   mode={syscallQuotaMode}
+                   value={syscallQuotaValue}
+                   disabled={isStarting}
+                   onModeChange={setSyscallQuotaMode}
+                   onValueChange={setSyscallQuotaValue}
+                 />
+               </div>
                
                {startError && (
-                 <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                 <div className="mb-4 mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
                    {startError}
                  </div>
                )}
@@ -125,7 +290,7 @@ export function SessionsPage() {
                <div className="flex justify-end gap-3 mt-4">
                  <button
                    type="button"
-                   onClick={() => setIsModalOpen(false)}
+                   onClick={closeStartModal}
                    disabled={isStarting}
                    className="px-5 py-2.5 rounded-xl font-semibold text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-50"
                  >

@@ -2,11 +2,13 @@ use crate::policy::resolve_exec_policy;
 use crate::process::ProcessLifecyclePolicy;
 use crate::protocol;
 use crate::scheduler::ProcessPriority;
+use crate::scheduler::ProcessQuota;
 use crate::services::model_runtime::{activate_model_target, ModelActivationError};
 use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
 use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
 use agentic_control_models::{ExecStartPayload, KernelEvent};
 use agentic_protocol::ControlErrorCode;
+use serde::Deserialize;
 
 use super::context::ExecCommandContext;
 use super::diagnostics::log_event;
@@ -33,11 +35,35 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
         tool_registry,
     } = ctx;
 
-    let prompt_raw = String::from_utf8_lossy(payload).to_string();
+    let requested = match parse_exec_request(payload) {
+        Ok(requested) => requested,
+        Err(detail) => {
+            return Some(protocol::response_protocol_err_typed(
+                client,
+                request_id,
+                ControlErrorCode::SpawnFailed,
+                protocol::schema::ERROR,
+                &detail,
+            ));
+        }
+    };
+    let ResolvedExecRequest {
+        prompt_raw,
+        quota_override,
+    } = requested;
     let resolved = resolve_exec_policy(&prompt_raw);
     let workload = resolved.workload;
     let hinted_workload = resolved.hinted_workload;
     let prompt = resolved.prompt;
+    if prompt.trim().is_empty() {
+        return Some(protocol::response_protocol_err_typed(
+            client,
+            request_id,
+            ControlErrorCode::MissingPrompt,
+            protocol::schema::ERROR,
+            "EXEC requires a non-empty prompt",
+        ));
+    }
     let system_prompt =
         crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentText);
     let auto_switch = crate::config::kernel_config().exec.auto_switch;
@@ -192,6 +218,7 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                     priority: ProcessPriority::Normal,
                     lifecycle_policy: ProcessLifecyclePolicy::Interactive,
                     context_policy: Some(effective_context_policy.clone()),
+                    quota_override,
                 },
             )
             .map(|spawned| (spawned, effective_context_policy))
@@ -265,5 +292,77 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
             protocol::schema::ERROR,
             "No Model Loaded",
         ))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ExecRequestPayload {
+    prompt: String,
+    #[serde(default)]
+    max_tokens: Option<u64>,
+    #[serde(default)]
+    max_syscalls: Option<u64>,
+}
+
+struct ResolvedExecRequest {
+    prompt_raw: String,
+    quota_override: Option<ProcessQuota>,
+}
+
+fn parse_exec_request(payload: &[u8]) -> Result<ResolvedExecRequest, String> {
+    if let Ok(parsed) = serde_json::from_slice::<ExecRequestPayload>(payload) {
+        return Ok(ResolvedExecRequest {
+            prompt_raw: parsed.prompt,
+            quota_override: Some(ProcessQuota {
+                max_tokens: parse_exec_quota_limit("max_tokens", parsed.max_tokens)?,
+                max_syscalls: parse_exec_quota_limit("max_syscalls", parsed.max_syscalls)?,
+            }),
+        });
+    }
+
+    Ok(ResolvedExecRequest {
+        prompt_raw: String::from_utf8_lossy(payload).to_string(),
+        quota_override: None,
+    })
+}
+
+fn parse_exec_quota_limit(label: &str, value: Option<u64>) -> Result<usize, String> {
+    match value {
+        None => Ok(usize::MAX),
+        Some(0) => Err(format!("{label} must be greater than zero when specified")),
+        Some(limit) => usize::try_from(limit)
+            .map_err(|_| format!("{label} exceeds the supported platform usize range")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_exec_quota_limit, parse_exec_request};
+
+    #[test]
+    fn plain_text_exec_request_keeps_legacy_prompt_mode() {
+        let parsed = parse_exec_request(b"scrivi un parser rust").expect("parse request");
+
+        assert_eq!(parsed.prompt_raw, "scrivi un parser rust");
+        assert!(parsed.quota_override.is_none());
+    }
+
+    #[test]
+    fn json_exec_request_parses_explicit_quota_overrides() {
+        let parsed = parse_exec_request(
+            br#"{"prompt":"analizza questo repo","max_tokens":null,"max_syscalls":12}"#,
+        )
+        .expect("parse request");
+
+        assert_eq!(parsed.prompt_raw, "analizza questo repo");
+        let quota = parsed.quota_override.expect("quota override");
+        assert_eq!(quota.max_tokens, usize::MAX);
+        assert_eq!(quota.max_syscalls, 12);
+    }
+
+    #[test]
+    fn exec_quota_rejects_zero_when_limit_is_explicit() {
+        let err = parse_exec_quota_limit("max_tokens", Some(0)).expect_err("zero must fail");
+        assert!(err.contains("max_tokens"));
     }
 }

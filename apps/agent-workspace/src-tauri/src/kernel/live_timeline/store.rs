@@ -1,4 +1,5 @@
 use agentic_control_models::AssistantSegmentKind;
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 use std::net::TcpStream;
@@ -182,6 +183,13 @@ impl TimelineStore {
         });
     }
 
+    pub fn last_turn_matches_pending_user_prompt(&self, pid: u64, prompt: &str) -> bool {
+        self.sessions
+            .get(&pid)
+            .and_then(|session| session.turns.last())
+            .is_some_and(|turn| turn.running && turn.messages.is_empty() && turn.prompt == prompt)
+    }
+
     pub fn resume_last_turn(&mut self, pid: u64) {
         let Some(session) = self.sessions.get_mut(&pid) else {
             return;
@@ -289,7 +297,8 @@ pub fn start_exec_session(
     addr: String,
     workspace_root: PathBuf,
     prompt: String,
-    workload: String,
+    quota_tokens: Option<u64>,
+    quota_syscalls: Option<u64>,
     timeline_store: Arc<Mutex<TimelineStore>>,
 ) -> Result<StartSessionResult, String> {
     let mut stream = TcpStream::connect(&addr).map_err(|err| err.to_string())?;
@@ -303,13 +312,14 @@ pub fn start_exec_session(
     authenticate(&mut stream, &workspace_root)?;
     transport::negotiate_hello(&mut stream).map_err(|err| err.to_string())?;
 
-    let outbound_prompt = if workload.trim().is_empty() || workload == "auto" {
-        prompt.clone()
-    } else {
-        format!("capability={workload}; {prompt}")
-    };
+    let outbound_payload = serde_json::to_vec(&json!({
+        "prompt": prompt.clone(),
+        "max_tokens": quota_tokens,
+        "max_syscalls": quota_syscalls,
+    }))
+    .map_err(|err| err.to_string())?;
 
-    transport::send_command(&mut stream, OpCode::Exec, "1", outbound_prompt.as_bytes())
+    transport::send_command(&mut stream, OpCode::Exec, "1", &outbound_payload)
         .map_err(|err| err.to_string())?;
     let started_frame = transport::read_single_frame(&mut stream, Duration::from_secs(5))
         .map_err(|err| err.to_string())?;
@@ -332,7 +342,7 @@ pub fn start_exec_session(
             .lock()
             .map_err(|_| "Timeline store lock poisoned".to_string())?;
         let started_workload = if started.workload.trim().is_empty() {
-            workload.clone()
+            "general".to_string()
         } else {
             started.workload.clone()
         };

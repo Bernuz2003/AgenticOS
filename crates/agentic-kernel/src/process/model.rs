@@ -32,8 +32,6 @@ pub struct AgentProcess {
     pub pending_human_request: Option<HumanInputRequest>,
     pub termination_reason: Option<String>,
     rendered_prompt_cache: String,
-    in_flight_assistant_continuation: String,
-    in_flight_assistant_token_count: usize,
     resident_prompt_checkpoint_bytes: usize,
 }
 
@@ -95,8 +93,6 @@ impl AgentProcess {
             pending_human_request: None,
             termination_reason: None,
             rendered_prompt_cache: initial_segment_text,
-            in_flight_assistant_continuation: String::new(),
-            in_flight_assistant_token_count: 0,
             resident_prompt_checkpoint_bytes: 0,
         }
     }
@@ -127,16 +123,16 @@ impl AgentProcess {
         &self.rendered_prompt_cache
     }
 
-    pub fn inference_prompt_text(&self) -> String {
-        if self.in_flight_assistant_continuation.is_empty() {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn inference_prompt_text_with_continuation(&self, continuation: &str) -> String {
+        if continuation.is_empty() {
             return self.rendered_prompt_cache.clone();
         }
 
-        let mut prompt = String::with_capacity(
-            self.rendered_prompt_cache.len() + self.in_flight_assistant_continuation.len(),
-        );
+        let mut prompt =
+            String::with_capacity(self.rendered_prompt_cache.len() + continuation.len());
         prompt.push_str(&self.rendered_prompt_cache);
-        prompt.push_str(&self.in_flight_assistant_continuation);
+        prompt.push_str(continuation);
         prompt
     }
 
@@ -156,23 +152,32 @@ impl AgentProcess {
         &self.rendered_prompt_cache[start..]
     }
 
-    pub fn pending_inference_prompt_suffix(&self) -> String {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn pending_inference_prompt_suffix_with_continuation(&self, continuation: &str) -> String {
         let checkpoint = self
             .resident_prompt_checkpoint_bytes
-            .min(self.inference_prompt_len());
+            .min(self.rendered_prompt_cache.len() + continuation.len());
 
         if checkpoint >= self.rendered_prompt_cache.len() {
             let continuation_offset = checkpoint - self.rendered_prompt_cache.len();
-            return self.in_flight_assistant_continuation[continuation_offset..].to_string();
+            return continuation[continuation_offset..].to_string();
         }
 
         let mut suffix = self.rendered_prompt_cache[checkpoint..].to_string();
-        suffix.push_str(&self.in_flight_assistant_continuation);
+        suffix.push_str(continuation);
         suffix
     }
 
     pub fn mark_resident_prompt_checkpoint(&mut self) {
-        self.resident_prompt_checkpoint_bytes = self.inference_prompt_len();
+        self.resident_prompt_checkpoint_bytes = self.rendered_prompt_cache.len();
+    }
+
+    pub fn mark_resident_prompt_checkpoint_len(&mut self, prompt_len: usize) {
+        self.resident_prompt_checkpoint_bytes = prompt_len;
+    }
+
+    pub fn resident_prompt_checkpoint_bytes(&self) -> usize {
+        self.resident_prompt_checkpoint_bytes
     }
 
     pub fn reset_resident_prompt_checkpoint(&mut self) {
@@ -238,42 +243,13 @@ impl AgentProcess {
 
     pub fn begin_next_turn(&mut self) {
         self.turn_start_index = self.tokens.len();
-        self.clear_inflight_assistant_output();
     }
 
     pub fn extend_current_turn_budget(&mut self) {
         self.turn_start_index = self.tokens.len();
     }
 
-    pub fn abandon_current_turn(&mut self) {
-        self.clear_inflight_assistant_output();
-    }
-
-    pub fn update_inflight_assistant_continuation(&mut self, text: &str) {
-        self.in_flight_assistant_continuation.clear();
-        self.in_flight_assistant_continuation.push_str(text);
-    }
-
-    pub fn accumulate_inflight_assistant_tokens(&mut self, token_count: usize) {
-        self.in_flight_assistant_token_count = self
-            .in_flight_assistant_token_count
-            .saturating_add(token_count);
-    }
-
-    pub fn inflight_assistant_token_count(&self) -> usize {
-        self.in_flight_assistant_token_count
-    }
-
-    pub fn finalize_inflight_assistant_output(&mut self, visible_text: &str) {
-        let token_count = self.in_flight_assistant_token_count;
-        self.clear_inflight_assistant_output();
-        self.record_model_output(visible_text, token_count);
-    }
-
-    pub fn clear_inflight_assistant_output(&mut self) {
-        self.in_flight_assistant_continuation.clear();
-        self.in_flight_assistant_token_count = 0;
-    }
+    pub fn abandon_current_turn(&mut self) {}
 
     pub fn enforce_context_budget(&mut self) -> Option<ContextCompactionEvent> {
         self.context_state.tokens_used = self.tokens.len();
@@ -678,11 +654,7 @@ impl AgentProcess {
         }
         self.resident_prompt_checkpoint_bytes = self
             .resident_prompt_checkpoint_bytes
-            .min(self.inference_prompt_len());
-    }
-
-    fn inference_prompt_len(&self) -> usize {
-        self.rendered_prompt_cache.len() + self.in_flight_assistant_continuation.len()
+            .min(self.rendered_prompt_cache.len());
     }
 }
 

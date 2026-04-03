@@ -14,6 +14,8 @@ pub enum InferenceCmd {
     Step {
         pid: u64,
         process: Box<AgentProcess>,
+        rendered_prompt: String,
+        resident_prompt_suffix: String,
         eos_token_id: u32,
         eot_token_id: u32,
     },
@@ -73,6 +75,8 @@ pub fn spawn_worker(
                     InferenceCmd::Step {
                         pid,
                         process,
+                        rendered_prompt,
+                        resident_prompt_suffix,
                         eos_token_id,
                         eot_token_id,
                     } => {
@@ -132,8 +136,6 @@ pub fn spawn_worker(
                         }
 
                         process.state = ProcessState::Running;
-                        let rendered_prompt = process.inference_prompt_text();
-                        let resident_prompt_suffix = process.pending_inference_prompt_suffix();
 
                         let step = match process.model.generate_step(InferenceStepRequest {
                             context_slot_id: process.context_slot_id,

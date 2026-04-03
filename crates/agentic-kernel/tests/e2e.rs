@@ -6,6 +6,8 @@ mod live_protocol;
 mod live_remote;
 #[path = "e2e/local_transport.rs"]
 mod local_transport;
+#[path = "e2e/process_commands.rs"]
+mod process_commands;
 #[path = "e2e/prompt_rendering.rs"]
 mod prompt_rendering;
 #[path = "e2e/storage_timeline.rs"]
@@ -14,3 +16,5 @@ mod storage_timeline;
 mod tool_dispatch;
 #[path = "e2e/turn_assembly.rs"]
 mod turn_assembly;
+#[path = "e2e/turn_boundaries.rs"]
+mod turn_boundaries;

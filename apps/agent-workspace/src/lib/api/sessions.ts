@@ -6,14 +6,23 @@ import type {
   TurnControlResult,
 } from "./index";
 
+export interface StartSessionInput {
+  prompt: string;
+  quotaTokens: number | null;
+  quotaSyscalls: number | null;
+}
+
 export async function startSession(
-  prompt: string,
-  workload: string,
+  input: StartSessionInput,
 ): Promise<StartSessionResult> {
   const session = await invoke<{
     session_id: string;
     pid: number;
-  }>("start_session", { prompt, workload });
+  }>("start_session", {
+    prompt: input.prompt,
+    quotaTokens: input.quotaTokens,
+    quotaSyscalls: input.quotaSyscalls,
+  });
 
   return {
     sessionId: session.session_id,

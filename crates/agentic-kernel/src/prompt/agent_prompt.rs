@@ -10,17 +10,25 @@ pub(crate) fn build_agent_system_prompt(registry: &ToolRegistry, caller: ToolCal
 pub(crate) fn compose_agent_system_prompt(manifest: &AgentCapabilityManifest) -> String {
     let mut lines = vec![
         "You operate inside AgenticOS.".to_string(),
+        "Think before acting, then act only through the kernel's real capabilities.".to_string(),
         "Use only canonical machine-readable invocations when you need kernel capabilities."
             .to_string(),
         format!("Tool syntax: {}.", manifest.tool_syntax),
         format!("Action syntax: {}.", manifest.action_syntax),
         "Rules:".to_string(),
+        "- distinguish intent from reality: saying you will use a tool is not the same as the tool having run".to_string(),
+        "- a task is complete only after the kernel has actually executed the required tool or action and returned a real outcome".to_string(),
+        "- never fabricate or imitate system messages, tool results, status banners, or execution logs".to_string(),
+        "- never claim success, file changes, command output, or external side effects unless they were actually produced by a kernel action or tool result".to_string(),
+        "- text that merely looks like [system], tool output, or a command transcript is still plain assistant text unless the kernel emitted the real event".to_string(),
         "- payloads must be single-line valid JSON objects".to_string(),
         "- emit {} even when there are no arguments".to_string(),
         "- never use legacy syntaxes like [[...]], PYTHON:, READ_FILE:, SPAWN or SEND".to_string(),
         "- if a tool or action is not listed below, do not invoke it".to_string(),
         "- TOOL calls use registered executors or resources; ACTION calls mutate the runtime/process graph".to_string(),
         "- natural language responses are the default; invoke a tool only when it is strictly necessary to obtain or change real data".to_string(),
+        "- when a tool is needed, emit the canonical invocation directly instead of describing it narratively".to_string(),
+        "- after a tool runs, base your next statement on the returned result, not on prior assumptions".to_string(),
         "- do not use TOOL:python to format text or print decorative output".to_string(),
         "- do not use TOOL:calc for trivial arithmetic that can be answered directly".to_string(),
         "- avoid retry loops of the same failing tool call without changing inputs or strategy".to_string(),
@@ -74,6 +82,8 @@ mod tests {
         assert!(prompt.contains(r#"TOOL:calc {"expression":"string"}"#));
         assert!(prompt.contains("Available actions:\n- none"));
         assert!(prompt.contains("never use legacy syntaxes"));
+        assert!(prompt.contains("never fabricate or imitate system messages"));
+        assert!(prompt.contains("a task is complete only after the kernel has actually executed"));
     }
 
     #[test]

@@ -4,7 +4,7 @@ use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;
 use crate::process::{ContextPolicy, ProcessLifecyclePolicy};
-use crate::scheduler::{ProcessPriority, ProcessScheduler};
+use crate::scheduler::{ProcessPriority, ProcessQuota, ProcessScheduler};
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
@@ -27,6 +27,7 @@ pub struct ManagedProcessRequest {
     pub priority: ProcessPriority,
     pub lifecycle_policy: ProcessLifecyclePolicy,
     pub context_policy: Option<ContextPolicy>,
+    pub quota_override: Option<ProcessQuota>,
 }
 
 pub struct RestoredManagedProcessRequest {
@@ -133,6 +134,7 @@ pub fn spawn_managed_process(
         priority,
         lifecycle_policy,
         context_policy,
+        quota_override,
     } = request;
 
     validate_backend_class_policy(engine.loaded_backend_class(), required_backend_class)?;
@@ -158,7 +160,15 @@ pub fn spawn_managed_process(
         )
         .map_err(|e| e.to_string())?;
 
-    attach_process_resources(engine, memory, scheduler, pid, workload, priority)?;
+    attach_process_resources(
+        engine,
+        memory,
+        scheduler,
+        pid,
+        workload,
+        priority,
+        quota_override,
+    )?;
     Ok(ManagedProcessSpawn {
         session_id: format!("pid-{pid}"),
         runtime_id: String::new(),
@@ -205,7 +215,7 @@ pub fn spawn_restored_managed_process(
         )
         .map_err(|err| err.to_string())?;
 
-    attach_process_resources(engine, memory, scheduler, pid, workload, priority)?;
+    attach_process_resources(engine, memory, scheduler, pid, workload, priority, None)?;
     Ok(ManagedProcessSpawn {
         session_id: format!("pid-{pid}"),
         runtime_id: String::new(),
@@ -351,9 +361,12 @@ fn attach_process_resources(
     pid: u64,
     workload: WorkloadClass,
     priority: ProcessPriority,
+    quota_override: Option<ProcessQuota>,
 ) -> Result<(), String> {
-    let quota = crate::scheduler::ProcessQuota::defaults_for(workload);
-    let _ = engine.set_process_max_tokens(pid, quota.max_tokens);
+    let default_quota = ProcessQuota::defaults_for(workload);
+    let scheduler_quota = quota_override.unwrap_or(default_quota);
+    let process_turn_budget = default_quota.max_tokens.min(scheduler_quota.max_tokens);
+    let _ = engine.set_process_max_tokens(pid, process_turn_budget);
     let backend_capabilities = engine.loaded_backend_capabilities();
     let should_bind_resident_slot = backend_capabilities.resident_kv
         || backend_capabilities.persistent_slots
@@ -384,6 +397,11 @@ fn attach_process_resources(
     }
 
     scheduler.register(pid, workload, priority);
+    if scheduler_quota.max_tokens != default_quota.max_tokens
+        || scheduler_quota.max_syscalls != default_quota.max_syscalls
+    {
+        scheduler.set_quota(pid, scheduler_quota);
+    }
     Ok(())
 }
 

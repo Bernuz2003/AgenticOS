@@ -1,5 +1,6 @@
 use crate::diagnostics::audit::{self, AuditContext};
 use crate::protocol;
+use crate::runtime::AssistantTurnRuntimeBoundary;
 use agentic_control_models::{KernelEvent, SendInputResult, TurnControlResult};
 use agentic_protocol::ControlErrorCode;
 use serde::Deserialize;
@@ -105,6 +106,8 @@ pub(crate) fn handle_send_input(mut ctx: ProcessCommandContext<'_>, payload: &[u
 
     match engine.send_user_input(target.pid, prompt) {
         Ok(()) => {
+            ctx.turn_assembly
+                .apply_runtime_boundary(target.pid, AssistantTurnRuntimeBoundary::RuntimeClosed);
             let session_id = ctx
                 .session_registry
                 .session_id_for_pid(target.pid)

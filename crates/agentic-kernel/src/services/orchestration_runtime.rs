@@ -440,6 +440,7 @@ fn spawn_workflow_requests(
                     priority: ProcessPriority::Normal,
                     lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
                     context_policy: Some(effective_context_policy),
+                    quota_override: None,
                 },
             )
         };

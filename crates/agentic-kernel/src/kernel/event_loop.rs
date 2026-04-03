@@ -666,6 +666,7 @@ fn handle_client_event(
                 &mut kernel.pending_events,
                 &mut kernel.metrics,
                 &mut kernel.tool_registry,
+                &mut kernel.turn_assembly,
                 &kernel.auth_token,
             )
         {

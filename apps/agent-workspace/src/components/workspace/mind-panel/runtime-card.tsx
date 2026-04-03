@@ -26,6 +26,8 @@ export function RuntimeCard({ session, snapshot, onOpenAudit }: RuntimeCardProps
   const quotaSyscalls = snapshot?.quotaSyscalls ?? null;
   const backendClass = snapshot?.backendClass ?? "unknown";
   const permissions = snapshot?.permissions ?? null;
+  const formatQuota = (value: number | null) =>
+    value === null ? "No Limit" : formatValue(value);
 
   return (
     <>
@@ -82,11 +84,11 @@ export function RuntimeCard({ session, snapshot, onOpenAudit }: RuntimeCardProps
           </div>
           <div>
             <span className="mb-0.5 block text-slate-500">Quota Tokens</span>
-            <span className="font-medium text-slate-900">{formatValue(quotaTokens)}</span>
+            <span className="font-medium text-slate-900">{formatQuota(quotaTokens)}</span>
           </div>
           <div>
             <span className="mb-0.5 block text-slate-500">Quota Syscalls</span>
-            <span className="font-medium text-slate-900">{formatValue(quotaSyscalls)}</span>
+            <span className="font-medium text-slate-900">{formatQuota(quotaSyscalls)}</span>
           </div>
           <div>
             <span className="mb-0.5 block text-slate-500">Backend</span>

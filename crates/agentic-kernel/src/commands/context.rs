@@ -8,6 +8,7 @@ use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::resource_governor::ResourceGovernor;
+use crate::runtime::TurnAssemblyStore;
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
 use crate::services::job_scheduler::JobScheduler;
@@ -33,6 +34,7 @@ pub(crate) struct CommandContext<'a> {
     pub tool_registry: &'a mut ToolRegistry,
     pub session_registry: &'a mut SessionRegistry,
     pub storage: &'a mut StorageService,
+    pub turn_assembly: &'a mut TurnAssemblyStore,
     pub client_id: usize,
     pub shutdown_requested: &'a Arc<AtomicBool>,
     // ── Inference worker (checkout/checkin) ──────────────────────
@@ -92,6 +94,7 @@ pub(crate) struct ProcessCommandContext<'a> {
     pub client_id: usize,
     pub session_registry: &'a mut SessionRegistry,
     pub storage: &'a mut StorageService,
+    pub turn_assembly: &'a mut TurnAssemblyStore,
     pub tool_registry: &'a ToolRegistry,
 }
 
@@ -230,6 +233,7 @@ impl<'a> CommandContext<'a> {
             client_id: self.client_id,
             session_registry: &mut *self.session_registry,
             storage: &mut *self.storage,
+            turn_assembly: &mut *self.turn_assembly,
             tool_registry: &*self.tool_registry,
         }
     }

@@ -122,6 +122,7 @@ pub(super) fn spawn_orchestrator_request(
                 priority: ProcessPriority::Normal,
                 lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
                 context_policy: Some(effective_context_policy),
+                quota_override: None,
             },
         )
     };

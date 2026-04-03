@@ -185,10 +185,7 @@ fn write_file_retry_transcript_extracts_the_real_invocation() {
         final_step.syscall_command.as_deref(),
         Some(retry_write_file_invocation())
     );
-    assert_eq!(
-        final_step.continuation_text,
-        retry_write_file_transcript()
-    );
+    assert_eq!(final_step.continuation_text, retry_write_file_transcript());
 }
 
 #[test]

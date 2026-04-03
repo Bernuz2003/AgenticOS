@@ -12,7 +12,7 @@ use crate::memory::NeuralMemory;
 use crate::model_catalog::{RemoteModelEntry, ResolvedModelTarget, WorkloadClass};
 use crate::process::ProcessLifecyclePolicy;
 use crate::prompting::PromptFamily;
-use crate::scheduler::{ProcessPriority, ProcessScheduler};
+use crate::scheduler::{ProcessPriority, ProcessQuota, ProcessScheduler};
 use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -108,6 +108,7 @@ fn remote_stateless_processes_skip_resident_slot_binding() {
             priority: ProcessPriority::Normal,
             lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
             context_policy: None,
+            quota_override: None,
         },
     )
     .expect("spawn managed process");
@@ -122,6 +123,135 @@ fn remote_stateless_processes_skip_resident_slot_binding() {
     assert_eq!(process.resident_slot_policy_label(), None);
     assert_eq!(process.resident_slot_state_label(), None);
     assert_eq!(memory.slot_for_pid(spawned.pid), None);
+}
+
+#[test]
+fn quota_override_can_make_scheduler_unbounded_without_expanding_turn_budget() {
+    let _openai = TestOpenAIConfigOverrideGuard::set(test_openai_config());
+    let driver_resolution =
+        resolve_driver_for_model(PromptFamily::Unknown, None, Some("openai-responses"))
+            .expect("resolve openai backend");
+    let target = ResolvedModelTarget::remote(
+        "openai-responses",
+        "OpenAI",
+        "openai-responses",
+        "gpt-4.1-mini",
+        RemoteModelEntry {
+            id: "gpt-4.1-mini".to_string(),
+            label: "GPT-4.1 mini".to_string(),
+            context_window_tokens: None,
+            max_output_tokens: None,
+            supports_structured_output: true,
+            input_price_usd_per_mtok: None,
+            output_price_usd_per_mtok: None,
+        },
+        test_openai_config().into(),
+        None,
+        driver_resolution,
+    );
+
+    let mut engine = LLMEngine::load_target(&target).expect("load remote stateless engine");
+    let mut memory = NeuralMemory::new().expect("memory init");
+    let mut scheduler = ProcessScheduler::new();
+
+    let spawned = spawn_managed_process(
+        &mut engine,
+        &mut memory,
+        &mut scheduler,
+        ManagedProcessRequest {
+            prompt: "ping cloud backend".to_string(),
+            system_prompt: None,
+            owner_id: 7,
+            tool_caller: ToolCaller::AgentText,
+            permission_policy: Some(test_permissions()),
+            workload: WorkloadClass::Fast,
+            required_backend_class: Some(BackendClass::RemoteStateless),
+            priority: ProcessPriority::Normal,
+            lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+            context_policy: None,
+            quota_override: Some(ProcessQuota {
+                max_tokens: usize::MAX,
+                max_syscalls: usize::MAX,
+            }),
+        },
+    )
+    .expect("spawn managed process");
+
+    let process = engine
+        .processes
+        .get(&spawned.pid)
+        .expect("spawned process present");
+    let scheduler_quota = scheduler.quota(spawned.pid).expect("scheduler quota");
+
+    assert_eq!(
+        process.max_tokens,
+        ProcessQuota::defaults_for(WorkloadClass::Fast).max_tokens
+    );
+    assert_eq!(scheduler_quota.max_tokens, usize::MAX);
+    assert_eq!(scheduler_quota.max_syscalls, usize::MAX);
+}
+
+#[test]
+fn quota_override_can_reduce_turn_budget_when_limit_is_lower_than_default() {
+    let _openai = TestOpenAIConfigOverrideGuard::set(test_openai_config());
+    let driver_resolution =
+        resolve_driver_for_model(PromptFamily::Unknown, None, Some("openai-responses"))
+            .expect("resolve openai backend");
+    let target = ResolvedModelTarget::remote(
+        "openai-responses",
+        "OpenAI",
+        "openai-responses",
+        "gpt-4.1-mini",
+        RemoteModelEntry {
+            id: "gpt-4.1-mini".to_string(),
+            label: "GPT-4.1 mini".to_string(),
+            context_window_tokens: None,
+            max_output_tokens: None,
+            supports_structured_output: true,
+            input_price_usd_per_mtok: None,
+            output_price_usd_per_mtok: None,
+        },
+        test_openai_config().into(),
+        None,
+        driver_resolution,
+    );
+
+    let mut engine = LLMEngine::load_target(&target).expect("load remote stateless engine");
+    let mut memory = NeuralMemory::new().expect("memory init");
+    let mut scheduler = ProcessScheduler::new();
+
+    let spawned = spawn_managed_process(
+        &mut engine,
+        &mut memory,
+        &mut scheduler,
+        ManagedProcessRequest {
+            prompt: "ping cloud backend".to_string(),
+            system_prompt: None,
+            owner_id: 7,
+            tool_caller: ToolCaller::AgentText,
+            permission_policy: Some(test_permissions()),
+            workload: WorkloadClass::Fast,
+            required_backend_class: Some(BackendClass::RemoteStateless),
+            priority: ProcessPriority::Normal,
+            lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
+            context_policy: None,
+            quota_override: Some(ProcessQuota {
+                max_tokens: 64,
+                max_syscalls: 1,
+            }),
+        },
+    )
+    .expect("spawn managed process");
+
+    let process = engine
+        .processes
+        .get(&spawned.pid)
+        .expect("spawned process present");
+    let scheduler_quota = scheduler.quota(spawned.pid).expect("scheduler quota");
+
+    assert_eq!(process.max_tokens, 64);
+    assert_eq!(scheduler_quota.max_tokens, 64);
+    assert_eq!(scheduler_quota.max_syscalls, 1);
 }
 
 #[test]
@@ -168,6 +298,7 @@ fn remote_stateless_engine_rejects_resident_local_task_policy() {
             priority: ProcessPriority::Normal,
             lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
             context_policy: None,
+            quota_override: None,
         },
     )
     .expect_err("remote stateless engine should reject resident-local routing");
@@ -211,6 +342,7 @@ fn resident_local_engine_rejects_remote_stateless_task_policy() {
             priority: ProcessPriority::Normal,
             lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
             context_policy: None,
+            quota_override: None,
         },
     )
     .expect_err("resident local engine should reject remote-stateless routing");
@@ -257,6 +389,7 @@ fn resident_local_spawn_fails_fast_when_external_backend_is_unreachable() {
             priority: ProcessPriority::Normal,
             lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
             context_policy: None,
+            quota_override: None,
         },
     )
     .expect_err("spawn should fail before forking a process");
@@ -312,6 +445,7 @@ fn spawn_managed_process_injects_system_prompt_without_losing_user_prompt() {
             priority: ProcessPriority::Normal,
             lifecycle_policy: ProcessLifecyclePolicy::Ephemeral,
             context_policy: None,
+            quota_override: None,
         },
     )
     .expect("spawn managed process");

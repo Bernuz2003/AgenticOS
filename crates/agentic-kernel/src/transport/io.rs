@@ -12,6 +12,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::protocol;
 use crate::resource_governor::ResourceGovernor;
+use crate::runtime::TurnAssemblyStore;
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
 use crate::services::job_scheduler::JobScheduler;
@@ -137,6 +138,7 @@ pub fn handle_read_with_test_state(
             ResourceGovernor::load(storage, crate::config::ResourceGovernorConfig::default())
                 .expect("load transport test governor");
         let mut job_scheduler = JobScheduler::load(storage).expect("load transport test jobs");
+        let mut turn_assembly = TurnAssemblyStore::default();
         handle_read_with_registry(
             client,
             memory,
@@ -155,6 +157,7 @@ pub fn handle_read_with_test_state(
             pending_events,
             metrics,
             tool_registry,
+            &mut turn_assembly,
             auth_token,
         )
     })
@@ -179,6 +182,7 @@ pub fn handle_read_with_registry(
     pending_events: &mut Vec<KernelEvent>,
     metrics: &mut MetricsState,
     tool_registry: &mut ToolRegistry,
+    turn_assembly: &mut TurnAssemblyStore,
     auth_token: &str,
 ) -> bool {
     let mut chunk = [0; 4096];
@@ -217,6 +221,7 @@ pub fn handle_read_with_registry(
                 tool_registry,
                 session_registry,
                 storage,
+                turn_assembly,
                 client_id,
                 shutdown_requested,
                 in_flight,

@@ -51,6 +51,14 @@ struct StoredTimelineMessageRecord {
     created_at_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionTurnRecord {
+    pub(crate) turn_id: i64,
+    pub(crate) status: String,
+    pub(crate) finish_reason: Option<String>,
+    pub(crate) completed_at_ms: Option<i64>,
+}
+
 impl StorageService {
     pub(crate) fn normalize_inline_assistant_thinking_once(&mut self) -> Result<(), StorageError> {
         if self.assistant_thinking_normalization_already_completed()? {
@@ -211,6 +219,53 @@ impl StorageService {
         transaction.commit()?;
 
         Ok(())
+    }
+
+    pub(crate) fn mark_turn_awaiting_decision(&mut self, turn_id: i64) -> Result<(), StorageError> {
+        let updated_at_ms = current_timestamp_ms();
+        let transaction = self.connection.transaction()?;
+        let (session_id, _) =
+            turn_identity(&transaction, turn_id)?.ok_or(StorageError::MissingTurn { turn_id })?;
+
+        transaction.execute(
+            r#"
+            UPDATE session_turns
+            SET status = 'awaiting_turn_decision',
+                updated_at_ms = ?2,
+                completed_at_ms = NULL,
+                finish_reason = NULL
+            WHERE turn_id = ?1
+            "#,
+            params![turn_id, updated_at_ms],
+        )?;
+        transaction.execute(
+            "UPDATE sessions SET updated_at_ms = ?2 WHERE session_id = ?1",
+            params![session_id, updated_at_ms],
+        )?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    pub(crate) fn load_turn_record(&self, turn_id: i64) -> Result<SessionTurnRecord, StorageError> {
+        self.connection
+            .query_row(
+                r#"
+                SELECT turn_id, status, finish_reason, completed_at_ms
+                FROM session_turns
+                WHERE turn_id = ?1
+                "#,
+                params![turn_id],
+                |row| {
+                    Ok(SessionTurnRecord {
+                        turn_id: row.get(0)?,
+                        status: row.get(1)?,
+                        finish_reason: row.get(2)?,
+                        completed_at_ms: row.get(3)?,
+                    })
+                },
+            )
+            .map_err(StorageError::from)
     }
 
     pub(crate) fn append_assistant_message(

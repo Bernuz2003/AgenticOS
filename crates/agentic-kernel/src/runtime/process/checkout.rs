@@ -3,6 +3,7 @@ use std::sync::mpsc;
 
 use crate::diagnostics::audit::{self, AuditContext};
 use crate::inference_worker::InferenceCmd;
+use crate::runtime::TurnAssemblyStore;
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::{CheckedOutProcessMetadata, ProcessScheduler};
 use crate::session::SessionRegistry;
@@ -14,6 +15,7 @@ pub(crate) fn checkout_active_processes(
     runtime_registry: &mut RuntimeRegistry,
     scheduler: &mut ProcessScheduler,
     cmd_tx: &mpsc::Sender<InferenceCmd>,
+    turn_assembly: &TurnAssemblyStore,
     in_flight: &mut HashSet<u64>,
     session_registry: &SessionRegistry,
     storage: &mut StorageService,
@@ -95,9 +97,16 @@ pub(crate) fn checkout_active_processes(
             }
             in_flight.insert(pid);
             checked_out_count = checked_out_count.saturating_add(1);
+            let rendered_prompt = turn_assembly.render_inference_prompt(
+                pid,
+                process.prompt_text(),
+                process.resident_prompt_checkpoint_bytes(),
+            );
             let _ = cmd_tx.send(InferenceCmd::Step {
                 pid,
                 process: Box::new(process),
+                rendered_prompt: rendered_prompt.full_prompt,
+                resident_prompt_suffix: rendered_prompt.resident_prompt_suffix,
                 eos_token_id: eos,
                 eot_token_id: eot,
             });

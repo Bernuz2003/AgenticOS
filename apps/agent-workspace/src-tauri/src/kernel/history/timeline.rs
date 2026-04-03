@@ -143,7 +143,7 @@ fn build_timeline_items(
         for (message_index, message) in projected_turn_messages.into_iter().enumerate() {
             match message {
                 ProjectedTurnMessage::AssistantMessage(text) => {
-                    if text.trim().is_empty() {
+                    if !is_renderable_timeline_text(&text) {
                         continue;
                     }
                     rendered_turn_messages = true;
@@ -159,6 +159,9 @@ fn build_timeline_items(
                     });
                 }
                 ProjectedTurnMessage::Thinking(text) => {
+                    if !is_renderable_timeline_text(&text) {
+                        continue;
+                    }
                     rendered_turn_messages = true;
                     items.push(TimelineItem {
                         id: format!("{turn_id}-thinking-{}", message_index + 1),
@@ -236,10 +239,14 @@ fn build_timeline_seed(
             for message in projected_messages {
                 match message {
                     ProjectedTurnMessage::AssistantMessage(text) => {
-                        turn_messages.push(TimelineSeedMessage::Assistant(text));
+                        if is_renderable_timeline_text(&text) {
+                            turn_messages.push(TimelineSeedMessage::Assistant(text));
+                        }
                     }
                     ProjectedTurnMessage::Thinking(text) => {
-                        turn_messages.push(TimelineSeedMessage::Thinking(text));
+                        if is_renderable_timeline_text(&text) {
+                            turn_messages.push(TimelineSeedMessage::Thinking(text));
+                        }
                     }
                     ProjectedTurnMessage::Invocation(invocation) => {
                         turn_messages.push(TimelineSeedMessage::Invocation(invocation));
@@ -353,6 +360,10 @@ fn timeline_item_status_for_invocation(invocation: &InvocationEvent) -> &'static
     }
 }
 
+fn is_renderable_timeline_text(text: &str) -> bool {
+    !text.trim().is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use agentic_control_models::{InvocationKind, InvocationStatus};
@@ -457,6 +468,73 @@ mod tests {
             TimelineSeedMessage::Assistant(text) => assert_eq!(text, "Dopo"),
             other => panic!("unexpected third seed message: {:?}", other),
         }
+    }
+
+    #[test]
+    fn empty_thinking_messages_are_not_rendered_or_seeded() {
+        let turns = vec![StoredTurn {
+            turn_id: 1,
+            turn_index: 1,
+            pid: 7,
+            workload: "general".to_string(),
+            status: "running".to_string(),
+            finish_reason: None,
+        }];
+        let messages = vec![
+            stored_message(1, 1, "user", "prompt", "prompt"),
+            stored_message(1, 2, "assistant", "thinking", "   \n\t"),
+            stored_message(1, 3, "assistant", "message", "visible"),
+        ];
+
+        let items = build_timeline_items("sess-1", &turns, &messages);
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[1].kind, TimelineItemKind::AssistantMessage));
+        assert_eq!(items[1].text, "visible");
+
+        let seed = build_timeline_seed(
+            "sess-1".to_string(),
+            7,
+            "general".to_string(),
+            turns,
+            messages,
+            None,
+        );
+        assert_eq!(seed.turns.len(), 1);
+        assert_eq!(seed.turns[0].messages.len(), 1);
+        match &seed.turns[0].messages[0] {
+            TimelineSeedMessage::Assistant(text) => assert_eq!(text, "visible"),
+            other => panic!("unexpected seeded message: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn assistant_text_that_looks_like_system_output_stays_plain_assistant_text() {
+        let turns = vec![StoredTurn {
+            turn_id: 1,
+            turn_index: 1,
+            pid: 7,
+            workload: "general".to_string(),
+            status: "completed".to_string(),
+            finish_reason: Some("turn_completed".to_string()),
+        }];
+        let messages = vec![
+            stored_message(1, 1, "user", "prompt", "prompt"),
+            stored_message(
+                1,
+                2,
+                "assistant",
+                "message",
+                "[system] Output: Success: Python script executed. [/system]",
+            ),
+        ];
+
+        let items = build_timeline_items("sess-1", &turns, &messages);
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[1].kind, TimelineItemKind::AssistantMessage));
+        assert_eq!(
+            items[1].text,
+            "[system] Output: Success: Python script executed. [/system]"
+        );
     }
 
     fn stored_message(

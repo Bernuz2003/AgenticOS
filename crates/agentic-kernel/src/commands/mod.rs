@@ -25,6 +25,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::orchestrator::Orchestrator;
 use crate::protocol::OpCode;
 use crate::resource_governor::ResourceGovernor;
+use crate::runtime::TurnAssemblyStore;
 use crate::runtimes::RuntimeRegistry;
 use crate::scheduler::ProcessScheduler;
 use crate::services::job_scheduler::JobScheduler;
@@ -36,7 +37,9 @@ use crate::transport::Client;
 use self::context::CommandContext;
 
 // Re-export for other modules.
+pub(crate) use self::context::ProcessCommandContext;
 pub(crate) use self::diagnostics::MetricsState;
+pub(crate) use self::process_commands::{handle_send_input, handle_stop_output};
 
 #[allow(clippy::too_many_arguments)]
 pub fn execute_command(
@@ -53,6 +56,7 @@ pub fn execute_command(
     tool_registry: &mut ToolRegistry,
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
+    turn_assembly: &mut TurnAssemblyStore,
     client_id: usize,
     shutdown_requested: &Arc<AtomicBool>,
     in_flight: &HashSet<u64>,
@@ -134,6 +138,7 @@ pub fn execute_command(
         tool_registry,
         session_registry,
         storage,
+        turn_assembly,
         client_id,
         shutdown_requested,
         in_flight,
