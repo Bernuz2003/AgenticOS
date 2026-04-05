@@ -25,6 +25,15 @@ export function runtimeStateLabel(runtimeState?: string | null): string {
   return value;
 }
 
+export function isRuntimeActiveState(runtimeState?: string | null): boolean {
+  return (
+    runtimeState === "Running" ||
+    runtimeState === "WaitingForSyscall" ||
+    runtimeState === "InFlight" ||
+    runtimeState === "AwaitingRemoteResponse"
+  );
+}
+
 export function runtimeStateTone(runtimeState?: string | null): string {
   switch (runtimeState) {
     case "Running":
@@ -85,13 +94,7 @@ export function deriveSessionStatus(
     return "swapped";
   }
 
-  if (
-    timelineRunning ||
-    runtimeState === "Running" ||
-    runtimeState === "WaitingForSyscall" ||
-    runtimeState === "InFlight" ||
-    runtimeState === "AwaitingRemoteResponse"
-  ) {
+  if (timelineRunning || isRuntimeActiveState(runtimeState)) {
     return "running";
   }
 

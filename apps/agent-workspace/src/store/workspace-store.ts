@@ -12,8 +12,14 @@ import {
 let snapshotRequestSeq = 0;
 let timelineRequestSeq = 0;
 
+interface WorkspaceMatchCandidate {
+  sessionId: string;
+  pid: number | null;
+}
+
 interface WorkspaceState {
   activeSessionId: string | null;
+  activePid: number | null;
   snapshot: WorkspaceSnapshot | null;
   timeline: TimelineSnapshot | null;
   loading: boolean;
@@ -30,8 +36,46 @@ interface WorkspaceState {
   clear: () => void;
 }
 
+function collectActiveWorkspacePids(state: Pick<
+  WorkspaceState,
+  "activePid" | "snapshot" | "timeline"
+>): Set<number> {
+  const pids = new Set<number>();
+  const candidates = [
+    state.activePid,
+    state.snapshot?.pid,
+    state.snapshot?.activePid,
+    state.snapshot?.lastPid,
+    state.timeline?.pid,
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate !== null && candidate !== undefined) {
+      pids.add(candidate);
+    }
+  }
+
+  return pids;
+}
+
+function matchesActiveWorkspace(
+  state: Pick<WorkspaceState, "activeSessionId" | "activePid" | "snapshot" | "timeline">,
+  candidate: WorkspaceMatchCandidate,
+): boolean {
+  if (state.activeSessionId === null && state.activePid === null) {
+    return false;
+  }
+
+  if (state.activeSessionId !== null && state.activeSessionId === candidate.sessionId) {
+    return true;
+  }
+
+  return candidate.pid !== null && collectActiveWorkspacePids(state).has(candidate.pid);
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   activeSessionId: null,
+  activePid: null,
   snapshot: null,
   timeline: null,
   loading: false,
@@ -43,14 +87,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   applyLiveSnapshot: (snapshot) =>
     set((state) => {
       if (
-        state.activeSessionId !== null &&
-        state.activeSessionId !== snapshot.sessionId
+        !matchesActiveWorkspace(state, {
+          sessionId: snapshot.sessionId,
+          pid: snapshot.pid,
+        })
       ) {
         return state;
       }
 
       return {
         activeSessionId: snapshot.sessionId,
+        activePid: snapshot.activePid ?? snapshot.pid,
         snapshot,
         loading: false,
         error: null,
@@ -60,14 +107,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   applyLiveTimeline: (timeline) =>
     set((state) => {
       if (
-        state.activeSessionId !== null &&
-        state.activeSessionId !== timeline.sessionId
+        !matchesActiveWorkspace(state, {
+          sessionId: timeline.sessionId,
+          pid: timeline.pid,
+        })
       ) {
         return state;
       }
 
       return {
         activeSessionId: timeline.sessionId,
+        activePid: timeline.pid,
         timeline,
         timelineLoading: false,
         timelineError: null,
@@ -77,15 +127,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   appendLiveAuditEvent: (event) =>
     set((state) => {
       const snapshot = state.snapshot;
-      if (!snapshot) {
-        return state;
-      }
-
-      const matchesSession =
-        (event.sessionId !== null && snapshot.sessionId === event.sessionId) ||
-        (event.pid !== null &&
-          [snapshot.pid, snapshot.activePid, snapshot.lastPid].includes(event.pid));
-      if (!matchesSession) {
+      if (
+        !snapshot ||
+        !matchesActiveWorkspace(state, {
+          sessionId: event.sessionId ?? snapshot.sessionId,
+          pid: event.pid,
+        })
+      ) {
         return state;
       }
 
@@ -110,9 +158,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const requestId = ++snapshotRequestSeq;
     const sessionChanged = get().activeSessionId !== sessionId;
     const liveRevisionAtStart = get().liveSnapshotRevision;
+    const nextActivePid = pid ?? get().activePid;
 
     set((state) => ({
       activeSessionId: sessionId,
+      activePid: nextActivePid,
       loading: true,
       error: null,
       snapshot: sessionChanged ? null : state.snapshot,
@@ -131,7 +181,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         return;
       }
 
-      set({ snapshot, loading: false, error: null });
+      set({
+        snapshot,
+        activePid: snapshot.activePid ?? snapshot.pid,
+        loading: false,
+        error: null,
+      });
     } catch (error) {
       if (
         get().activeSessionId !== sessionId ||
@@ -153,9 +208,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const requestId = ++timelineRequestSeq;
     const sessionChanged = get().activeSessionId !== sessionId;
     const liveRevisionAtStart = get().liveTimelineRevision;
+    const nextActivePid = pid ?? get().activePid;
 
     set((state) => ({
       activeSessionId: sessionId,
+      activePid: nextActivePid,
       timelineLoading: true,
       timelineError: null,
       timeline: sessionChanged ? null : state.timeline,
@@ -174,7 +231,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         return;
       }
 
-      set({ timeline, timelineLoading: false, timelineError: null });
+      set({
+        timeline,
+        activePid: timeline.pid,
+        timelineLoading: false,
+        timelineError: null,
+      });
     } catch (error) {
       if (
         get().activeSessionId !== sessionId ||
@@ -195,6 +257,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   clear: () =>
     set({
       activeSessionId: null,
+      activePid: null,
       snapshot: null,
       timeline: null,
       loading: false,

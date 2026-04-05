@@ -28,10 +28,6 @@ export function useKernelEvents() {
   );
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  useEffect(() => {
     let cancelled = false;
     const cleanup: UnlistenFn[] = [];
 
@@ -65,6 +61,7 @@ export function useKernelEvents() {
       }
 
       cleanup.push(...handlers);
+      await refresh();
     };
 
     void register();
@@ -79,6 +76,7 @@ export function useKernelEvents() {
     applyLobbySnapshot,
     applyTimeline,
     applyWorkspaceSnapshot,
+    refresh,
     setBridgeStatus,
   ]);
 }

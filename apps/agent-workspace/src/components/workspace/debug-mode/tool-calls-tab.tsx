@@ -1,54 +1,72 @@
+import { useMemo } from "react";
+
+import { PreviewRecordList } from "../../ui/preview-record-list";
 import type { ParsedCoreDumpManifest } from "../../../lib/workspace/core-dumps";
 import { formatLatencyMs, formatTimestamp } from "../../../lib/workspace/format";
 
 export function ToolCallsTab({ manifest }: { manifest: ParsedCoreDumpManifest | null }) {
-  if (!manifest || manifest.toolInvocations.length === 0) {
-    return <div className="text-sm text-slate-500">No tool invocations captured.</div>;
-  }
+  const entries = useMemo(
+    () =>
+      manifest
+        ? [...manifest.toolInvocations].sort(
+            (left, right) =>
+              (right.createdAtMs ?? Number.MIN_SAFE_INTEGER) -
+              (left.createdAtMs ?? Number.MIN_SAFE_INTEGER),
+          )
+        : [],
+    [manifest],
+  );
 
   return (
-    <div className="space-y-4">
-      {manifest.toolInvocations.map((entry) => (
-        <section
-          key={entry.id}
-          className="rounded-[24px] border border-slate-200 bg-slate-50 p-4"
-        >
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-slate-950">{entry.toolName}</div>
-              <div className="mt-1 text-xs text-slate-500">
-                {formatTimestamp(entry.createdAtMs)} · {entry.status ?? "unknown status"}
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {entry.transport ? <Badge label={entry.transport} /> : null}
-              {entry.caller ? <Badge label={entry.caller} /> : null}
-              {entry.durationMs ? <Badge label={formatLatencyMs(entry.durationMs)} /> : null}
-              {entry.kill ? <Badge label="killed" danger /> : null}
-              {entry.errorKind ? <Badge label={entry.errorKind} danger /> : null}
-            </div>
-          </div>
+    <PreviewRecordList
+      items={entries}
+      previewLimit={10}
+      emptyState={<div className="text-sm text-slate-500">No tool invocations captured.</div>}
+      getKey={(entry) => entry.id}
+      renderItem={(entry) => <ToolInvocationCard entry={entry} />}
+      modalTitle="Tool Calls"
+      modalDescription="Invocazioni tool complete catturate nel dump selezionato."
+    />
+  );
+}
 
-          {entry.commandText ? (
-            <CodeBlock label="Command">{entry.commandText}</CodeBlock>
-          ) : null}
-          {entry.inputPreview ? <CodeBlock label="Input">{entry.inputPreview}</CodeBlock> : null}
-          {entry.outputPreview ? (
-            <CodeBlock label="Output">{entry.outputPreview}</CodeBlock>
-          ) : null}
-          {entry.warnings.length > 0 ? (
-            <div className="mt-4 rounded-[20px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-              <div className="font-semibold">Warnings</div>
-              <div className="mt-2 space-y-1">
-                {entry.warnings.map((warning) => (
-                  <div key={warning}>{warning}</div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </section>
-      ))}
-    </div>
+function ToolInvocationCard({
+  entry,
+}: {
+  entry: ParsedCoreDumpManifest["toolInvocations"][number];
+}) {
+  return (
+    <section className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <div className="text-sm font-semibold text-slate-950">{entry.toolName}</div>
+          <div className="mt-1 text-xs text-slate-500">
+            {formatTimestamp(entry.createdAtMs)} · {entry.status ?? "unknown status"}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {entry.transport ? <Badge label={entry.transport} /> : null}
+          {entry.caller ? <Badge label={entry.caller} /> : null}
+          {entry.durationMs ? <Badge label={formatLatencyMs(entry.durationMs)} /> : null}
+          {entry.kill ? <Badge label="killed" danger /> : null}
+          {entry.errorKind ? <Badge label={entry.errorKind} danger /> : null}
+        </div>
+      </div>
+
+      {entry.commandText ? <CodeBlock label="Command">{entry.commandText}</CodeBlock> : null}
+      {entry.inputPreview ? <CodeBlock label="Input">{entry.inputPreview}</CodeBlock> : null}
+      {entry.outputPreview ? <CodeBlock label="Output">{entry.outputPreview}</CodeBlock> : null}
+      {entry.warnings.length > 0 ? (
+        <div className="mt-4 rounded-[20px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <div className="font-semibold">Warnings</div>
+          <div className="mt-2 space-y-1">
+            {entry.warnings.map((warning) => (
+              <div key={warning}>{warning}</div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -64,7 +82,7 @@ function CodeBlock({
       <div className="border-b border-slate-200 px-4 py-2 text-xs uppercase tracking-[0.18em] text-slate-400">
         {label}
       </div>
-      <pre className="overflow-x-auto p-4 text-sm leading-6 text-slate-800">
+      <pre className="max-h-72 overflow-auto p-4 text-sm leading-6 text-slate-800">
         <code>{children}</code>
       </pre>
     </div>

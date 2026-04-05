@@ -1,4 +1,5 @@
 import type { OrchestrationStatus, WorkspaceSnapshot } from "../../lib/api";
+import { PreviewRecordList } from "../../components/ui/preview-record-list";
 import { WorkflowRunStatusBadge } from "../../components/workflows/run/status-badge";
 import { formatReasonLabel, formatTimestamp } from "./format";
 
@@ -72,34 +73,47 @@ export function WorkflowEventsPanel({
         </div>
         {workspaceError && <div className="mt-3 text-sm text-rose-700">{workspaceError}</div>}
         {workspace?.auditEvents.length ? (
-          <div className="mt-3 space-y-2">
-            {workspace.auditEvents
-              .slice()
-              .sort((left, right) => right.recordedAtMs - left.recordedAtMs)
-              .slice(0, 12)
-              .map((event) => (
-                <div
-                  key={`${event.recordedAtMs}:${event.category}:${event.kind}:${event.detail}`}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-sm font-semibold text-slate-900">{event.title}</div>
-                    <div className="text-[11px] text-slate-500">
-                      {formatTimestamp(event.recordedAtMs)}
-                    </div>
-                  </div>
-                  <div className="mt-1 text-xs uppercase tracking-wider text-slate-400">
-                    {event.category} · {event.kind}
-                  </div>
-                  <div className="mt-2 text-sm leading-6 text-slate-600">{event.detail}</div>
-                </div>
-              ))}
+          <div className="mt-3">
+            <PreviewRecordList
+              items={workspace.auditEvents
+                .slice()
+                .sort((left, right) => right.recordedAtMs - left.recordedAtMs)}
+              previewLimit={12}
+              emptyState={null}
+              getKey={(event) =>
+                `${event.recordedAtMs}:${event.category}:${event.kind}:${event.detail}`
+              }
+              renderItem={(event) => <WorkflowRuntimeEventCard event={event} />}
+              modalTitle="Runtime Events"
+              modalDescription="Audit completo disponibile per il task selezionato."
+            />
           </div>
         ) : (
           <div className="mt-3 text-sm text-slate-500">
             No runtime audit events available for the selected attempt.
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function WorkflowRuntimeEventCard({
+  event,
+}: {
+  event: NonNullable<WorkspaceSnapshot["auditEvents"]>[number];
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm font-semibold text-slate-900">{event.title}</div>
+        <div className="text-[11px] text-slate-500">{formatTimestamp(event.recordedAtMs)}</div>
+      </div>
+      <div className="mt-1 text-xs uppercase tracking-wider text-slate-400">
+        {event.category} · {event.kind}
+      </div>
+      <div className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-sm leading-6 text-slate-600">
+        {event.detail}
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useMemo } from "react";
 import { LoaderCircle } from "lucide-react";
 import type { HumanInputRequest, TimelineSnapshot } from "../../../lib/api";
 import { filterRenderableTimelineItems } from "../../../lib/timeline/mapping";
@@ -7,6 +7,7 @@ import { WorkspaceComposer } from "../composer";
 import { ArtifactBlock } from "./artifact-block";
 import { composerPlaceholder, timelineSignature } from "./markers";
 import { MessageList } from "./message-list";
+import { useSmartAutoScroll } from "./use-smart-auto-scroll";
 
 export interface TimelinePaneProps {
   timeline: TimelineSnapshot | null;
@@ -53,7 +54,6 @@ export function TimelinePane({
   onContinueOutput,
   onStopOutput,
 }: TimelinePaneProps) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
   const renderedItems = useMemo(
     () => (timeline ? filterRenderableTimelineItems(timeline.items) : []),
     [timeline],
@@ -66,23 +66,21 @@ export function TimelinePane({
     () => timelineSignature(renderedItems),
     [renderedItems],
   );
-
-  useEffect(() => {
-    if (!scrollRef.current) {
-      return;
-    }
-    scrollRef.current.scrollTo({
-      top: scrollRef.current.scrollHeight,
-      behavior: timeline?.running ? "smooth" : "auto",
-    });
-  }, [renderedTimelineSignature, timeline?.running]);
+  const { scrollRef, handleScroll } = useSmartAutoScroll(
+    renderedTimelineSignature,
+    `${timeline?.sessionId ?? "timeline"}:${timeline?.pid ?? "none"}`,
+  );
 
   const humanChoiceLoading = composerLoading || turnActionLoading;
   const placeholder = composerPlaceholder(humanRequest, canSend);
 
   return (
     <section className="flex h-full flex-col bg-slate-50/50">
-      <div ref={scrollRef} className="flex-1 space-y-8 overflow-y-auto p-6">
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="flex-1 space-y-8 overflow-y-auto p-6"
+      >
         {loading && (
           <div className="flex justify-center">
             <div className="inline-flex items-center gap-2 rounded-full border border-slate-100 bg-white px-4 py-2 text-sm font-medium text-slate-500 shadow-sm">

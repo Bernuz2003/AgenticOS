@@ -11,7 +11,9 @@ export function ShellLayout({ children }: ShellLayoutProps) {
     <div className="flex min-h-screen bg-white text-slate-900">
       <Sidebar />
       <div className="ml-64 flex min-h-screen flex-1 flex-col">
-        <main className="flex-1 overflow-y-auto p-6 md:p-8">{children}</main>
+        <main data-app-scroll-root className="flex-1 overflow-y-auto p-6 md:p-8">
+          {children}
+        </main>
       </div>
     </div>
   );

@@ -15,7 +15,10 @@ import {
   stopSessionOutput,
   type ReplayCoreDumpResult,
 } from "../../lib/api";
-import { deriveSessionStatus } from "../../lib/utils/formatting";
+import {
+  deriveSessionStatus,
+  isRuntimeActiveState,
+} from "../../lib/utils/formatting";
 import { updateWorkspaceSearchParams, workspaceModeFromSearch } from "../../lib/workspace/view-state";
 import { useSessionsStore } from "../../store/sessions-store";
 import type { AgentSessionSummary } from "../../store/sessions-store";
@@ -76,6 +79,7 @@ export function WorkspacePage() {
   const [auditOpen, setAuditOpen] = useState(false);
   const [compactionToast, setCompactionToast] = useState<string | null>(null);
   const lastCompactionRef = useRef<string | null>(null);
+  const timelineResyncRef = useRef<string | null>(null);
 
   const routePid =
     sessionId && sessionId.startsWith("pid-") ? Number(sessionId.slice(4)) : Number.NaN;
@@ -125,6 +129,10 @@ export function WorkspacePage() {
 
   const activePid = snapshot?.activePid ?? session?.activePid ?? null;
   const pendingHumanRequest = snapshot?.pendingHumanRequest ?? null;
+  const timelineHasStreamingItems = useMemo(
+    () => timeline?.items.some((item) => item.status === "streaming") ?? false,
+    [timeline?.items],
+  );
   const mode = workspaceModeFromSearch(
     searchParams.get("mode"),
     searchParams.get("dump"),
@@ -168,6 +176,33 @@ export function WorkspacePage() {
     lastCompactionRef.current = currentReason;
     return undefined;
   }, [snapshot?.context?.lastCompactionReason]);
+
+  useEffect(() => {
+    if (!sessionId || !snapshot || !timelineHasStreamingItems) {
+      timelineResyncRef.current = null;
+      return;
+    }
+
+    if (isRuntimeActiveState(snapshot.state)) {
+      timelineResyncRef.current = null;
+      return;
+    }
+
+    const refreshPid = activePid ?? snapshot.activePid ?? snapshot.pid;
+    const resyncKey = `${sessionId}:${refreshPid}:${snapshot.state}:${timelineHasStreamingItems}`;
+    if (timelineResyncRef.current === resyncKey) {
+      return;
+    }
+
+    timelineResyncRef.current = resyncKey;
+    void refreshTimeline(sessionId, refreshPid);
+  }, [
+    activePid,
+    refreshTimeline,
+    sessionId,
+    snapshot,
+    timelineHasStreamingItems,
+  ]);
 
   useEffect(() => {
     if (mode !== "debug") {

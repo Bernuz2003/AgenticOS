@@ -179,13 +179,11 @@ export const useSessionsStore = create<SessionsState>((set) => ({
     });
   },
   setBridgeStatus: (connected, error) => {
-    set((state) => ({
+    set({
       connected,
       error,
       loading: false,
-      sessions: connected ? state.sessions : state.sessions,
-      orchestrations: connected ? state.orchestrations : state.orchestrations,
-    }));
+    });
   },
   refresh: async () => {
     set({ loading: true, error: null });
