@@ -8,7 +8,7 @@ import { ArtifactBlock } from "./artifact-block";
 import { composerPlaceholder, timelineSignature } from "./markers";
 import { MessageList } from "./message-list";
 
-interface TimelinePaneProps {
+export interface TimelinePaneProps {
   timeline: TimelineSnapshot | null;
   loading: boolean;
   error: string | null;

@@ -1,19 +1,25 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { MindPanel } from "../../components/workspace/mind-panel";
-import { TimelinePane } from "../../components/workspace/timeline-pane";
-import { AuditDrawer } from "../../components/diagnostics/event-log";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
+
+import { AuditDrawer } from "../../components/diagnostics/event-log";
+import { ConversationSurface } from "../../components/workspace/conversation-surface";
+import { DebugMode } from "../../components/workspace/debug-mode";
+import { InspectDrawer } from "../../components/workspace/inspect-drawer";
+import { SessionShell } from "../../components/workspace/session-shell";
+import { SessionHeader } from "../../components/workspace/session-shell/session-header";
+import { useCoreDumps } from "../../hooks/useCoreDumps";
 import {
   continueSessionOutput,
   sendSessionInput,
   stopSessionOutput,
   type ReplayCoreDumpResult,
 } from "../../lib/api";
+import { deriveSessionStatus } from "../../lib/utils/formatting";
+import { updateWorkspaceSearchParams, workspaceModeFromSearch } from "../../lib/workspace/view-state";
 import { useSessionsStore } from "../../store/sessions-store";
-import { useWorkspaceStore } from "../../store/workspace-store";
-import { deriveSessionStatus, runtimeStateLabel } from "../../lib/utils/formatting";
 import type { AgentSessionSummary } from "../../store/sessions-store";
+import { useWorkspaceStore } from "../../store/workspace-store";
 
 function buildSyntheticSession(
   sessionId: string,
@@ -45,6 +51,7 @@ function buildSyntheticSession(
 export function WorkspacePage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const listedSession = useSessionsStore((state) =>
     state.sessions.find((item) => item.sessionId === sessionId),
   );
@@ -67,6 +74,8 @@ export function WorkspacePage() {
   const [turnActionError, setTurnActionError] = useState<string | null>(null);
   const [stopRequestPending, setStopRequestPending] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+  const [compactionToast, setCompactionToast] = useState<string | null>(null);
+  const lastCompactionRef = useRef<string | null>(null);
 
   const routePid =
     sessionId && sessionId.startsWith("pid-") ? Number(sessionId.slice(4)) : Number.NaN;
@@ -115,9 +124,18 @@ export function WorkspacePage() {
   }, [listedSession, routePid, sessionId, snapshot, timeline?.pid, timeline?.running]);
 
   const activePid = snapshot?.activePid ?? session?.activePid ?? null;
-  const displayedTitle = snapshot?.title ?? session?.title ?? "";
-  const displayedRuntimeState = snapshot?.state ?? session?.runtimeState ?? null;
   const pendingHumanRequest = snapshot?.pendingHumanRequest ?? null;
+  const mode = workspaceModeFromSearch(
+    searchParams.get("mode"),
+    searchParams.get("dump"),
+  );
+  const selectedDumpId = searchParams.get("dump");
+  const coreDumps = useCoreDumps({
+    sessionId: session?.sessionId ?? sessionId ?? "",
+    pid: activePid ?? session?.lastPid ?? null,
+    refreshKey: liveSnapshotRevision,
+    selectedDumpId,
+  });
 
   useEffect(() => {
     if (!sessionId) {
@@ -137,6 +155,35 @@ export function WorkspacePage() {
     setTurnActionError(null);
     setStopRequestPending(false);
   }, [session?.pid]);
+
+  useEffect(() => {
+    const currentReason = snapshot?.context?.lastCompactionReason ?? null;
+    if (currentReason && currentReason !== lastCompactionRef.current) {
+      setCompactionToast(currentReason);
+      const timeout = window.setTimeout(() => setCompactionToast(null), 4000);
+      lastCompactionRef.current = currentReason;
+      return () => window.clearTimeout(timeout);
+    }
+
+    lastCompactionRef.current = currentReason;
+    return undefined;
+  }, [snapshot?.context?.lastCompactionReason]);
+
+  useEffect(() => {
+    if (mode !== "debug") {
+      return;
+    }
+    if (selectedDumpId === coreDumps.resolvedSelectedDumpId) {
+      return;
+    }
+    setSearchParams(
+      (current) =>
+        updateWorkspaceSearchParams(current, {
+          dump: coreDumps.resolvedSelectedDumpId,
+        }),
+      { replace: true },
+    );
+  }, [coreDumps.resolvedSelectedDumpId, mode, selectedDumpId, setSearchParams]);
 
   const awaitingContinuation = snapshot?.state === "AwaitingTurnDecision";
   const canRequestStopWhileRunning =
@@ -186,6 +233,16 @@ export function WorkspacePage() {
     await Promise.all([refreshTimeline(sessionKey, pid), refresh(sessionKey, pid)]);
   }
 
+  function applyViewState(patch: {
+    mode?: "conversation" | "debug" | null;
+    dump?: string | null;
+  }) {
+    setSearchParams(
+      (current) => updateWorkspaceSearchParams(current, patch),
+      { replace: true },
+    );
+  }
+
   async function submitInput(rawPrompt: string) {
     if (!session) {
       return;
@@ -208,9 +265,11 @@ export function WorkspacePage() {
       });
       setComposerValue("");
       await refreshWorkspace(session.sessionId, result.pid);
-    } catch (error) {
+    } catch (nextError) {
       setComposerError(
-        error instanceof Error ? error.message : "Failed to resume or send input to session",
+        nextError instanceof Error
+          ? nextError.message
+          : "Failed to resume or send input to session",
       );
     } finally {
       setComposerLoading(false);
@@ -237,10 +296,10 @@ export function WorkspacePage() {
     try {
       await continueSessionOutput(activePid);
       await refreshWorkspace(session.sessionId, activePid);
-    } catch (error) {
+    } catch (nextError) {
       setTurnActionError(
-        error instanceof Error
-          ? error.message
+        nextError instanceof Error
+          ? nextError.message
           : "Failed to continue truncated assistant output",
       );
     } finally {
@@ -260,9 +319,9 @@ export function WorkspacePage() {
       const result = await stopSessionOutput(activePid);
       setStopRequestPending(result.action === "request_stop_output");
       await refreshWorkspace(session.sessionId, activePid);
-    } catch (error) {
+    } catch (nextError) {
       setTurnActionError(
-        error instanceof Error ? error.message : "Failed to stop assistant output",
+        nextError instanceof Error ? nextError.message : "Failed to stop assistant output",
       );
     } finally {
       setTurnActionLoading(false);
@@ -273,19 +332,52 @@ export function WorkspacePage() {
     navigate(`/workspace/${result.sessionId}`);
   }
 
+  async function handleCaptureDump() {
+    const dump = await coreDumps.captureDump();
+    if (dump) {
+      applyViewState({ mode: "debug", dump: dump.dumpId });
+    }
+  }
+
+  async function handleReplayDump(dumpId: string, branchLabel?: string | null) {
+    const result = await coreDumps.replayDump(dumpId, branchLabel);
+    if (result) {
+      handleReplayReady(result);
+    }
+  }
+
+  function handleSelectDump(dumpId: string) {
+    applyViewState({ mode: "debug", dump: dumpId });
+    void coreDumps.selectDump(dumpId);
+  }
+
+  function handleOpenAudit() {
+    setAuditOpen(true);
+  }
+
+  function handleToggleWorkspaceMode() {
+    if (mode === "debug") {
+      applyViewState({ mode: "conversation", dump: null });
+      return;
+    }
+    applyViewState({ mode: "debug", dump: coreDumps.resolvedSelectedDumpId });
+  }
+
   if (!session) {
     return (
       <div className="flex items-center justify-center p-20">
         <div className="text-center">
           <h2 className="text-2xl font-bold text-slate-900">Sessione non trovata</h2>
-          <p className="mt-3 text-sm text-slate-500 max-w-md mx-auto">
-            Questo workspace usa `session_id` come identita' primaria e ricarica i dati da SQLite; la sessione richiesta non e' presente nello store persistito o e' stata cancellata.
+          <p className="mx-auto mt-3 max-w-md text-sm text-slate-500">
+            Questo workspace usa `session_id` come identita' primaria e ricarica i dati da
+            SQLite; la sessione richiesta non e' presente nello store persistito o e' stata
+            cancellata.
           </p>
           <Link
             to="/sessions"
-            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700 transition"
+            className="mt-6 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700"
           >
-            <ArrowLeft className="w-4 h-4" />
+            <ArrowLeft className="h-4 w-4" />
             Torna alle Sessioni
           </Link>
         </div>
@@ -295,68 +387,82 @@ export function WorkspacePage() {
 
   return (
     <>
-      <div className="max-w-[1600px] w-full mx-auto h-[calc(100vh-4rem)] flex gap-6">
-        <div className="flex-1 flex flex-col bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden min-w-[500px]">
-          <div className="border-b border-slate-100 p-4 shrink-0 flex items-center justify-between">
-            <Link
-              to="/sessions"
-              className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition"
-              title="Return to Sessions"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </Link>
-            <div className="text-center">
-               <h1 className="font-bold text-slate-900">{displayedTitle}</h1>
-               <div className="text-xs text-slate-500 uppercase font-semibold tracking-wider">
-                 session:{session.status} · runtime:{runtimeStateLabel(displayedRuntimeState)} · PID {activePid ?? session.pid}
-               </div>
+      <SessionShell
+        header={
+          <SessionHeader
+            session={session}
+            snapshot={snapshot}
+            mode={mode}
+            onOpenAudit={handleOpenAudit}
+            onToggleWorkspaceMode={handleToggleWorkspaceMode}
+          />
+        }
+      >
+        {mode === "debug" ? (
+          <DebugMode
+            dumps={coreDumps.dumps}
+            selectedDumpId={coreDumps.resolvedSelectedDumpId}
+            selectedInfo={coreDumps.selectedInfo}
+            loading={coreDumps.loading}
+            capturePending={coreDumps.capturePending}
+            replayPendingId={coreDumps.replayPendingId}
+            activeReplaySourceDumpId={snapshot?.replay?.sourceDumpId ?? null}
+            currentReplay={snapshot?.replay ?? null}
+            canCapture={activePid !== null}
+            onRefresh={() => void coreDumps.refreshDumps()}
+            onCapture={() => void handleCaptureDump()}
+            onSelectDump={handleSelectDump}
+            onReplayDump={handleReplayDump}
+          />
+        ) : (
+          <div className="mx-auto flex h-full w-full max-w-[1480px] min-h-0 justify-center gap-4">
+            <div className="flex min-h-0 min-w-0 max-w-[980px] flex-1">
+              <ConversationSurface
+                timeline={timeline}
+                loading={timelineLoading}
+                error={timelineError}
+                awaitingContinuation={awaitingContinuation}
+                canRequestStopWhileRunning={canRequestStopWhileRunning}
+                stopButtonTitle={stopButtonTitle}
+                stopRequestPending={stopRequestPending}
+                composerValue={composerValue}
+                composerLoading={composerLoading}
+                composerError={composerError}
+                turnActionLoading={turnActionLoading}
+                turnActionError={turnActionError}
+                canSend={canSendInput}
+                canSendText={canSendTextInput}
+                humanRequest={pendingHumanRequest}
+                onComposerChange={setComposerValue}
+                onComposerSubmit={handleComposerSubmit}
+                onHumanChoice={handleHumanChoice}
+                onContinueOutput={handleContinueOutput}
+                onStopOutput={handleStopOutput}
+              />
             </div>
-            <div className="w-9" /> {/* spacer for alignment */}
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            <TimelinePane
-              timeline={timeline}
-              loading={timelineLoading}
-              error={timelineError}
-              awaitingContinuation={awaitingContinuation}
-              canRequestStopWhileRunning={canRequestStopWhileRunning}
-              stopButtonTitle={stopButtonTitle}
-              stopRequestPending={stopRequestPending}
-              composerValue={composerValue}
-              composerLoading={composerLoading}
-              composerError={composerError}
-              turnActionLoading={turnActionLoading}
-              turnActionError={turnActionError}
-              canSend={canSendInput}
-              canSendText={canSendTextInput}
-              humanRequest={pendingHumanRequest}
-              onComposerChange={setComposerValue}
-              onComposerSubmit={handleComposerSubmit}
-              onHumanChoice={handleHumanChoice}
-              onContinueOutput={handleContinueOutput}
-              onStopOutput={handleStopOutput}
+            <InspectDrawer
+              session={session}
+              snapshot={snapshot}
+              compactionToast={compactionToast}
             />
           </div>
-        </div>
+        )}
+      </SessionShell>
 
-        <div className="bg-white border rounded-2xl border-slate-200 overflow-hidden shadow-sm shrink-0 min-h-0 flex">
-        <MindPanel
-          session={session}
-          snapshot={snapshot}
-          loading={loading}
-          error={error}
-          snapshotRefreshKey={liveSnapshotRevision}
-          onOpenAudit={() => setAuditOpen(true)}
-          onReplayReady={handleReplayReady}
-        />
+      {error ? (
+        <div className="fixed bottom-6 left-6 z-30 rounded-[20px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 shadow-lg">
+          {error}
         </div>
-      </div>
+      ) : null}
 
-      <AuditDrawer 
-        isOpen={auditOpen} 
-        onClose={() => setAuditOpen(false)} 
-        snapshot={snapshot} 
-      />
+      {compactionToast ? (
+        <div className="fixed bottom-6 right-6 z-30 max-w-md rounded-[24px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 shadow-lg">
+          <div className="font-semibold">Context compaction</div>
+          <div className="mt-1 leading-relaxed">{compactionToast}</div>
+        </div>
+      ) : null}
+
+      <AuditDrawer isOpen={auditOpen} onClose={() => setAuditOpen(false)} snapshot={snapshot} />
     </>
   );
 }
