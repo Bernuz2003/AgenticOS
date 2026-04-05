@@ -72,6 +72,11 @@ pub(crate) const PROCESS_SPAWNED: AuditSpec = AuditSpec {
     kind: "spawned",
     title: "Process spawned",
 };
+pub(crate) const PROCESS_REPLAY_STARTED: AuditSpec = AuditSpec {
+    category: "process",
+    kind: "replay_started",
+    title: "Replay branch started",
+};
 pub(crate) const PROCESS_FINISHED: AuditSpec = AuditSpec {
     category: "process",
     kind: "finished",

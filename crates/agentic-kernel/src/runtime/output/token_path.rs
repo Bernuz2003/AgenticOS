@@ -5,6 +5,7 @@ use agentic_control_models::KernelEvent;
 use mio::{Poll, Token};
 
 use crate::backend::InferenceFinishReason;
+use crate::core_dump::record_live_debug_checkpoint;
 use crate::diagnostics::audit::{self, AuditContext};
 use crate::memory::NeuralMemory;
 use crate::orchestrator::Orchestrator;
@@ -257,6 +258,27 @@ pub(super) fn handle_token_result(
         }
 
         engine.processes.insert(pid, process);
+        if turn_boundary_reached {
+            if let Some(process) = engine.processes.get(&pid) {
+                if let Err(err) = record_live_debug_checkpoint(
+                    storage,
+                    session_registry,
+                    turn_assembly,
+                    &runtime_id,
+                    pid,
+                    process,
+                    "canonical_commit",
+                    None,
+                ) {
+                    tracing::warn!(
+                        pid,
+                        runtime_id,
+                        %err,
+                        "FORENSICS: failed to persist canonical commit checkpoint"
+                    );
+                }
+            }
+        }
 
         if pending_kills.contains(&pid) {
             pending_kills.retain(|&queued_pid| queued_pid != pid);
@@ -309,6 +331,7 @@ pub(super) fn handle_token_result(
                     orchestrator,
                     pid,
                     &content,
+                    turn_assembly,
                     syscall_cmd_tx,
                     session_registry,
                     storage,

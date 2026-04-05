@@ -104,6 +104,7 @@ pub(crate) fn normalize_ask_human_request(
 #[agentic_tool(
     name = "ask_human",
     description = "Pause the current process and request structured input or approval from a human operator.",
+    input_example = serde_json::json!({"question": "Ship this patch?", "kind": "approval"}),
     capabilities = ["hitl", "approval"],
     allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.replay_coredump.v1",
+  "title": "AgenticOS REPLAY_COREDUMP Response v1",
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.replay_coredump.v1"},
+        "data": {
+          "type": "object",
+          "required": [
+            "source_dump_id",
+            "session_id",
+            "pid",
+            "runtime_id",
+            "replay_session_title",
+            "replay_fidelity",
+            "replay_mode",
+            "tool_mode",
+            "initial_state",
+            "patched_context_segments",
+            "patched_episodic_segments",
+            "stubbed_invocations",
+            "overridden_invocations"
+          ],
+          "properties": {
+            "source_dump_id": {"type": "string", "minLength": 1},
+            "session_id": {"type": "string", "minLength": 1},
+            "pid": {"type": "integer", "minimum": 1},
+            "runtime_id": {"type": "string", "minLength": 1},
+            "replay_session_title": {"type": "string", "minLength": 1},
+            "replay_fidelity": {"type": "string", "minLength": 1},
+            "replay_mode": {"type": "string", "minLength": 1},
+            "tool_mode": {"type": "string", "minLength": 1},
+            "initial_state": {"type": "string", "minLength": 1},
+            "patched_context_segments": {"type": "integer", "minimum": 0},
+            "patched_episodic_segments": {"type": "integer", "minimum": 0},
+            "stubbed_invocations": {"type": "integer", "minimum": 0},
+            "overridden_invocations": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

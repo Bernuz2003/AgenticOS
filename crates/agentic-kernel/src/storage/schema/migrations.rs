@@ -2,7 +2,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use super::service::StorageError;
 
-pub(crate) const LATEST_SCHEMA_VERSION: i32 = 12;
+pub(crate) const LATEST_SCHEMA_VERSION: i32 = 14;
 
 const LEGACY_TABLES: &[&str] = &[
     "kernel_meta",
@@ -251,6 +251,96 @@ fn create_baseline_schema(transaction: &Transaction<'_>) -> Result<(), StorageEr
             ON accounting_events(backend_id, recorded_at_ms DESC);
         CREATE INDEX idx_accounting_events_provider_model
             ON accounting_events(provider_id, model_id, recorded_at_ms DESC);
+
+        CREATE TABLE core_dump_index (
+            dump_id TEXT PRIMARY KEY,
+            created_at_ms INTEGER NOT NULL,
+            session_id TEXT NULL,
+            pid INTEGER NULL,
+            reason TEXT NOT NULL,
+            fidelity TEXT NOT NULL,
+            path TEXT NOT NULL,
+            bytes INTEGER NOT NULL DEFAULT 0,
+            sha256 TEXT NOT NULL,
+            note TEXT NULL,
+            FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX idx_core_dump_index_created_at
+            ON core_dump_index(created_at_ms DESC, dump_id DESC);
+        CREATE INDEX idx_core_dump_index_session_created
+            ON core_dump_index(session_id, created_at_ms DESC);
+        CREATE INDEX idx_core_dump_index_pid_created
+            ON core_dump_index(pid, created_at_ms DESC);
+
+        CREATE TABLE debug_checkpoints (
+            checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recorded_at_ms INTEGER NOT NULL,
+            session_id TEXT NULL,
+            pid INTEGER NULL,
+            runtime_id TEXT NULL,
+            boundary TEXT NOT NULL,
+            state TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_debug_checkpoints_pid_recorded
+            ON debug_checkpoints(pid, recorded_at_ms DESC, checkpoint_id DESC);
+        CREATE INDEX idx_debug_checkpoints_session_recorded
+            ON debug_checkpoints(session_id, recorded_at_ms DESC, checkpoint_id DESC);
+
+        CREATE TABLE tool_invocation_history (
+            invocation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_call_id TEXT NOT NULL UNIQUE,
+            recorded_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            session_id TEXT NULL,
+            pid INTEGER NULL,
+            runtime_id TEXT NULL,
+            tool_name TEXT NOT NULL,
+            caller TEXT NOT NULL,
+            transport TEXT NOT NULL,
+            status TEXT NOT NULL,
+            command_text TEXT NOT NULL,
+            input_json TEXT NOT NULL,
+            output_json TEXT NULL,
+            output_text TEXT NULL,
+            warnings_json TEXT NULL,
+            error_kind TEXT NULL,
+            error_text TEXT NULL,
+            effect_json TEXT NULL,
+            duration_ms INTEGER NULL,
+            kill INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX idx_tool_invocation_history_pid_recorded
+            ON tool_invocation_history(pid, recorded_at_ms DESC, invocation_id DESC);
+        CREATE INDEX idx_tool_invocation_history_session_recorded
+            ON tool_invocation_history(session_id, recorded_at_ms DESC, invocation_id DESC);
+        CREATE INDEX idx_tool_invocation_history_status_recorded
+            ON tool_invocation_history(status, recorded_at_ms DESC, invocation_id DESC);
+
+        CREATE TABLE replay_branch_index (
+            session_id TEXT PRIMARY KEY,
+            created_at_ms INTEGER NOT NULL,
+            pid INTEGER NOT NULL,
+            source_dump_id TEXT NOT NULL,
+            source_session_id TEXT NULL,
+            source_pid INTEGER NULL,
+            source_fidelity TEXT NOT NULL,
+            replay_mode TEXT NOT NULL,
+            tool_mode TEXT NOT NULL,
+            initial_state TEXT NOT NULL,
+            patched_context_segments INTEGER NOT NULL DEFAULT 0,
+            patched_episodic_segments INTEGER NOT NULL DEFAULT 0,
+            stubbed_invocations INTEGER NOT NULL DEFAULT 0,
+            overridden_invocations INTEGER NOT NULL DEFAULT 0,
+            baseline_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX idx_replay_branch_source_dump
+            ON replay_branch_index(source_dump_id, created_at_ms DESC);
 
         CREATE TABLE audit_events (
             audit_id INTEGER PRIMARY KEY AUTOINCREMENT,

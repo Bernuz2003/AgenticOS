@@ -164,6 +164,19 @@ pub(crate) struct CheckpointCommandContext<'a> {
     pub client_id: usize,
 }
 
+pub(crate) struct CoreDumpCommandContext<'a> {
+    pub client: &'a mut Client,
+    pub request_id: &'a str,
+    pub runtime_registry: &'a mut RuntimeRegistry,
+    pub scheduler: &'a mut ProcessScheduler,
+    pub session_registry: &'a mut SessionRegistry,
+    pub storage: &'a mut StorageService,
+    pub turn_assembly: &'a mut TurnAssemblyStore,
+    pub memory: &'a mut NeuralMemory,
+    pub in_flight: &'a HashSet<u64>,
+    pub pending_events: &'a mut Vec<KernelEvent>,
+}
+
 impl<'a> CommandContext<'a> {
     pub fn status_view(&mut self) -> StatusCommandContext<'_> {
         StatusCommandContext {
@@ -313,6 +326,21 @@ impl<'a> CommandContext<'a> {
             in_flight: self.in_flight,
             pending_events: &mut *self.pending_events,
             client_id: self.client_id,
+        }
+    }
+
+    pub fn core_dump_view(&mut self) -> CoreDumpCommandContext<'_> {
+        CoreDumpCommandContext {
+            client: &mut *self.client,
+            request_id: self.request_id.as_str(),
+            runtime_registry: &mut *self.runtime_registry,
+            scheduler: &mut *self.scheduler,
+            session_registry: &mut *self.session_registry,
+            storage: &mut *self.storage,
+            turn_assembly: &mut *self.turn_assembly,
+            memory: &mut *self.memory,
+            in_flight: self.in_flight,
+            pending_events: &mut *self.pending_events,
         }
     }
 }

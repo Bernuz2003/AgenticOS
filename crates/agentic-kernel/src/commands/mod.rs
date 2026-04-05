@@ -1,5 +1,6 @@
 mod checkpoint_cmd;
 mod context;
+mod core_dump;
 mod diagnostics;
 mod exec;
 mod memory_cmd;
@@ -37,8 +38,10 @@ use crate::transport::Client;
 use self::context::CommandContext;
 
 // Re-export for other modules.
-pub(crate) use self::context::ProcessCommandContext;
+pub(crate) use self::context::{CoreDumpCommandContext, ProcessCommandContext};
+pub(crate) use self::core_dump::{handle_core_dump, handle_core_dump_info, handle_list_core_dumps};
 pub(crate) use self::diagnostics::MetricsState;
+pub(crate) use self::process_commands::targeting::runtime_selector_for_session;
 pub(crate) use self::process_commands::{handle_send_input, handle_stop_output};
 
 #[allow(clippy::too_many_arguments)]
@@ -235,6 +238,8 @@ pub fn execute_command(
         OpCode::ListArtifacts => {
             workflow_commands::control::handle_list_artifacts(ctx.status_view(), &payload)
         }
+        OpCode::ListCoreDumps => core_dump::handle_list_core_dumps(ctx.core_dump_view(), &payload),
+        OpCode::ReplayCoreDump => core_dump::handle_replay_core_dump(ctx.process_view(), &payload),
         OpCode::Term => self::process_commands::handle_term(ctx.process_view(), &payload),
         OpCode::Kill => self::process_commands::handle_kill(ctx.process_view(), &payload),
         OpCode::Shutdown => misc::handle_shutdown(ctx.misc_view()),
@@ -251,6 +256,8 @@ pub fn execute_command(
             self::process_commands::lifecycle::handle_set_quota(ctx.scheduler_view(), &payload)
         }
         OpCode::Checkpoint => checkpoint_cmd::handle_checkpoint(ctx.checkpoint_view(), &payload),
+        OpCode::CoreDump => core_dump::handle_core_dump(ctx.core_dump_view(), &payload),
+        OpCode::CoreDumpInfo => core_dump::handle_core_dump_info(ctx.core_dump_view(), &payload),
         OpCode::Restore => checkpoint_cmd::handle_restore(ctx.checkpoint_view(), &payload),
         OpCode::Orchestrate => {
             if let Some(r) = workflow_commands::orchestration::handle_orchestrate(

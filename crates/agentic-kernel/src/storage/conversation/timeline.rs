@@ -690,6 +690,156 @@ impl StorageService {
             .optional()
             .map_err(StorageError::from)
     }
+
+    pub(crate) fn import_replay_history(
+        &mut self,
+        session_id: &str,
+        pid: u64,
+        workload: &str,
+        source: &str,
+        messages: &[StoredReplayMessage],
+    ) -> Result<(), StorageError> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+
+        let imported_at_ms = current_timestamp_ms();
+        let transaction = self.connection.transaction()?;
+        let run_id =
+            active_run_id_for_session_pid(&transaction, session_id, pid)?.ok_or_else(|| {
+                StorageError::MissingProcessRun {
+                    session_id: session_id.to_string(),
+                    pid,
+                }
+            })?;
+        let mut current_turn: Option<(i64, i64)> = None;
+        let mut next_turn = next_turn_index(&transaction, session_id)?;
+        let mut next_timestamp = imported_at_ms;
+
+        for message in messages {
+            if message.role == "user" {
+                if let Some((turn_id, _)) = current_turn.take() {
+                    finalize_imported_turn(&transaction, turn_id, next_timestamp)?;
+                }
+
+                let turn_id = insert_imported_turn(
+                    &transaction,
+                    session_id,
+                    run_id,
+                    pid,
+                    next_turn,
+                    workload,
+                    source,
+                    &message.kind,
+                    &message.content,
+                    next_timestamp,
+                )?;
+                current_turn = Some((turn_id, 2));
+                next_turn += 1;
+                next_timestamp += 1;
+                continue;
+            }
+
+            let Some((turn_id, ordinal)) = current_turn.as_mut() else {
+                continue;
+            };
+            insert_message(
+                &transaction,
+                session_id,
+                *turn_id,
+                pid,
+                *ordinal,
+                &message.role,
+                &message.kind,
+                &message.content,
+                next_timestamp,
+            )?;
+            *ordinal += 1;
+            next_timestamp += 1;
+        }
+
+        if let Some((turn_id, _)) = current_turn.take() {
+            finalize_imported_turn(&transaction, turn_id, next_timestamp)?;
+        }
+
+        transaction.execute(
+            "UPDATE sessions SET updated_at_ms = ?2 WHERE session_id = ?1",
+            params![session_id, next_timestamp],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+}
+
+fn insert_imported_turn(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    run_id: i64,
+    pid: u64,
+    turn_index: i64,
+    workload: &str,
+    source: &str,
+    prompt_kind: &str,
+    prompt: &str,
+    started_at_ms: i64,
+) -> Result<i64, rusqlite::Error> {
+    transaction.execute(
+        r#"
+        INSERT INTO session_turns (
+            session_id,
+            run_id,
+            pid,
+            turn_index,
+            workload,
+            source,
+            status,
+            started_at_ms,
+            updated_at_ms,
+            completed_at_ms,
+            finish_reason
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed', ?7, ?7, ?7, 'core_dump_replay_import')
+        "#,
+        params![
+            session_id,
+            run_id,
+            pid,
+            turn_index,
+            workload,
+            source,
+            started_at_ms
+        ],
+    )?;
+    let turn_id = transaction.last_insert_rowid();
+    insert_message(
+        transaction,
+        session_id,
+        turn_id,
+        pid,
+        1,
+        "user",
+        prompt_kind,
+        prompt,
+        started_at_ms,
+    )?;
+    Ok(turn_id)
+}
+
+fn finalize_imported_turn(
+    transaction: &Transaction<'_>,
+    turn_id: i64,
+    completed_at_ms: i64,
+) -> Result<(), rusqlite::Error> {
+    transaction.execute(
+        r#"
+        UPDATE session_turns
+        SET updated_at_ms = ?2,
+            completed_at_ms = ?2,
+            finish_reason = 'core_dump_replay_import'
+        WHERE turn_id = ?1
+        "#,
+        params![turn_id, completed_at_ms],
+    )?;
+    Ok(())
 }
 
 fn assistant_segment_storage_kind(kind: AssistantSegmentKind) -> &'static str {

@@ -70,7 +70,7 @@ pub(super) fn resolve_send_input_target(
     ensure_live_session_binding(ctx, session_id)
 }
 
-pub(super) fn runtime_selector_for_session(
+pub(crate) fn runtime_selector_for_session(
     runtime_registry: &crate::runtimes::RuntimeRegistry,
     runtime_id: &str,
 ) -> Result<String, String> {

@@ -1,13 +1,17 @@
 use std::sync::mpsc;
 
+use serde_json::json;
+
 use agentic_control_models::{InvocationKind, InvocationStatus, KernelEvent};
 
+use crate::core_dump::{invocation_marker, record_live_debug_checkpoint};
 use crate::diagnostics::audit::{self, AuditContext};
 use crate::engine::LLMEngine;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::WorkloadClass;
 use crate::orchestrator::Orchestrator;
 use crate::process::{ProcessLifecyclePolicy, ProcessState};
+use crate::runtime::TurnAssemblyStore;
 use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::services::process_runtime::{
     kill_managed_process_with_session, spawn_managed_process_with_session, ManagedProcessRequest,
@@ -24,6 +28,10 @@ use super::ipc::{
     dispatch_ack_action, dispatch_receive_action, dispatch_send_action, non_empty_input_str,
 };
 use super::parser::{self, ActionInvocation, ActionName};
+use super::replay::replay_stubbed_completion;
+use super::tool_history::{
+    complete_tool_invocation, record_tool_invocation_dispatched, ToolInvocationCompletionData,
+};
 use super::worker::SyscallCmd;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +82,7 @@ pub(crate) fn dispatch_process_syscall(
     orchestrator: &Orchestrator,
     pid: u64,
     content: &str,
+    turn_assembly: &TurnAssemblyStore,
     syscall_cmd_tx: &mpsc::Sender<SyscallCmd>,
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
@@ -230,6 +239,7 @@ pub(crate) fn dispatch_process_syscall(
             &tool_call_id,
             &caller,
             &permissions,
+            turn_assembly,
             session_registry,
             storage,
             pending_events,
@@ -244,6 +254,22 @@ pub(crate) fn dispatch_process_syscall(
             content,
             InvocationStatus::Dispatched,
         );
+        if let Err(err) = record_tool_invocation_dispatched(
+            storage,
+            session_registry,
+            runtime_id,
+            pid,
+            &tool_call_id,
+            content,
+            &caller,
+        ) {
+            tracing::warn!(
+                pid,
+                tool_call_id,
+                %err,
+                "FORENSICS: failed to persist tool invocation dispatch"
+            );
+        }
         audit::record(
             storage,
             audit::TOOL_DISPATCHED,
@@ -277,18 +303,39 @@ pub(crate) fn dispatch_process_syscall(
                 ),
             );
         }
-        let queued = syscall_cmd_tx.send(SyscallCmd::Execute {
-            pid,
-            tool_call_id: tool_call_id.clone(),
-            content: content.to_string(),
-            caller,
-            permissions,
-            registry: tool_registry.clone(),
-        });
+        let queued_command =
+            replay_stubbed_completion(scheduler, pid, &tool_call_id, content, &caller)
+                .map(|completion| SyscallCmd::ReplayCompletion { completion })
+                .unwrap_or_else(|| SyscallCmd::Execute {
+                    pid,
+                    tool_call_id: tool_call_id.clone(),
+                    content: content.to_string(),
+                    caller,
+                    permissions,
+                    registry: tool_registry.clone(),
+                });
+        let queued = syscall_cmd_tx.send(queued_command);
         match queued {
             Ok(()) => {
                 if let Some(process) = engine.processes.get_mut(&pid) {
                     process.state = ProcessState::WaitingForSyscall;
+                    if let Err(err) = record_live_debug_checkpoint(
+                        storage,
+                        session_registry,
+                        turn_assembly,
+                        runtime_id,
+                        pid,
+                        process,
+                        "syscall_dispatched",
+                        invocation_marker(Some(&tool_call_id), Some(content), Some("dispatched")),
+                    ) {
+                        tracing::debug!(
+                            pid,
+                            tool_call_id,
+                            %err,
+                            "FORENSICS: skipped dispatch checkpoint without turn assembly context"
+                        );
+                    }
                 }
                 pending_events.push(KernelEvent::WorkspaceChanged {
                     pid,
@@ -297,6 +344,30 @@ pub(crate) fn dispatch_process_syscall(
                 SyscallDispatchOutcome::Queued
             }
             Err(err) => {
+                if let Err(history_err) = complete_tool_invocation(
+                    storage,
+                    &tool_call_id,
+                    "failed",
+                    ToolInvocationCompletionData {
+                        output_json: Some(json!({
+                            "output": format!("SysCall Error: failed to enqueue execution: {}", err),
+                        })),
+                        output_text: Some(format!(
+                            "SysCall Error: failed to enqueue execution: {}",
+                            err
+                        )),
+                        error_kind: Some("queue_failed".to_string()),
+                        error_text: Some(err.to_string()),
+                        ..ToolInvocationCompletionData::default()
+                    },
+                ) {
+                    tracing::warn!(
+                        pid,
+                        tool_call_id,
+                        %history_err,
+                        "FORENSICS: failed to persist tool invocation queue failure"
+                    );
+                }
                 emit_invocation_updated(
                     pending_events,
                     pid,

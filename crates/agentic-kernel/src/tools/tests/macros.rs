@@ -119,7 +119,10 @@ fn text_context() -> ToolContext {
             allowed_tools: vec![
                 "echo_macro".to_string(),
                 "custom_echo".to_string(),
+                "get_time".to_string(),
+                "python".to_string(),
                 "read_file".to_string(),
+                "write_file".to_string(),
             ],
             path_scopes: vec![".".to_string()],
         },
@@ -236,10 +239,25 @@ fn macro_generated_tool_matches_hand_written_glue() {
 #[test]
 fn macro_generated_builtins_register_and_dispatch_without_text_parser_coupling() {
     let registry = ToolRegistry::with_builtins();
+    let get_time = registry.get("get_time").expect("get_time builtin");
+    let python = registry.get("python").expect("python builtin");
     let read_file = registry.get("read_file").expect("read_file builtin");
     let list_files = registry.get("list_files").expect("list_files builtin");
     let calc = registry.get("calc").expect("calc builtin");
+    let write_file = registry.get("write_file").expect("write_file builtin");
 
+    assert_eq!(
+        get_time.backend,
+        ToolBackendConfig::Host {
+            executor: HostExecutor::Dynamic("get_time".to_string())
+        }
+    );
+    assert_eq!(
+        python.backend,
+        ToolBackendConfig::Host {
+            executor: HostExecutor::Dynamic("python".to_string())
+        }
+    );
     assert_eq!(
         read_file.backend,
         ToolBackendConfig::Host {
@@ -256,6 +274,12 @@ fn macro_generated_builtins_register_and_dispatch_without_text_parser_coupling()
         calc.backend,
         ToolBackendConfig::Host {
             executor: HostExecutor::Dynamic("calc".to_string())
+        }
+    );
+    assert_eq!(
+        write_file.backend,
+        ToolBackendConfig::Host {
+            executor: HostExecutor::Dynamic("write_file".to_string())
         }
     );
 }
@@ -294,6 +318,52 @@ fn macro_generated_read_file_preserves_output_and_display_text() {
         })
     );
     assert_eq!(execution.result.display_text.as_deref(), Some("macro mvp"));
+}
+
+#[test]
+fn macro_generated_write_file_preserves_output_shape() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_nanos();
+    let relative_path = format!("macro_write_tool_test_{unique}.txt");
+    let absolute_path = workspace_root()
+        .expect("workspace root")
+        .join(&relative_path);
+
+    let registry = ToolRegistry::with_builtins();
+    let execution = execute_structured_invocation(
+        build_structured_invocation(
+            "write_file",
+            json!({ "path": relative_path, "content": "macro write" }),
+            None,
+        )
+        .expect("structured invocation"),
+        &ToolContext {
+            transport: ToolInvocationTransport::Structured,
+            ..text_context()
+        },
+        &registry,
+    )
+    .expect("write_file executes");
+
+    assert_eq!(
+        fs::read_to_string(&absolute_path).expect("written file"),
+        "macro write"
+    );
+    assert_eq!(
+        execution.result.output["path"],
+        execution.invocation.input["path"]
+    );
+    assert_eq!(execution.result.output["bytes_written"], json!(11));
+    assert!(execution
+        .result
+        .display_text
+        .as_deref()
+        .unwrap_or("")
+        .contains("written"));
+
+    let _ = fs::remove_file(&absolute_path);
 }
 
 // ---- ToolResult passthrough tests ----

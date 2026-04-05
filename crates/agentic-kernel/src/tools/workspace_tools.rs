@@ -11,7 +11,7 @@ use super::error::ToolError;
 use super::invocation::ToolContext;
 use super::path_guard::{resolve_safe_path, resolve_safe_path_for_context, workspace_root};
 
-const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
 const DEFAULT_FIND_FILES_MAX_RESULTS: usize = 100;
 const DEFAULT_SEARCH_TEXT_MAX_RESULTS: usize = 50;
 const MAX_SEARCH_RESULTS_CAP: usize = 200;
@@ -35,7 +35,8 @@ struct PathInfoOutput {
 
 #[agentic_tool(
     name = "path_info",
-    description = "Inspect file or directory metadata inside the workspace.",
+    description = "Inspect metadata for a file or directory inside the process-scoped workspace.",
+    input_example = serde_json::json!({"path": "crates/agentic-kernel/src/tools"}),
     capabilities = ["fs", "metadata"],
     allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
@@ -117,7 +118,7 @@ struct FindFilesOutput {
 
 #[agentic_tool(
     name = "find_files",
-    description = "Find files inside the workspace using a required filename pattern and an optional extension filter.",
+    description = "Find files inside the process-scoped workspace using a required filename pattern and an optional extension filter.",
     input_example = serde_json::json!({"pattern": "agent", "path": "crates", "extension": "rs", "recursive": true}),
     capabilities = ["fs", "search"],
     allowed_callers = [AgentText, AgentSupervisor, Programmatic]
@@ -204,7 +205,8 @@ struct SearchTextOutput {
 
 #[agentic_tool(
     name = "search_text",
-    description = "Search text across UTF-8 files inside the workspace.",
+    description = "Search plain text across UTF-8 files inside the process-scoped workspace.",
+    input_example = serde_json::json!({"query": "ToolRegistry", "path": "crates/agentic-kernel/src", "recursive": true, "case_sensitive": true}),
     capabilities = ["fs", "search", "text"],
     allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
@@ -304,7 +306,8 @@ struct ReadFileRangeOutput {
 
 #[agentic_tool(
     name = "read_file_range",
-    description = "Read an inclusive line range from a UTF-8 file inside the workspace.",
+    description = "Read an inclusive line range from a UTF-8 text file inside the process-scoped workspace.",
+    input_example = serde_json::json!({"path": "docs/MILESTONE.md", "start_line": 1, "end_line": 20}),
     capabilities = ["fs", "read", "range"],
     allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
@@ -393,7 +396,8 @@ struct MkdirOutput {
 
 #[agentic_tool(
     name = "mkdir",
-    description = "Create a directory inside the workspace.",
+    description = "Create a directory inside the process-scoped workspace.",
+    input_example = serde_json::json!({"path": "reports/daily", "create_parents": true}),
     capabilities = ["fs", "mkdir"],
     allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
@@ -436,12 +440,12 @@ fn mkdir(input: MkdirInput, ctx: &ToolContext) -> Result<MkdirOutput, ToolError>
     })
 }
 
-struct SearchRoot {
-    absolute: PathBuf,
-    display: String,
+pub(crate) struct SearchRoot {
+    pub(crate) absolute: PathBuf,
+    pub(crate) display: String,
 }
 
-fn ensure_non_empty_path(tool_name: &str, path: &str) -> Result<(), ToolError> {
+pub(crate) fn ensure_non_empty_path(tool_name: &str, path: &str) -> Result<(), ToolError> {
     if path.trim().is_empty() {
         Err(ToolError::InvalidInput(
             tool_name.into(),
@@ -452,7 +456,7 @@ fn ensure_non_empty_path(tool_name: &str, path: &str) -> Result<(), ToolError> {
     }
 }
 
-fn resolve_search_root(
+pub(crate) fn resolve_search_root(
     tool_name: &str,
     path: Option<&str>,
     ctx: &ToolContext,
@@ -476,7 +480,10 @@ fn resolve_search_root(
     }
 }
 
-fn default_scoped_search_root(tool_name: &str, ctx: &ToolContext) -> Result<SearchRoot, ToolError> {
+pub(crate) fn default_scoped_search_root(
+    tool_name: &str,
+    ctx: &ToolContext,
+) -> Result<SearchRoot, ToolError> {
     let root = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
     match ctx.permissions.path_scopes.as_slice() {
         [] => Err(ToolError::PolicyDenied(
@@ -556,7 +563,7 @@ fn collect_candidate_files(
     Ok(files)
 }
 
-fn read_optional_utf8_file(
+pub(crate) fn read_optional_utf8_file(
     tool_name: &str,
     path: &Path,
     max_bytes: u64,
@@ -577,7 +584,7 @@ fn read_optional_utf8_file(
     }
 }
 
-fn read_required_utf8_file(
+pub(crate) fn read_required_utf8_file(
     tool_name: &str,
     path: &Path,
     max_bytes: u64,
@@ -596,7 +603,10 @@ fn read_required_utf8_file(
         .map_err(|err| ToolError::ExecutionFailed(tool_name.into(), format!("Read failed: {err}")))
 }
 
-fn to_workspace_relative_string(tool_name: &str, path: &Path) -> Result<String, ToolError> {
+pub(crate) fn to_workspace_relative_string(
+    tool_name: &str,
+    path: &Path,
+) -> Result<String, ToolError> {
     let root = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
     let relative = path.strip_prefix(&root).map_err(|err| {
         ToolError::ExecutionFailed(

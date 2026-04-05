@@ -326,6 +326,10 @@ fn legacy_v4_schema_is_migrated_to_latest_version() {
     ));
     assert!(table_exists(&storage.connection, "runtime_load_queue"));
     assert!(table_exists(&storage.connection, "accounting_events"));
+    assert!(table_exists(&storage.connection, "core_dump_index"));
+    assert!(table_exists(&storage.connection, "debug_checkpoints"));
+    assert!(table_exists(&storage.connection, "tool_invocation_history"));
+    assert!(table_exists(&storage.connection, "replay_branch_index"));
     assert!(table_exists(&storage.connection, "audit_events"));
 
     let _ = fs::remove_dir_all(dir);

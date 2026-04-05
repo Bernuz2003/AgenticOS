@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agenticos.control.coredump.v1",
+  "title": "AgenticOS COREDUMP Response v1",
+  "$defs": {
+    "dumpSummary": {
+      "type": "object",
+      "required": [
+        "dump_id",
+        "created_at_ms",
+        "session_id",
+        "pid",
+        "reason",
+        "fidelity",
+        "path",
+        "bytes",
+        "sha256",
+        "note"
+      ],
+      "properties": {
+        "dump_id": {"type": "string", "minLength": 1},
+        "created_at_ms": {"type": "integer"},
+        "session_id": {"type": ["string", "null"]},
+        "pid": {"type": ["integer", "null"]},
+        "reason": {"type": "string", "minLength": 1},
+        "fidelity": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"type": "string", "minLength": 1},
+        "note": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {"$ref": "./control-envelope.schema.json"},
+    {
+      "properties": {
+        "schema_id": {"const": "agenticos.control.coredump.v1"},
+        "data": {
+          "type": "object",
+          "required": ["dump"],
+          "properties": {
+            "dump": {"$ref": "#/$defs/dumpSummary"}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

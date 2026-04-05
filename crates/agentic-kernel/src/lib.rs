@@ -2,6 +2,7 @@ mod backend;
 mod checkpoint;
 mod commands;
 mod config;
+mod core_dump;
 mod diagnostics;
 mod engine;
 mod errors;

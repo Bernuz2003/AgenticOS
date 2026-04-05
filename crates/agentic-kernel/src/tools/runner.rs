@@ -1,22 +1,18 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agentic_kernel_macros::agentic_tool;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::backend::{HttpEndpoint, HttpRequestOptions};
 use crate::config::kernel_config;
-use crate::tool_registry::{
-    HostExecutor, ToolBackendConfig, ToolBackendKind, ToolDescriptor, ToolRegistryEntry, ToolSource,
-};
+use crate::tool_registry::ToolBackendConfig;
 
 use super::api::{Tool, ToolResult};
-use super::builtins::HostBuiltinRegistration;
 use super::error::ToolError;
+use super::host_exec::run_with_timeout;
 use super::invocation::{ToolContext, ToolInvocation};
 use super::path_guard::{resolve_safe_path, resolve_safe_path_for_context, workspace_root};
 use super::policy::{
@@ -37,28 +33,6 @@ fn truncate_output(text: &str) -> String {
     } else {
         text.to_string()
     }
-}
-
-fn run_with_timeout(
-    cwd: &Path,
-    program: &str,
-    args: &[String],
-    timeout_s: u64,
-) -> Result<std::process::Output, String> {
-    let mut wrapped = Command::new("timeout");
-    wrapped
-        .arg("--signal=KILL")
-        .arg(format!("{}s", timeout_s.max(1)))
-        .arg(program);
-    for arg in args {
-        wrapped.arg(arg);
-    }
-    wrapped.current_dir(cwd).output().map_err(|e| {
-        format!(
-            "SysCall Error: Failed to execute '{}' via timeout wrapper: {}",
-            program, e
-        )
-    })
 }
 
 fn run_host_python(script_path: &Path, timeout_s: u64) -> Result<String, String> {
@@ -186,255 +160,165 @@ fn classify_remote_http_failure(tool_name: &str, detail: String, timeout_ms: u64
     }
 }
 
-// ----------------------------------------------------
-// T R A I T   I M P L E M E N T A T I O N S
-// ----------------------------------------------------
-
-pub struct BuiltinPythonTool;
-
-impl Tool for BuiltinPythonTool {
-    fn name(&self) -> &str {
-        "python"
+fn execute_python_code(
+    tool_name: &str,
+    code: &str,
+    context: &ToolContext,
+) -> Result<String, ToolError> {
+    let clean_code = code
+        .trim()
+        .trim_start_matches("```python")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    if clean_code.is_empty() {
+        return Err(ToolError::InvalidInput(
+            tool_name.into(),
+            "field 'code' cannot be empty".into(),
+        ));
     }
 
-    fn execute(
-        &self,
-        invocation: &ToolInvocation,
-        context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        let code = invocation
-            .input
-            .get("code")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default(); // Schema validation handles missing fields
-        if code.trim().is_empty() {
-            return Err(ToolError::InvalidInput(
-                self.name().into(),
-                "field 'code' cannot be empty".into(),
-            ));
+    let pid = context.pid.unwrap_or(0);
+    let cfg = syscall_config();
+
+    let root = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_millis();
+    let temp_filename = format!("agent_script_{}_{}.py", pid, ts);
+    let script_path = root.join(temp_filename);
+
+    fs::write(&script_path, clean_code).map_err(|err| {
+        ToolError::ExecutionFailed(
+            tool_name.into(),
+            format!("Failed to write temp file: {err}"),
+        )
+    })?;
+
+    let run_result = match cfg.mode {
+        SandboxMode::Host => run_host_python(&script_path, cfg.timeout_s)
+            .map_err(|err| classify_timeout(tool_name, &err, cfg.timeout_s.max(1) * 1_000))?,
+        SandboxMode::Container => match run_container_python(&script_path, cfg.timeout_s) {
+            Ok(out) => Ok(out),
+            Err(err) if cfg.allow_host_fallback => {
+                let host_out =
+                    run_host_python(&script_path, cfg.timeout_s).map_err(|host_err| {
+                        classify_timeout(tool_name, &host_err, cfg.timeout_s.max(1) * 1_000)
+                    })?;
+                Ok(format!(
+                    "[Sandbox fallback: container->host due to error]\n{}\n{}",
+                    err, host_out
+                ))
+            }
+            Err(err) => Err(err),
         }
+        .map_err(|err| classify_timeout(tool_name, &err, cfg.timeout_s.max(1) * 1_000))?,
+        SandboxMode::Wasm => {
+            if cfg.allow_host_fallback {
+                let host_out =
+                    run_host_python(&script_path, cfg.timeout_s).map_err(|host_err| {
+                        classify_timeout(tool_name, &host_err, cfg.timeout_s.max(1) * 1_000)
+                    })?;
+                format!(
+                    "[Sandbox fallback: wasm->host (wasm runner not configured)]\n{}",
+                    host_out
+                )
+            } else {
+                let _ = fs::remove_file(&script_path);
+                return Err(ToolError::ExecutionFailed(
+                    tool_name.into(),
+                    "Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled.".into(),
+                ));
+            }
+        }
+    };
 
-        let clean_code = code
-            .trim()
-            .trim_start_matches("```python")
-            .trim_start_matches("```")
-            .trim_end_matches("```");
+    let _ = fs::remove_file(&script_path);
+    Ok(run_result)
+}
 
-        let pid = context.pid.unwrap_or(0);
-        let cfg = syscall_config();
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct PythonInput {
+    code: String,
+}
 
-        let root = workspace_root().map_err(|e| ToolError::Internal(e.to_string()))?;
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| Duration::from_secs(0))
-            .as_millis();
-        let temp_filename = format!("agent_script_{}_{}.py", pid, ts);
-        let script_path = root.join(temp_filename);
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+struct PythonOutput {
+    output: String,
+}
 
-        fs::write(&script_path, clean_code).map_err(|e| {
+#[agentic_tool(
+    name = "python",
+    description = "Execute Python code under the syscall sandbox policy and return stdout/stderr as text.",
+    input_example = serde_json::json!({"code": "print('hello')"}),
+    capabilities = ["python", "sandboxed"],
+    dangerous = true,
+    allowed_callers = [AgentText, AgentSupervisor, Programmatic]
+)]
+fn python(input: PythonInput, ctx: &ToolContext) -> Result<PythonOutput, ToolError> {
+    let output = execute_python_code("python", &input.code, ctx)?;
+    Ok(PythonOutput { output })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WriteFileInput {
+    path: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+struct WriteFileOutput {
+    output: String,
+    path: String,
+    bytes_written: usize,
+}
+
+#[agentic_tool(
+    name = "write_file",
+    description = "Write UTF-8 text to a file inside the process-scoped workspace, creating parent directories when needed.",
+    input_example = serde_json::json!({"path": "notes/todo.txt", "content": "hello"}),
+    capabilities = ["fs", "write"],
+    dangerous = true,
+    allowed_callers = [AgentText, AgentSupervisor, Programmatic]
+)]
+fn write_file(input: WriteFileInput, ctx: &ToolContext) -> Result<WriteFileOutput, ToolError> {
+    if input.path.trim().is_empty() {
+        return Err(ToolError::InvalidInput(
+            "write_file".into(),
+            "field 'path' cannot be empty".into(),
+        ));
+    }
+
+    let path = resolve_safe_path_for_context(&input.path, ctx)
+        .map_err(|err| ToolError::ExecutionFailed("write_file".into(), err.to_string()))?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
             ToolError::ExecutionFailed(
-                self.name().into(),
-                format!("Failed to write temp file: {}", e),
+                "write_file".into(),
+                format!("Failed to create parent dir: {err}"),
             )
         })?;
-
-        let run_result = match cfg.mode {
-            SandboxMode::Host => run_host_python(&script_path, cfg.timeout_s)
-                .map_err(|e| classify_timeout(self.name(), &e, cfg.timeout_s.max(1) * 1_000))?,
-            SandboxMode::Container => match run_container_python(&script_path, cfg.timeout_s) {
-                Ok(out) => Ok(out),
-                Err(e) if cfg.allow_host_fallback => {
-                    let host_out = run_host_python(&script_path, cfg.timeout_s).map_err(|he| {
-                        classify_timeout(self.name(), &he, cfg.timeout_s.max(1) * 1_000)
-                    })?;
-                    Ok(format!(
-                        "[Sandbox fallback: container->host due to error]\n{}\n{}",
-                        e, host_out
-                    ))
-                }
-                Err(e) => Err(e),
-            }
-            .map_err(|e| classify_timeout(self.name(), &e, cfg.timeout_s.max(1) * 1_000))?,
-            SandboxMode::Wasm => {
-                if cfg.allow_host_fallback {
-                    let host_out = run_host_python(&script_path, cfg.timeout_s).map_err(|he| {
-                        classify_timeout(self.name(), &he, cfg.timeout_s.max(1) * 1_000)
-                    })?;
-                    format!(
-                        "[Sandbox fallback: wasm->host (wasm runner not configured)]\n{}",
-                        host_out
-                    )
-                } else {
-                    return Err(ToolError::ExecutionFailed(self.name().into(), "Sandbox mode 'wasm' selected but no wasm runner configured and host fallback disabled.".into()));
-                }
-            }
-        };
-
-        let _ = fs::remove_file(&script_path);
-
-        Ok(ToolResult::json_with_text(
-            json!({ "output": run_result.clone() }),
-            run_result,
-        ))
-    }
-}
-
-fn builtin_python_tool_factory() -> Box<dyn Tool> {
-    Box::new(BuiltinPythonTool)
-}
-
-pub(crate) fn python_host_builtin_registration() -> HostBuiltinRegistration {
-    HostBuiltinRegistration::new(
-        ToolRegistryEntry {
-            descriptor: ToolDescriptor {
-                name: "python".to_string(),
-                aliases: vec![],
-                description: "Execute Python code under the syscall sandbox policy.".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "required": ["code"],
-                    "properties": {
-                        "code": {"type": "string"}
-                    },
-                    "additionalProperties": false
-                }),
-                input_example: Some(json!({"code": "print('hello')"})),
-                output_schema: json!({
-                    "type": "object",
-                    "required": ["output"],
-                    "properties": {
-                        "output": {"type": "string"}
-                    },
-                    "additionalProperties": false
-                }),
-                allowed_callers: vec![
-                    super::invocation::ToolCaller::AgentText,
-                    super::invocation::ToolCaller::AgentSupervisor,
-                    super::invocation::ToolCaller::Programmatic,
-                ],
-                backend_kind: ToolBackendKind::Host,
-                capabilities: vec!["python".to_string(), "sandboxed".to_string()],
-                dangerous: true,
-                enabled: true,
-                source: ToolSource::BuiltIn,
-            },
-            backend: ToolBackendConfig::Host {
-                executor: HostExecutor::Python,
-            },
-        },
-        builtin_python_tool_factory,
-    )
-}
-
-pub struct BuiltinWriteFileTool;
-
-impl Tool for BuiltinWriteFileTool {
-    fn name(&self) -> &str {
-        "write_file"
     }
 
-    fn execute(
-        &self,
-        invocation: &ToolInvocation,
-        context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        let filename = invocation
-            .input
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let content = invocation
-            .input
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        if filename.trim().is_empty() {
-            return Err(ToolError::InvalidInput(
-                self.name().into(),
-                "field 'path' cannot be empty".into(),
-            ));
-        }
+    fs::write(&path, &input.content).map_err(|err| {
+        ToolError::ExecutionFailed("write_file".into(), format!("Write failed: {err}"))
+    })?;
 
-        let path = resolve_safe_path_for_context(filename, context)
-            .map_err(|e| ToolError::ExecutionFailed(self.name().into(), e.to_string()))?;
+    let output = format!(
+        "Success: File '{}' written ({} bytes).",
+        input.path,
+        input.content.len()
+    );
 
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                ToolError::ExecutionFailed(
-                    self.name().into(),
-                    format!("Failed to create parent dir: {}", e),
-                )
-            })?;
-        }
-
-        fs::write(&path, content).map_err(|e| {
-            ToolError::ExecutionFailed(self.name().into(), format!("Write failed: {}", e))
-        })?;
-
-        let message = format!(
-            "Success: File '{}' written ({} bytes).",
-            filename,
-            content.len()
-        );
-        Ok(ToolResult::json_with_text(
-            json!({
-                "output": message.clone(),
-                "path": filename,
-                "bytes_written": content.len()
-            }),
-            message,
-        ))
-    }
-}
-
-fn builtin_write_file_tool_factory() -> Box<dyn Tool> {
-    Box::new(BuiltinWriteFileTool)
-}
-
-pub(crate) fn write_file_host_builtin_registration() -> HostBuiltinRegistration {
-    HostBuiltinRegistration::new(
-        ToolRegistryEntry {
-            descriptor: ToolDescriptor {
-                name: "write_file".to_string(),
-                aliases: vec![],
-                description: "Write a file inside the workspace root.".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "required": ["path", "content"],
-                    "properties": {
-                        "path": {"type": "string"},
-                        "content": {"type": "string"}
-                    },
-                    "additionalProperties": false
-                }),
-                input_example: Some(json!({"path": "notes.txt", "content": "hello"})),
-                output_schema: json!({
-                    "type": "object",
-                    "required": ["output", "path", "bytes_written"],
-                    "properties": {
-                        "output": {"type": "string"},
-                        "path": {"type": "string"},
-                        "bytes_written": {"type": "integer", "minimum": 0}
-                    },
-                    "additionalProperties": false
-                }),
-                allowed_callers: vec![
-                    super::invocation::ToolCaller::AgentText,
-                    super::invocation::ToolCaller::AgentSupervisor,
-                    super::invocation::ToolCaller::Programmatic,
-                ],
-                backend_kind: ToolBackendKind::Host,
-                capabilities: vec!["fs".to_string(), "write".to_string()],
-                dangerous: true,
-                enabled: true,
-                source: ToolSource::BuiltIn,
-            },
-            backend: ToolBackendConfig::Host {
-                executor: HostExecutor::WriteFile,
-            },
-        },
-        builtin_write_file_tool_factory,
-    )
+    Ok(WriteFileOutput {
+        output,
+        path: input.path,
+        bytes_written: input.content.len(),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -451,7 +335,8 @@ struct ReadFileOutput {
 
 #[agentic_tool(
     name = "read_file",
-    description = "Read a UTF-8 text file inside the workspace root.",
+    description = "Read a UTF-8 text file inside the process-scoped workspace.",
+    input_example = serde_json::json!({"path": "notes/todo.txt"}),
     capabilities = ["fs", "read"],
     allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
@@ -498,7 +383,8 @@ struct ListFilesOutput {
 
 #[agentic_tool(
     name = "list_files",
-    description = "List files in the workspace root.",
+    description = "List the direct children of the process-scoped workspace roots.",
+    input_example = serde_json::json!({}),
     capabilities = ["fs", "list"],
     allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
@@ -581,7 +467,8 @@ struct CalcOutput {
 
 #[agentic_tool(
     name = "calc",
-    description = "Evaluate a numeric expression through the Python sandbox.",
+    description = "Evaluate a numeric expression through the Python sandbox and return the resulting text.",
+    input_example = serde_json::json!({"expression": "1 + 2 * 3"}),
     capabilities = ["math", "python"],
     allowed_callers = [AgentText, AgentSupervisor, Programmatic]
 )]
@@ -594,23 +481,7 @@ fn calc(input: CalcInput, ctx: &ToolContext) -> Result<CalcOutput, ToolError> {
     }
 
     let python_code = format!("print({})", input.expression);
-    let python_tool = BuiltinPythonTool;
-    let invocation = ToolInvocation::new("python", json!({ "code": python_code }), None)
-        .map_err(|err| ToolError::Internal(err.to_string()))?;
-    let result = python_tool.execute(&invocation, ctx).map_err(|err| {
-        ToolError::ExecutionFailed("calc".into(), format!("Calc evaluation failed: {err:?}"))
-    })?;
-
-    let output = result
-        .output
-        .get("output")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| {
-            ToolError::Internal(
-                "calc expected the python tool to return a string output field".into(),
-            )
-        })?
-        .to_string();
+    let output = execute_python_code("calc", &python_code, ctx)?;
 
     Ok(CalcOutput { output })
 }

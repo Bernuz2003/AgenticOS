@@ -23,27 +23,19 @@ pub enum ToolSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HostExecutor {
-    Python,
-    WriteFile,
     Dynamic(String),
 }
 
 impl HostExecutor {
     pub fn as_str(&self) -> &str {
         match self {
-            Self::Python => "python",
-            Self::WriteFile => "write_file",
             Self::Dynamic(name) => name.as_str(),
         }
     }
 
     pub fn from_binding_name(name: impl Into<String>) -> Result<Self, String> {
         let name = normalize_tool_name(&name.into())?;
-        Ok(match name.as_str() {
-            "python" => Self::Python,
-            "write_file" => Self::WriteFile,
-            _ => Self::Dynamic(name),
-        })
+        Ok(Self::Dynamic(name))
     }
 }
 

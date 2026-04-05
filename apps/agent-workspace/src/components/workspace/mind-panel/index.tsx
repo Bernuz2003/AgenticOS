@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { AgentSessionSummary } from "../../../store/sessions-store";
-import type { WorkspaceSnapshot } from "../../../lib/api";
+import type { ReplayCoreDumpResult, WorkspaceSnapshot } from "../../../lib/api";
 import { ArtifactsCard } from "./artifacts-card";
 import { AuditCard } from "./audit-card";
+import { CoreDumpsCard } from "./core-dumps-card";
 import { ContextCard } from "./context-card";
+import { ReplayBranchCard } from "./replay-branch-card";
 import { RuntimeCard } from "./runtime-card";
 
 export function MindPanel({
@@ -11,13 +13,17 @@ export function MindPanel({
   snapshot,
   loading,
   error,
+  snapshotRefreshKey,
   onOpenAudit,
+  onReplayReady,
 }: {
   session: AgentSessionSummary;
   snapshot: WorkspaceSnapshot | null;
   loading: boolean;
   error: string | null;
+  snapshotRefreshKey: number;
   onOpenAudit: () => void;
+  onReplayReady: (result: ReplayCoreDumpResult) => void;
 }) {
   const auditEvents = [...(snapshot?.auditEvents ?? [])].sort(
     (left, right) => right.recordedAtMs - left.recordedAtMs,
@@ -44,6 +50,13 @@ export function MindPanel({
   return (
     <aside className="flex h-full min-h-0 w-full flex-shrink-0 flex-col gap-6 overflow-y-auto border-l border-slate-200 bg-slate-50 p-6 md:w-80 lg:w-96">
       <RuntimeCard session={session} snapshot={snapshot} onOpenAudit={onOpenAudit} />
+      <ReplayBranchCard snapshot={snapshot} />
+      <CoreDumpsCard
+        sessionId={session.sessionId}
+        pid={snapshot?.activePid ?? session.activePid ?? session.lastPid ?? null}
+        refreshKey={snapshotRefreshKey}
+        onReplayReady={onReplayReady}
+      />
       <ContextCard
         session={session}
         snapshot={snapshot}

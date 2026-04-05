@@ -245,6 +245,37 @@ impl AgentProcess {
         self.turn_start_index = self.tokens.len();
     }
 
+    pub fn replace_debug_context_state(
+        &mut self,
+        mut state: ContextState,
+        resident_prompt_checkpoint_bytes: usize,
+        turn_start_index: usize,
+    ) -> Result<(), String> {
+        self.reset_backend_context_slot_for_replay("debug_replay_patch")?;
+
+        let prompt_text = render_context_segments(&state.segments);
+        let tokens = self
+            .tokenizer
+            .encode(prompt_text.as_str(), true)
+            .map_err(|err| format!("retokenize replay prompt: {err}"))?
+            .get_ids()
+            .to_vec();
+        state.segments = retokenize_prompt_segments(&self.tokenizer, &state.segments)?;
+        state.episodic_segments =
+            retokenize_independent_segments(&self.tokenizer, &state.episodic_segments)?;
+        state.tokens_used = tokens.len();
+
+        self.tokens = tokens;
+        self.index_pos = 0;
+        self.turn_start_index = turn_start_index.min(self.tokens.len());
+        self.context_state = state;
+        self.rendered_prompt_cache = prompt_text;
+        self.resident_prompt_checkpoint_bytes =
+            resident_prompt_checkpoint_bytes.min(self.rendered_prompt_cache.len());
+
+        Ok(())
+    }
+
     pub fn extend_current_turn_budget(&mut self) {
         self.turn_start_index = self.tokens.len();
     }
@@ -551,17 +582,12 @@ impl AgentProcess {
     }
 
     fn reset_backend_context_slot(&mut self, strategy_label: &str) -> Option<()> {
-        if let Some(slot_id) = self.context_slot_id {
-            if let Err(err) = self.model.free_context_slot(slot_id) {
+        self.reset_backend_context_slot_for_replay(strategy_label)
+            .map_err(|err| {
                 self.context_state.last_compaction_reason =
                     Some(format!("{}_backend_reset_failed:{}", strategy_label, err));
-                return None;
-            }
-        }
-
-        self.reset_resident_prompt_checkpoint();
-
-        Some(())
+            })
+            .ok()
     }
 
     pub(crate) fn build_retrieval_payload(
@@ -656,6 +682,17 @@ impl AgentProcess {
             .resident_prompt_checkpoint_bytes
             .min(self.rendered_prompt_cache.len());
     }
+
+    fn reset_backend_context_slot_for_replay(&mut self, reason: &str) -> Result<(), String> {
+        if let Some(slot_id) = self.context_slot_id {
+            self.model
+                .free_context_slot(slot_id)
+                .map_err(|err| format!("{reason}:{err}"))?;
+        }
+
+        self.reset_resident_prompt_checkpoint();
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -727,4 +764,69 @@ fn build_summary_text(segments: &[ContextSegment], max_summary_tokens: usize) ->
         summary.insert_str(0, "summary ");
     }
     summary
+}
+
+fn render_context_segments(segments: &[ContextSegment]) -> String {
+    segments
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<String>()
+}
+
+fn retokenize_prompt_segments(
+    tokenizer: &Tokenizer,
+    segments: &[ContextSegment],
+) -> Result<Vec<ContextSegment>, String> {
+    let mut rebuilt = Vec::with_capacity(segments.len());
+    let mut prefix = String::new();
+    let mut previous_tokens = 0usize;
+
+    for segment in segments {
+        prefix.push_str(&segment.text);
+        let token_count = tokenizer
+            .encode(prefix.as_str(), true)
+            .map_err(|err| {
+                format!(
+                    "retokenize prompt segment '{}': {err}",
+                    segment.kind.label()
+                )
+            })?
+            .get_ids()
+            .len();
+        let delta = token_count.saturating_sub(previous_tokens);
+        previous_tokens = token_count;
+        rebuilt.push(ContextSegment::new(
+            segment.kind,
+            delta,
+            segment.text.clone(),
+        ));
+    }
+
+    Ok(rebuilt)
+}
+
+fn retokenize_independent_segments(
+    tokenizer: &Tokenizer,
+    segments: &[ContextSegment],
+) -> Result<Vec<ContextSegment>, String> {
+    segments
+        .iter()
+        .map(|segment| {
+            let token_count = tokenizer
+                .encode(segment.text.as_str(), true)
+                .map_err(|err| {
+                    format!(
+                        "retokenize episodic segment '{}': {err}",
+                        segment.kind.label()
+                    )
+                })?
+                .get_ids()
+                .len();
+            Ok(ContextSegment::new(
+                segment.kind,
+                token_count,
+                segment.text.clone(),
+            ))
+        })
+        .collect()
 }

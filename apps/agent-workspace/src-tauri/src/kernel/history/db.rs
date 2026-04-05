@@ -37,6 +37,35 @@ pub(crate) struct StoredMessage {
 }
 
 #[derive(Debug)]
+pub(crate) struct StoredToolInvocation {
+    pub(crate) invocation_id: i64,
+    pub(crate) tool_call_id: String,
+    pub(crate) tool_name: String,
+    pub(crate) command_text: String,
+    pub(crate) status: String,
+    pub(crate) output_text: Option<String>,
+    pub(crate) error_kind: Option<String>,
+    pub(crate) warnings_json: Option<String>,
+    pub(crate) kill: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct StoredReplayBranchRecord {
+    pub(crate) source_dump_id: String,
+    pub(crate) source_session_id: Option<String>,
+    pub(crate) source_pid: Option<u64>,
+    pub(crate) source_fidelity: String,
+    pub(crate) replay_mode: String,
+    pub(crate) tool_mode: String,
+    pub(crate) initial_state: String,
+    pub(crate) patched_context_segments: usize,
+    pub(crate) patched_episodic_segments: usize,
+    pub(crate) stubbed_invocations: usize,
+    pub(crate) overridden_invocations: usize,
+    pub(crate) baseline_json: String,
+}
+
+#[derive(Debug)]
 pub(crate) struct StoredAuditRow {
     pub(crate) recorded_at_ms: i64,
     pub(crate) category: String,
@@ -320,6 +349,101 @@ pub(crate) fn load_messages(
         messages.push(row.map_err(|err| err.to_string())?);
     }
     Ok(messages)
+}
+
+pub(crate) fn load_tool_invocations(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Vec<StoredToolInvocation>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+                invocation_id,
+                tool_call_id,
+                tool_name,
+                command_text,
+                status,
+                output_text,
+                error_kind,
+                warnings_json,
+                kill
+            FROM tool_invocation_history
+            WHERE session_id = ?1
+            ORDER BY recorded_at_ms ASC, invocation_id ASC
+            "#,
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = statement
+        .query_map(params![session_id], |row| {
+            Ok(StoredToolInvocation {
+                invocation_id: row.get(0)?,
+                tool_call_id: row.get(1)?,
+                tool_name: row.get(2)?,
+                command_text: row.get(3)?,
+                status: row.get(4)?,
+                output_text: row.get(5)?,
+                error_kind: row.get(6)?,
+                warnings_json: row.get(7)?,
+                kill: row.get::<_, i64>(8)? != 0,
+            })
+        })
+        .map_err(|err| err.to_string())?;
+
+    let mut invocations = Vec::new();
+    for row in rows {
+        invocations.push(row.map_err(|err| err.to_string())?);
+    }
+    Ok(invocations)
+}
+
+pub(crate) fn load_replay_branch(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Option<StoredReplayBranchRecord>, String> {
+    if !table_exists(connection, "replay_branch_index")? {
+        return Ok(None);
+    }
+
+    connection
+        .query_row(
+            r#"
+            SELECT
+                source_dump_id,
+                source_session_id,
+                source_pid,
+                source_fidelity,
+                replay_mode,
+                tool_mode,
+                initial_state,
+                patched_context_segments,
+                patched_episodic_segments,
+                stubbed_invocations,
+                overridden_invocations,
+                baseline_json
+            FROM replay_branch_index
+            WHERE session_id = ?1
+            "#,
+            params![session_id],
+            |row| {
+                Ok(StoredReplayBranchRecord {
+                    source_dump_id: row.get(0)?,
+                    source_session_id: row.get(1)?,
+                    source_pid: row.get(2)?,
+                    source_fidelity: row.get(3)?,
+                    replay_mode: row.get(4)?,
+                    tool_mode: row.get(5)?,
+                    initial_state: row.get(6)?,
+                    patched_context_segments: row.get::<_, i64>(7)? as usize,
+                    patched_episodic_segments: row.get::<_, i64>(8)? as usize,
+                    stubbed_invocations: row.get::<_, i64>(9)? as usize,
+                    overridden_invocations: row.get::<_, i64>(10)? as usize,
+                    baseline_json: row.get(11)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|err| err.to_string())
 }
 
 pub(crate) fn table_exists(connection: &Connection, table_name: &str) -> Result<bool, String> {

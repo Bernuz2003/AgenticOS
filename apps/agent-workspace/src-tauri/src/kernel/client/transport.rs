@@ -276,6 +276,7 @@ impl KernelBridge {
 fn command_timeout(opcode: OpCode) -> Duration {
     match opcode {
         OpCode::Load => Duration::from_secs(15 * 60),
+        OpCode::ReplayCoreDump => Duration::from_secs(30),
         _ => Duration::from_secs(5),
     }
 }

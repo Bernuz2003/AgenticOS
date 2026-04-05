@@ -166,6 +166,7 @@ pub(crate) fn normalize_config_paths(config: &mut KernelConfig, config_path: &Pa
     absolutize_from(&base_dir, &mut config.paths.kernel_token_path);
     absolutize_from(&base_dir, &mut config.paths.remote_provider_catalog_path);
     absolutize_from(&base_dir, &mut config.memory.swap_dir);
+    absolutize_from(&base_dir, &mut config.core_dump.dump_dir);
     absolutize_remote_tokenizer_path(&base_dir, &mut config.openai_responses.tokenizer_path);
     absolutize_remote_tokenizer_path(&base_dir, &mut config.groq_responses.tokenizer_path);
     absolutize_remote_tokenizer_path(&base_dir, &mut config.openrouter.tokenizer_path);
@@ -245,6 +246,36 @@ pub(crate) fn apply_env_overrides(config: &mut KernelConfig) {
     }
     if let Some(value) = env_u64_opt("AGENTIC_CHECKPOINT_INTERVAL_SECS") {
         config.checkpoint.interval_secs = value;
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_CORE_DUMP_ENABLED") {
+        config.core_dump.enabled = value;
+    }
+    if let Some(value) = env_string("AGENTIC_CORE_DUMP_DIR") {
+        config.core_dump.dump_dir = PathBuf::from(value);
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_CORE_DUMP_AUTO_ON_KILL") {
+        config.core_dump.auto_capture_on_kill = value;
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_CORE_DUMP_AUTO_ON_ERROR") {
+        config.core_dump.auto_capture_on_error = value;
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_CORE_DUMP_RETENTION_MAX_FILES") {
+        config.core_dump.retention_max_files = value;
+    }
+    if let Some(value) = env_u64_opt("AGENTIC_CORE_DUMP_RETENTION_MAX_AGE_HOURS") {
+        config.core_dump.retention_max_age_hours = value;
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_CORE_DUMP_INCLUDE_WORKSPACE") {
+        config.core_dump.include_workspace_by_default = value;
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_CORE_DUMP_INCLUDE_BACKEND_STATE") {
+        config.core_dump.include_backend_state_by_default = value;
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_CORE_DUMP_MAX_DEBUG_CHECKPOINTS") {
+        config.core_dump.max_debug_checkpoints_per_pid = value.max(1);
+    }
+    if let Some(value) = env_usize_opt("AGENTIC_CORE_DUMP_MAX_TOOL_INVOCATIONS") {
+        config.core_dump.max_tool_invocations_per_pid = value.max(1);
     }
     if let Some(value) = env_bool_opt("AGENTIC_AUTH_DISABLED") {
         config.auth.disabled = value;

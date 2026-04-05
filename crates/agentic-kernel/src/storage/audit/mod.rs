@@ -1,3 +1,3 @@
 mod events;
 
-pub(crate) use events::NewAuditEvent;
+pub(crate) use events::{NewAuditEvent, StoredAuditEvent};

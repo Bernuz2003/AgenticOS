@@ -2,7 +2,7 @@ mod input;
 pub(crate) mod lifecycle;
 mod resume;
 mod signals;
-mod targeting;
+pub(crate) mod targeting;
 mod turn_control;
 
 pub(crate) use input::{handle_continue_output, handle_send_input};

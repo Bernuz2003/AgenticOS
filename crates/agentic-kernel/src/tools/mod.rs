@@ -6,17 +6,23 @@ use crate::tool_registry::ToolRegistry;
 pub mod api;
 pub mod audit;
 pub(crate) mod builtins;
+pub(crate) mod command_tools;
 pub mod dispatcher;
+pub(crate) mod effects;
 pub mod error;
 pub mod executor;
 pub mod governance;
+pub(crate) mod host_exec;
 pub(crate) mod human_tools;
 pub mod invocation;
+pub(crate) mod network_tools;
 pub mod parser;
 pub mod path_guard;
 pub mod policy;
 pub mod runner;
 pub mod schema;
+pub(crate) mod system_tools;
+pub(crate) mod workspace_edit_tools;
 pub(crate) mod workspace_tools;
 
 use path_guard::workspace_root;
@@ -53,6 +59,10 @@ pub struct SysCallOutcome {
     pub success: bool,
     pub duration_ms: u128,
     pub should_kill_process: bool,
+    pub output_json: Option<serde_json::Value>,
+    pub warnings: Vec<String>,
+    pub error_kind: Option<String>,
+    pub effects: Vec<serde_json::Value>,
 }
 
 pub fn handle_syscall(
@@ -82,6 +92,10 @@ pub fn handle_syscall(
                 success: false,
                 duration_ms: 0,
                 should_kill_process: false,
+                output_json: None,
+                warnings: Vec::new(),
+                error_kind: Some("malformed_invocation".to_string()),
+                effects: Vec::new(),
             };
         }
     };
@@ -93,6 +107,10 @@ pub fn handle_syscall(
         success: result.success,
         duration_ms: result.duration_ms,
         should_kill_process: result.should_kill_process,
+        output_json: result.output_json,
+        warnings: result.warnings,
+        error_kind: result.error_kind,
+        effects: result.effects,
     }
 }
 #[cfg(test)]

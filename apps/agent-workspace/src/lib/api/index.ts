@@ -125,6 +125,65 @@ export interface WorkspaceSnapshot {
   context: WorkspaceContextSnapshot | null;
   pendingHumanRequest: HumanInputRequest | null;
   auditEvents: AuditEvent[];
+  replay: WorkspaceReplayDebugSnapshot | null;
+}
+
+export interface WorkspaceReplayDebugSnapshot {
+  sourceDumpId: string;
+  sourceSessionId: string | null;
+  sourcePid: number | null;
+  sourceFidelity: string;
+  replayMode: string;
+  toolMode: string;
+  initialState: string;
+  patchedContextSegments: number;
+  patchedEpisodicSegments: number;
+  stubbedInvocations: number;
+  overriddenInvocations: number;
+  baseline: WorkspaceReplayBaselineSnapshot;
+  diff: WorkspaceReplayDiffSnapshot;
+}
+
+export interface WorkspaceReplayBaselineSnapshot {
+  sourceContextSegments: number;
+  sourceEpisodicSegments: number;
+  sourceReplayMessages: number;
+  sourceToolInvocations: number;
+  sourceContextChars: number;
+  sourceEpisodicChars: number;
+  sourceContextKinds: string[];
+  sourceEpisodicKinds: string[];
+}
+
+export interface WorkspaceReplayDiffSnapshot {
+  currentContextSegments: number | null;
+  currentEpisodicSegments: number | null;
+  currentReplayMessages: number;
+  currentToolInvocations: number;
+  contextChanged: boolean | null;
+  contextSegmentsDelta: number | null;
+  episodicSegmentsDelta: number | null;
+  replayMessagesDelta: number;
+  toolInvocationsDelta: number;
+  branchOnlyMessages: number;
+  branchOnlyToolCalls: number;
+  changedToolOutputs: number;
+  completedToolCalls: number;
+  latestBranchMessage: string | null;
+  invocationDiffs: WorkspaceReplayInvocationDiff[];
+}
+
+export interface WorkspaceReplayInvocationDiff {
+  sourceToolCallId: string | null;
+  replayToolCallId: string | null;
+  toolName: string;
+  commandText: string;
+  sourceStatus: string | null;
+  replayStatus: string | null;
+  sourceOutputText: string | null;
+  replayOutputText: string | null;
+  branchOnly: boolean;
+  changed: boolean;
 }
 
 export interface ProcessPermissions {
@@ -255,6 +314,80 @@ export interface AuditEventDto {
 export interface StartSessionResult {
   sessionId: string;
   pid: number;
+}
+
+export interface CoreDumpSummary {
+  dumpId: string;
+  createdAtMs: number;
+  sessionId: string | null;
+  pid: number | null;
+  reason: string;
+  fidelity: string;
+  path: string;
+  bytes: number;
+  sha256: string;
+  note: string | null;
+}
+
+export interface CoreDumpManifestPreview {
+  format: string | null;
+  capture: {
+    mode: string | null;
+    reason: string | null;
+    fidelity: string | null;
+    note: string | null;
+  };
+  target: {
+    source: string | null;
+    state: string | null;
+    sessionId: string | null;
+    pid: number | null;
+    runtimeId: string | null;
+    inFlight: boolean | null;
+  };
+  session: null | {
+    title: string | null;
+    state: string | null;
+  };
+  process: null | {
+    toolCaller: string | null;
+    tokenCount: number | null;
+    terminationReason: string | null;
+    renderedPromptChars: number | null;
+    promptChars: number | null;
+  };
+  counts: {
+    replayMessages: number;
+    debugCheckpoints: number;
+    toolInvocations: number;
+    toolAuditLines: number;
+    sessionAuditEvents: number;
+    workspaceEntries: number;
+    limitations: number;
+  };
+  limitations: string[];
+}
+
+export interface CoreDumpInfo {
+  dump: CoreDumpSummary;
+  manifestJson: string;
+  manifest: CoreDumpManifestPreview;
+}
+
+export interface ReplayCoreDumpResult {
+  sourceDumpId: string;
+  sessionId: string;
+  pid: number;
+  runtimeId: string;
+  replaySessionTitle: string;
+  replayFidelity: string;
+  replayMode: string;
+  toolMode: string;
+  initialState: string;
+  patchedContextSegments: number;
+  patchedEpisodicSegments: number;
+  stubbedInvocations: number;
+  overriddenInvocations: number;
 }
 
 export interface OrchestrateResult {
@@ -893,6 +1026,57 @@ export interface WorkspaceSnapshotDto {
     requested_at_ms: number;
   };
   audit_events: AuditEventDto[];
+  replay: null | {
+    source_dump_id: string;
+    source_session_id: string | null;
+    source_pid: number | null;
+    source_fidelity: string;
+    replay_mode: string;
+    tool_mode: string;
+    initial_state: string;
+    patched_context_segments: number;
+    patched_episodic_segments: number;
+    stubbed_invocations: number;
+    overridden_invocations: number;
+    baseline: {
+      source_context_segments: number;
+      source_episodic_segments: number;
+      source_replay_messages: number;
+      source_tool_invocations: number;
+      source_context_chars: number;
+      source_episodic_chars: number;
+      source_context_kinds: string[];
+      source_episodic_kinds: string[];
+    };
+    diff: {
+      current_context_segments: number | null;
+      current_episodic_segments: number | null;
+      current_replay_messages: number;
+      current_tool_invocations: number;
+      context_changed: boolean | null;
+      context_segments_delta: number | null;
+      episodic_segments_delta: number | null;
+      replay_messages_delta: number;
+      tool_invocations_delta: number;
+      branch_only_messages: number;
+      branch_only_tool_calls: number;
+      changed_tool_outputs: number;
+      completed_tool_calls: number;
+      latest_branch_message: string | null;
+      invocation_diffs: Array<{
+        source_tool_call_id: string | null;
+        replay_tool_call_id: string | null;
+        tool_name: string;
+        command_text: string;
+        source_status: string | null;
+        replay_status: string | null;
+        source_output_text: string | null;
+        replay_output_text: string | null;
+        branch_only: boolean;
+        changed: boolean;
+      }>;
+    };
+  };
 }
 
 export interface TimelineSnapshotDto {
@@ -911,6 +1095,35 @@ export interface TimelineSnapshotDto {
   }>;
 }
 
+export interface CoreDumpSummaryDto {
+  dump_id: string;
+  created_at_ms: number;
+  session_id: string | null;
+  pid: number | null;
+  reason: string;
+  fidelity: string;
+  path: string;
+  bytes: number;
+  sha256: string;
+  note: string | null;
+}
+
+export interface ReplayCoreDumpResultDto {
+  source_dump_id: string;
+  session_id: string;
+  pid: number;
+  runtime_id: string;
+  replay_session_title: string;
+  replay_fidelity: string;
+  replay_mode: string;
+  tool_mode: string;
+  initial_state: string;
+  patched_context_segments: number;
+  patched_episodic_segments: number;
+  stubbed_invocations: number;
+  overridden_invocations: number;
+}
+
 export {
   auditEventKey,
   formatElapsedLabel,
@@ -927,6 +1140,7 @@ export {
   fetchTimelineSnapshot,
   fetchWorkspaceSnapshot,
 } from "./snapshots";
+export { fetchCoreDumpInfo, listCoreDumps, captureCoreDump, replayCoreDump } from "./core-dumps";
 export {
   continueSessionOutput,
   deleteSession,

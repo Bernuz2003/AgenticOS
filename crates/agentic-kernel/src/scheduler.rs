@@ -9,13 +9,14 @@
 /// - `run_engine_tick` queries `scheduling_order()` to step processes in
 ///   descending priority order.
 /// - Quota enforcement is checked *before* each step / syscall.
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use crate::backend::BackendCapabilities;
 use crate::model_catalog::WorkloadClass;
 use crate::process::{ContextPolicy, ContextState, ContextStatusSnapshot, HumanInputRequest};
 use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
+use crate::tools::SysCallOutcome;
 
 // ── Priority ────────────────────────────────────────────────────────────
 
@@ -142,8 +143,10 @@ pub struct CheckedOutProcessMetadata {
     pub permission_policy: ProcessPermissionPolicy,
     pub state: String,
     pub checked_out_at: Instant,
-    pub tokens: usize,
+    pub token_count: usize,
+    pub tokens: Vec<u32>,
     pub index_pos: usize,
+    pub turn_start_index: usize,
     pub max_tokens: usize,
     pub context_slot_id: Option<u64>,
     pub resident_slot_policy: Option<String>,
@@ -152,8 +155,53 @@ pub struct CheckedOutProcessMetadata {
     pub backend_id: Option<String>,
     pub backend_class: Option<String>,
     pub backend_capabilities: Option<BackendCapabilities>,
+    pub prompt_text: String,
+    pub resident_prompt_checkpoint_bytes: usize,
+    pub context_policy: ContextPolicy,
+    pub context_state: ContextState,
     pub context: ContextStatusSnapshot,
     pub pending_human_request: Option<HumanInputRequest>,
+    pub termination_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayToolMode {
+    StubbedRecorded,
+    LiveSafeFiltered,
+}
+
+impl ReplayToolMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StubbedRecorded => "stubbed_recorded_tools",
+            Self::LiveSafeFiltered => "safe_filtered_live_tools",
+        }
+    }
+
+    pub const fn is_stubbed(self) -> bool {
+        matches!(self, Self::StubbedRecorded)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReplayPatchSummary {
+    pub patched_context_segments: usize,
+    pub patched_episodic_segments: usize,
+    pub overridden_invocations: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplayToolStub {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub command_text: String,
+    pub outcome: SysCallOutcome,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplayProcessMetadata {
+    pub tool_mode: ReplayToolMode,
+    pub stubbed_invocations: VecDeque<ReplayToolStub>,
 }
 
 // ── ProcessScheduler ────────────────────────────────────────────────────
@@ -164,6 +212,7 @@ pub struct ProcessScheduler {
     accounting: HashMap<u64, ResourceAccounting>,
     restored_processes: HashMap<u64, RestoredProcessMetadata>,
     checked_out_processes: HashMap<u64, CheckedOutProcessMetadata>,
+    replay_processes: HashMap<u64, ReplayProcessMetadata>,
 }
 
 impl ProcessScheduler {
@@ -174,6 +223,7 @@ impl ProcessScheduler {
             accounting: HashMap::new(),
             restored_processes: HashMap::new(),
             checked_out_processes: HashMap::new(),
+            replay_processes: HashMap::new(),
         }
     }
 
@@ -189,6 +239,7 @@ impl ProcessScheduler {
             .insert(pid, ResourceAccounting::new(workload));
         self.restored_processes.remove(&pid);
         self.checked_out_processes.remove(&pid);
+        self.replay_processes.remove(&pid);
     }
 
     /// Remove all scheduler state for a process.
@@ -198,6 +249,7 @@ impl ProcessScheduler {
         self.accounting.remove(&pid);
         self.restored_processes.remove(&pid);
         self.checked_out_processes.remove(&pid);
+        self.replay_processes.remove(&pid);
     }
 
     pub fn clear_restored_processes(&mut self) {
@@ -239,6 +291,28 @@ impl ProcessScheduler {
             .iter()
             .map(|(pid, metadata)| (*pid, metadata.clone()))
             .collect()
+    }
+
+    pub fn record_replay_process(&mut self, pid: u64, metadata: ReplayProcessMetadata) {
+        self.replay_processes.insert(pid, metadata);
+    }
+
+    pub fn replay_process(&self, pid: u64) -> Option<&ReplayProcessMetadata> {
+        self.replay_processes.get(&pid)
+    }
+
+    pub fn consume_replay_tool_stub(&mut self, pid: u64, command: &str) -> Option<ReplayToolStub> {
+        let metadata = self.replay_processes.get_mut(&pid)?;
+        if !metadata.tool_mode.is_stubbed() {
+            return None;
+        }
+
+        let command = command.trim();
+        let index = metadata
+            .stubbed_invocations
+            .iter()
+            .position(|stub| stub.command_text.trim() == command)?;
+        metadata.stubbed_invocations.remove(index)
     }
 
     // ── Priority ────────────────────────────────────────────────────────

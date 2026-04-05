@@ -19,6 +19,9 @@ pub(crate) enum SyscallCmd {
         permissions: ProcessPermissionPolicy,
         registry: ToolRegistry,
     },
+    ReplayCompletion {
+        completion: SyscallCompletion,
+    },
     Shutdown,
 }
 
@@ -67,6 +70,10 @@ pub(crate) fn spawn_syscall_worker(
                                 success: false,
                                 duration_ms: 0,
                                 should_kill_process: true,
+                                output_json: None,
+                                warnings: Vec::new(),
+                                error_kind: Some("worker_unavailable".to_string()),
+                                effects: Vec::new(),
                             },
                         };
                         if result_tx
@@ -79,6 +86,14 @@ pub(crate) fn spawn_syscall_worker(
                             })
                             .is_err()
                         {
+                            break;
+                        }
+                        if let Some(waker) = wake_loop.as_ref() {
+                            let _ = waker.wake();
+                        }
+                    }
+                    SyscallCmd::ReplayCompletion { completion } => {
+                        if result_tx.send(completion).is_err() {
                             break;
                         }
                         if let Some(waker) = wake_loop.as_ref() {

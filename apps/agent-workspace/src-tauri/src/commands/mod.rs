@@ -1,5 +1,6 @@
 use tauri::async_runtime;
 
+pub mod core_dumps;
 pub mod diagnostics;
 pub mod jobs;
 pub mod models;

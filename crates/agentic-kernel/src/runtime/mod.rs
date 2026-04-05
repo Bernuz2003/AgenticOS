@@ -28,6 +28,7 @@ use crate::transport::Client;
 pub(crate) use output::assistant_output::should_emit_session_finished;
 pub(crate) use output::assistant_turn_store::AssistantTurnRuntimeBoundary;
 pub(crate) use output::drain_worker_results;
+pub(crate) use output::TurnAssemblySnapshot;
 pub(crate) use output::TurnAssemblyStore;
 use process::{checkout_active_processes, handle_finished_processes};
 use syscalls::{drain_syscall_results, SyscallCmd, SyscallCompletion};
@@ -196,6 +197,8 @@ pub fn run_engine_tick(
         scheduler,
         session_registry,
         storage,
+        turn_assembly,
+        in_flight,
         syscall_result_rx,
         pending_events,
     );
@@ -249,6 +252,7 @@ pub fn run_engine_tick(
         orchestrator,
         session_registry,
         storage,
+        turn_assembly,
         in_flight,
         pending_kills,
         pending_events,

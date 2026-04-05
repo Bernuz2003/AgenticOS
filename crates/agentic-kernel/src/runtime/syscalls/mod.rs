@@ -5,6 +5,8 @@ mod ids;
 mod invocation_events;
 mod ipc;
 pub(crate) mod parser;
+mod replay;
+mod tool_history;
 mod worker;
 
 pub(crate) use completion::drain_syscall_results;

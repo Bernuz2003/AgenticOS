@@ -4,6 +4,10 @@ use std::sync::mpsc;
 
 use agentic_control_models::KernelEvent;
 
+use crate::core_dump::{
+    compact_note, core_dump_created_event, maybe_capture_automatic_core_dump, AutomaticCaptureKind,
+    CaptureCoreDumpArgs,
+};
 use crate::diagnostics::audit;
 use crate::inference_worker::InferenceResult;
 use crate::memory::NeuralMemory;
@@ -105,7 +109,6 @@ pub(crate) fn drain_worker_results(
                 accounting_event,
             } => {
                 in_flight.remove(&pid);
-                scheduler.clear_checked_out_process(pid);
                 let Some(runtime_id) = runtime_registry
                     .runtime_id_for_pid(pid)
                     .map(ToString::to_string)
@@ -122,6 +125,36 @@ pub(crate) fn drain_worker_results(
                     accounting_event,
                 );
                 tracing::error!(pid, %error, "Process error from worker, killing");
+                match maybe_capture_automatic_core_dump(
+                    CaptureCoreDumpArgs {
+                        runtime_registry: &*runtime_registry,
+                        scheduler: &*scheduler,
+                        session_registry: &*session_registry,
+                        storage,
+                        turn_assembly: &*turn_assembly,
+                        memory: &*memory,
+                        in_flight: &*in_flight,
+                    },
+                    pid,
+                    "worker_error",
+                    compact_note(&error),
+                    AutomaticCaptureKind::Error,
+                ) {
+                    Ok(Some(summary)) => {
+                        if let Some(event) = core_dump_created_event(&summary) {
+                            pending_events.push(event);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        tracing::warn!(
+                            pid,
+                            %err,
+                            "COREDUMP: automatic capture failed after worker error"
+                        );
+                    }
+                }
+                scheduler.clear_checked_out_process(pid);
                 if let Some(finalized) = orchestrator.mark_failed(pid, &error, Some("worker_error"))
                 {
                     match storage.finalize_workflow_task_attempt(

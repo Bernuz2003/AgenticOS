@@ -166,6 +166,29 @@ pub enum ContextSegmentKind {
     RetrievedMemory,
 }
 
+impl ContextSegmentKind {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "user_turn" | "user" => Some(Self::UserTurn),
+            "assistant_turn" | "assistant" => Some(Self::AssistantTurn),
+            "injected_context" | "system" | "injected" => Some(Self::InjectedContext),
+            "summary" => Some(Self::Summary),
+            "retrieved_memory" | "memory" | "retrieved" => Some(Self::RetrievedMemory),
+            _ => None,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::UserTurn => "user_turn",
+            Self::AssistantTurn => "assistant_turn",
+            Self::InjectedContext => "injected_context",
+            Self::Summary => "summary",
+            Self::RetrievedMemory => "retrieved_memory",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextSegment {
     pub kind: ContextSegmentKind,

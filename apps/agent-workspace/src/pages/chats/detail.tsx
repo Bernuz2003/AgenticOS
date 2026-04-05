@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { MindPanel } from "../../components/workspace/mind-panel";
 import { TimelinePane } from "../../components/workspace/timeline-pane";
 import { AuditDrawer } from "../../components/diagnostics/event-log";
@@ -8,6 +8,7 @@ import {
   continueSessionOutput,
   sendSessionInput,
   stopSessionOutput,
+  type ReplayCoreDumpResult,
 } from "../../lib/api";
 import { useSessionsStore } from "../../store/sessions-store";
 import { useWorkspaceStore } from "../../store/workspace-store";
@@ -43,12 +44,16 @@ function buildSyntheticSession(
 
 export function WorkspacePage() {
   const { sessionId } = useParams();
+  const navigate = useNavigate();
   const listedSession = useSessionsStore((state) =>
     state.sessions.find((item) => item.sessionId === sessionId),
   );
   const snapshot = useWorkspaceStore((state) => state.snapshot);
   const timeline = useWorkspaceStore((state) => state.timeline);
   const loading = useWorkspaceStore((state) => state.loading);
+  const liveSnapshotRevision = useWorkspaceStore(
+    (state) => state.liveSnapshotRevision,
+  );
   const timelineLoading = useWorkspaceStore((state) => state.timelineLoading);
   const error = useWorkspaceStore((state) => state.error);
   const timelineError = useWorkspaceStore((state) => state.timelineError);
@@ -264,6 +269,10 @@ export function WorkspacePage() {
     }
   }
 
+  function handleReplayReady(result: ReplayCoreDumpResult) {
+    navigate(`/workspace/${result.sessionId}`);
+  }
+
   if (!session) {
     return (
       <div className="flex items-center justify-center p-20">
@@ -331,13 +340,15 @@ export function WorkspacePage() {
         </div>
 
         <div className="bg-white border rounded-2xl border-slate-200 overflow-hidden shadow-sm shrink-0 min-h-0 flex">
-          <MindPanel 
-            session={session} 
-            snapshot={snapshot} 
-            loading={loading} 
-            error={error} 
-            onOpenAudit={() => setAuditOpen(true)}
-          />
+        <MindPanel
+          session={session}
+          snapshot={snapshot}
+          loading={loading}
+          error={error}
+          snapshotRefreshKey={liveSnapshotRevision}
+          onOpenAudit={() => setAuditOpen(true)}
+          onReplayReady={handleReplayReady}
+        />
         </div>
       </div>
 

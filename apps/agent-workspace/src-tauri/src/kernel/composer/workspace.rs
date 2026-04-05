@@ -28,8 +28,7 @@ pub fn compose_workspace_snapshot_for_session(
     if let Some(pid) = pid {
         if let Some(snapshot) = try_fetch_live_snapshot_by_pid_for_session(bridge, session_id, pid)?
         {
-            ensure_live_timeline_from_snapshot(workspace_root, timeline_store, snapshot.clone())?;
-            return Ok(snapshot);
+            return finalize_workspace_snapshot(workspace_root, timeline_store, snapshot);
         }
         if let Some(snapshot) =
             history::load_workspace_snapshot(workspace_root, session_id, Some(pid))?
@@ -39,8 +38,7 @@ pub fn compose_workspace_snapshot_for_session(
     }
 
     if let Some(snapshot) = try_fetch_live_snapshot_for_session(bridge, session_id)? {
-        ensure_live_timeline_from_snapshot(workspace_root, timeline_store, snapshot.clone())?;
-        return Ok(snapshot);
+        return finalize_workspace_snapshot(workspace_root, timeline_store, snapshot);
     }
 
     let Some(persisted) = history::load_workspace_snapshot(workspace_root, session_id, None)?
@@ -55,8 +53,7 @@ pub fn compose_workspace_snapshot_for_session(
         if let Some(snapshot) =
             try_fetch_live_snapshot_by_pid_for_session(bridge, session_id, active_pid)?
         {
-            ensure_live_timeline_from_snapshot(workspace_root, timeline_store, snapshot.clone())?;
-            return Ok(snapshot);
+            return finalize_workspace_snapshot(workspace_root, timeline_store, snapshot);
         }
     }
 
@@ -72,8 +69,7 @@ pub fn compose_workspace_snapshot_for_pid(
     let Some(snapshot) = try_fetch_live_snapshot_by_pid(bridge, pid)? else {
         return Err(format!("No live workspace snapshot found for PID {}", pid));
     };
-    ensure_live_timeline_from_snapshot(workspace_root, timeline_store, snapshot.clone())?;
-    Ok(snapshot)
+    finalize_workspace_snapshot(workspace_root, timeline_store, snapshot)
 }
 
 pub fn ensure_live_timeline_for_pid(
@@ -194,4 +190,14 @@ pub(super) fn snapshot_live_timeline_for_pid(
         .lock()
         .map_err(|_| "Timeline store lock poisoned".to_string())?;
     Ok(store.snapshot(pid))
+}
+
+fn finalize_workspace_snapshot(
+    workspace_root: &Path,
+    timeline_store: &Arc<Mutex<live_timeline::TimelineStore>>,
+    mut snapshot: WorkspaceSnapshot,
+) -> Result<WorkspaceSnapshot, String> {
+    ensure_live_timeline_from_snapshot(workspace_root, timeline_store, snapshot.clone())?;
+    history::hydrate_workspace_snapshot_replay(workspace_root, &mut snapshot)?;
+    Ok(snapshot)
 }

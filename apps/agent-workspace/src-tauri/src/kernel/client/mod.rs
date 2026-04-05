@@ -1,3 +1,4 @@
+mod core_dumps;
 mod jobs;
 mod mappers;
 mod models;

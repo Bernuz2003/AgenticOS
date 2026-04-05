@@ -8,6 +8,9 @@ pub mod schema {
     pub const AUTH: &str = "agenticos.control.auth.v1";
     pub const BACKEND_DIAG: &str = "agenticos.control.backend_diag.v1";
     pub const CHECKPOINT: &str = "agenticos.control.checkpoint.v1";
+    pub const COREDUMP: &str = "agenticos.control.coredump.v1";
+    pub const COREDUMP_INFO: &str = "agenticos.control.coredump_info.v1";
+    pub const REPLAY_COREDUMP: &str = "agenticos.control.replay_coredump.v1";
     pub const CONTINUE_OUTPUT: &str = "agenticos.control.continue_output.v1";
     pub const DELETE_JOB: &str = "agenticos.control.delete_job.v1";
     pub const DELETE_ORCHESTRATION: &str = "agenticos.control.delete_orchestration.v1";
@@ -21,6 +24,7 @@ pub mod schema {
     pub const LIST_MODELS: &str = "agenticos.control.list_models.v1";
     pub const LIST_ORCHESTRATIONS: &str = "agenticos.control.list_orchestrations.v1";
     pub const LIST_ARTIFACTS: &str = "agenticos.control.list_artifacts.v1";
+    pub const LIST_COREDUMPS: &str = "agenticos.control.list_coredumps.v1";
     pub const LIST_TOOLS: &str = "agenticos.control.list_tools.v1";
     pub const LOAD: &str = "agenticos.control.load.v1";
     pub const MEMORY_WRITE: &str = "agenticos.control.memw.v1";
@@ -59,6 +63,12 @@ pub enum ControlErrorCode {
     BackendDiag,
     CapabilityRequired,
     CheckpointFailed,
+    CoreDumpFailed,
+    CoreDumpInfoInvalid,
+    CoreDumpInvalid,
+    CoreDumpNotFound,
+    CoreDumpReplayFailed,
+    CoreDumpReplayInvalid,
     DriverUnresolved,
     Generic,
     GetQuotaInvalid,
@@ -74,6 +84,7 @@ pub enum ControlErrorCode {
     LoadBusy,
     LoadFailed,
     ListJobsInvalid,
+    ListCoreDumpsInvalid,
     ListOrchestrationsInvalid,
     MemwFailed,
     MemwInvalid,
@@ -121,6 +132,12 @@ impl ControlErrorCode {
             Self::BackendDiag => "BACKEND_DIAG",
             Self::CapabilityRequired => "CAPABILITY_REQUIRED",
             Self::CheckpointFailed => "CHECKPOINT_FAILED",
+            Self::CoreDumpFailed => "COREDUMP_FAILED",
+            Self::CoreDumpInfoInvalid => "COREDUMP_INFO_INVALID",
+            Self::CoreDumpInvalid => "COREDUMP_INVALID",
+            Self::CoreDumpNotFound => "COREDUMP_NOT_FOUND",
+            Self::CoreDumpReplayFailed => "COREDUMP_REPLAY_FAILED",
+            Self::CoreDumpReplayInvalid => "COREDUMP_REPLAY_INVALID",
             Self::DriverUnresolved => "DRIVER_UNRESOLVED",
             Self::Generic => "GENERIC",
             Self::GetQuotaInvalid => "GET_QUOTA_INVALID",
@@ -136,6 +153,7 @@ impl ControlErrorCode {
             Self::LoadBusy => "LOAD_BUSY",
             Self::LoadFailed => "LOAD_FAILED",
             Self::ListJobsInvalid => "LIST_JOBS_INVALID",
+            Self::ListCoreDumpsInvalid => "LIST_COREDUMPS_INVALID",
             Self::ListOrchestrationsInvalid => "LIST_ORCHESTRATIONS_INVALID",
             Self::MemwFailed => "MEMW_FAILED",
             Self::MemwInvalid => "MEMW_INVALID",
@@ -259,6 +277,9 @@ pub enum OpCode {
     GetQuota,
     SetQuota,
     Checkpoint,
+    CoreDump,
+    CoreDumpInfo,
+    ReplayCoreDump,
     Restore,
     ResumeSession,
     ScheduleJob,
@@ -269,6 +290,7 @@ pub enum OpCode {
     OrchestrationStatus,
     ListJobs,
     ListArtifacts,
+    ListCoreDumps,
     RetryTask,
     ListTools,
     RegisterTool,
@@ -305,6 +327,9 @@ impl OpCode {
             "GET_QUOTA" => Some(Self::GetQuota),
             "SET_QUOTA" => Some(Self::SetQuota),
             "CHECKPOINT" => Some(Self::Checkpoint),
+            "COREDUMP" => Some(Self::CoreDump),
+            "COREDUMP_INFO" => Some(Self::CoreDumpInfo),
+            "REPLAY_COREDUMP" => Some(Self::ReplayCoreDump),
             "RESTORE" => Some(Self::Restore),
             "RESUME_SESSION" => Some(Self::ResumeSession),
             "SCHEDULE_JOB" => Some(Self::ScheduleJob),
@@ -315,6 +340,7 @@ impl OpCode {
             "ORCHESTRATION_STATUS" => Some(Self::OrchestrationStatus),
             "LIST_JOBS" => Some(Self::ListJobs),
             "LIST_ARTIFACTS" => Some(Self::ListArtifacts),
+            "LIST_COREDUMPS" => Some(Self::ListCoreDumps),
             "RETRY_TASK" => Some(Self::RetryTask),
             "LIST_TOOLS" => Some(Self::ListTools),
             "REGISTER_TOOL" => Some(Self::RegisterTool),
@@ -352,6 +378,9 @@ impl OpCode {
             Self::GetQuota => "GET_QUOTA",
             Self::SetQuota => "SET_QUOTA",
             Self::Checkpoint => "CHECKPOINT",
+            Self::CoreDump => "COREDUMP",
+            Self::CoreDumpInfo => "COREDUMP_INFO",
+            Self::ReplayCoreDump => "REPLAY_COREDUMP",
             Self::Restore => "RESTORE",
             Self::ResumeSession => "RESUME_SESSION",
             Self::ScheduleJob => "SCHEDULE_JOB",
@@ -362,6 +391,7 @@ impl OpCode {
             Self::OrchestrationStatus => "ORCHESTRATION_STATUS",
             Self::ListJobs => "LIST_JOBS",
             Self::ListArtifacts => "LIST_ARTIFACTS",
+            Self::ListCoreDumps => "LIST_COREDUMPS",
             Self::RetryTask => "RETRY_TASK",
             Self::ListTools => "LIST_TOOLS",
             Self::RegisterTool => "REGISTER_TOOL",
@@ -472,6 +502,17 @@ mod tests {
     fn rejects_unknown_opcode() {
         let err = CommandHeader::parse("NOPE agent_1 0").expect_err("unknown opcode must fail");
         assert_eq!(err, ProtocolParseError::UnknownOpcode("NOPE".to_string()));
+    }
+
+    #[test]
+    fn parses_core_dump_opcodes() {
+        assert_eq!(OpCode::parse("COREDUMP"), Some(OpCode::CoreDump));
+        assert_eq!(OpCode::parse("COREDUMP_INFO"), Some(OpCode::CoreDumpInfo));
+        assert_eq!(OpCode::parse("LIST_COREDUMPS"), Some(OpCode::ListCoreDumps));
+        assert_eq!(
+            OpCode::parse("REPLAY_COREDUMP"),
+            Some(OpCode::ReplayCoreDump)
+        );
     }
 
     #[test]

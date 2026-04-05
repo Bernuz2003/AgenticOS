@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
@@ -6,6 +6,10 @@ use std::thread;
 use std::time::Instant;
 
 use agentic_control_models::KernelEvent;
+use agentic_control_models::{
+    CoreDumpReplayPatch, CoreDumpReplayRequest, CoreDumpReplayResult, CoreDumpRequest,
+    CoreDumpSummaryView,
+};
 use mio::{Poll, Token};
 use tokenizers::models::wordlevel::WordLevel;
 use tokenizers::pre_tokenizers::whitespace::Whitespace;
@@ -15,6 +19,7 @@ use crate::backend::{
     BackendCapabilities, BackendClass, DriverResolution, ExternalLlamaCppBackend, InferenceBackend,
     InferenceFinishReason, InferenceStepRequest, RuntimeModel,
 };
+use crate::commands::{MetricsState, ProcessCommandContext};
 use crate::config::{RemoteAdapterKind, RemoteProviderRuntimeConfig};
 use crate::events::flush_pending_events;
 use crate::inference_worker::InferenceResult;
@@ -23,6 +28,7 @@ use crate::model_catalog::{ModelCatalog, RemoteModelEntry, ResolvedModelTarget, 
 use crate::orchestrator::Orchestrator;
 use crate::process::{ProcessLifecyclePolicy, ProcessState};
 use crate::prompting::{GenerationConfig, PromptFamily};
+use crate::resource_governor::ResourceGovernor;
 use crate::runtime::syscalls::{drain_syscall_results, SyscallCmd, SyscallCompletion};
 use crate::runtime::{drain_worker_results, TurnAssemblyStore};
 use crate::runtimes::{RuntimeRegistry, RuntimeReservation};
@@ -239,6 +245,7 @@ pub struct KernelE2eHarness {
     syscall_result_rx: mpsc::Receiver<SyscallCompletion>,
     tool_registry: ToolRegistry,
     poll: Poll,
+    control_client: Client,
     clients: HashMap<Token, Client>,
     next_event_sequence: u64,
 }
@@ -286,6 +293,7 @@ impl KernelE2eHarness {
             syscall_result_rx,
             tool_registry: ToolRegistry::with_builtins(),
             poll: Poll::new().map_err(|err| err.to_string())?,
+            control_client: test_client()?,
             clients: HashMap::new(),
             next_event_sequence: 0,
         })
@@ -489,6 +497,34 @@ impl KernelE2eHarness {
         success: bool,
         should_kill_process: bool,
     ) -> Result<(), String> {
+        self.send_syscall_completion_with_details(
+            pid,
+            tool_call_id,
+            command,
+            output,
+            success,
+            should_kill_process,
+            None,
+            Vec::new(),
+            None,
+            Vec::new(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_syscall_completion_with_details(
+        &self,
+        pid: u64,
+        tool_call_id: impl Into<String>,
+        command: impl Into<String>,
+        output: impl Into<String>,
+        success: bool,
+        should_kill_process: bool,
+        output_json: Option<serde_json::Value>,
+        warnings: Vec<String>,
+        error_kind: Option<String>,
+        effects: Vec<serde_json::Value>,
+    ) -> Result<(), String> {
         self.syscall_result_tx
             .send(SyscallCompletion {
                 pid,
@@ -500,6 +536,10 @@ impl KernelE2eHarness {
                     success,
                     duration_ms: 0,
                     should_kill_process,
+                    output_json,
+                    warnings,
+                    error_kind,
+                    effects,
                 },
             })
             .map_err(|err| err.to_string())
@@ -512,6 +552,8 @@ impl KernelE2eHarness {
             &mut self.scheduler,
             &mut self.session_registry,
             &mut self.storage,
+            &self.turn_assembly,
+            &self.in_flight,
             &self.syscall_result_rx,
             &mut self.pending_events,
         )
@@ -543,15 +585,21 @@ impl KernelE2eHarness {
     }
 
     pub fn queued_syscall(&mut self) -> Option<(u64, String, String)> {
-        match self.syscall_cmd_rx.try_recv().ok()? {
-            SyscallCmd::Execute {
-                pid,
-                tool_call_id,
-                content,
-                ..
-            } => Some((pid, tool_call_id, content)),
-            SyscallCmd::Shutdown => None,
+        while let Ok(command) = self.syscall_cmd_rx.try_recv() {
+            match command {
+                SyscallCmd::Execute {
+                    pid,
+                    tool_call_id,
+                    content,
+                    ..
+                } => return Some((pid, tool_call_id, content)),
+                SyscallCmd::ReplayCompletion { completion } => {
+                    let _ = self.syscall_result_tx.send(completion);
+                }
+                SyscallCmd::Shutdown => return None,
+            }
         }
+        None
     }
 
     pub fn pending_events(&self) -> Vec<KernelEvent> {
@@ -595,6 +643,107 @@ impl KernelE2eHarness {
             .map_err(|err| err.to_string())
     }
 
+    pub fn replay_branch_record(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        self.storage
+            .replay_branch(session_id)
+            .map_err(|err| err.to_string())?
+            .map(|record| {
+                let baseline: serde_json::Value =
+                    serde_json::from_str(&record.baseline_json).map_err(|err| err.to_string())?;
+                Ok(serde_json::json!({
+                    "session_id": record.session_id,
+                    "created_at_ms": record.created_at_ms,
+                    "pid": record.pid,
+                    "source_dump_id": record.source_dump_id,
+                    "source_session_id": record.source_session_id,
+                    "source_pid": record.source_pid,
+                    "source_fidelity": record.source_fidelity,
+                    "replay_mode": record.replay_mode,
+                    "tool_mode": record.tool_mode,
+                    "initial_state": record.initial_state,
+                    "patched_context_segments": record.patched_context_segments,
+                    "patched_episodic_segments": record.patched_episodic_segments,
+                    "stubbed_invocations": record.stubbed_invocations,
+                    "overridden_invocations": record.overridden_invocations,
+                    "baseline": baseline,
+                }))
+            })
+            .transpose()
+    }
+
+    pub fn replay_core_dump(
+        &mut self,
+        dump_id: &str,
+        branch_label: Option<&str>,
+        tool_mode: Option<&str>,
+        patch: Option<CoreDumpReplayPatch>,
+    ) -> Result<CoreDumpReplayResult, String> {
+        let mut model_catalog =
+            ModelCatalog::discover(crate::config::repository_root().join("models"))
+                .map_err(|err| err.to_string())?;
+        let mut resource_governor = ResourceGovernor::load(&mut self.storage, Default::default())
+            .map_err(|err| err.to_string())?;
+        let mut metrics = MetricsState::new();
+        crate::core_dump::replay_core_dump(
+            &mut ProcessCommandContext {
+                client: &mut self.control_client,
+                request_id: "test:replay",
+                runtime_registry: &mut self.runtime_registry,
+                resource_governor: &mut resource_governor,
+                model_catalog: &mut model_catalog,
+                memory: &mut self.memory,
+                scheduler: &mut self.scheduler,
+                in_flight: &self.in_flight,
+                pending_kills: &mut self.pending_kills,
+                pending_events: &mut self.pending_events,
+                metrics: &mut metrics,
+                client_id: 77,
+                session_registry: &mut self.session_registry,
+                storage: &mut self.storage,
+                turn_assembly: &mut self.turn_assembly,
+                tool_registry: &self.tool_registry,
+            },
+            CoreDumpReplayRequest {
+                dump_id: dump_id.to_string(),
+                branch_label: branch_label.map(ToOwned::to_owned),
+                tool_mode: tool_mode.map(ToOwned::to_owned),
+                patch,
+            },
+        )
+        .map_err(|(_, message)| message)
+    }
+
+    pub fn context_segment_texts(&self, pid: u64) -> Option<Vec<String>> {
+        self.runtime_registry
+            .engine(&self.runtime_id)
+            .and_then(|engine| engine.processes.get(&pid))
+            .map(|process| {
+                process
+                    .context_state
+                    .segments
+                    .iter()
+                    .map(|segment| segment.text.clone())
+                    .collect()
+            })
+    }
+
+    pub fn episodic_segment_texts(&self, pid: u64) -> Option<Vec<String>> {
+        self.runtime_registry
+            .engine(&self.runtime_id)
+            .and_then(|engine| engine.processes.get(&pid))
+            .map(|process| {
+                process
+                    .context_state
+                    .episodic_segments
+                    .iter()
+                    .map(|segment| segment.text.clone())
+                    .collect()
+            })
+    }
+
     pub fn recent_audit_kinds(&self, pid: u64) -> Result<Vec<String>, String> {
         let session_id = self
             .session_id_for_pid(pid)
@@ -628,6 +777,160 @@ impl KernelE2eHarness {
         )
     }
 
+    pub fn latest_core_dump(&self) -> Result<Option<CoreDumpSummaryView>, String> {
+        let Some(record) = self
+            .storage
+            .load_core_dump_index(1)
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .next()
+        else {
+            return Ok(None);
+        };
+        Ok(Some(CoreDumpSummaryView {
+            dump_id: record.dump_id,
+            created_at_ms: record.created_at_ms,
+            session_id: record.session_id,
+            pid: record.pid,
+            reason: record.reason,
+            fidelity: record.fidelity,
+            path: record.path,
+            bytes: record.bytes,
+            sha256: record.sha256,
+            note: record.note,
+        }))
+    }
+
+    pub fn core_dump_manifest_json(&self, dump_id: &str) -> Result<Option<String>, String> {
+        crate::core_dump::load_core_dump_info(&self.storage, dump_id)
+            .map(|info| info.map(|payload| payload.manifest_json))
+            .map_err(|err| err.to_string())
+    }
+
+    pub fn capture_core_dump(
+        &mut self,
+        pid: u64,
+        reason: impl Into<String>,
+    ) -> Result<CoreDumpSummaryView, String> {
+        crate::core_dump::capture_core_dump(
+            crate::core_dump::CaptureCoreDumpArgs {
+                runtime_registry: &self.runtime_registry,
+                scheduler: &self.scheduler,
+                session_registry: &self.session_registry,
+                storage: &mut self.storage,
+                turn_assembly: &self.turn_assembly,
+                memory: &self.memory,
+                in_flight: &self.in_flight,
+            },
+            CoreDumpRequest {
+                session_id: None,
+                pid: Some(pid),
+                mode: Some("manual".to_string()),
+                reason: Some(reason.into()),
+                note: None,
+                freeze_target: Some(false),
+                include_workspace: Some(false),
+                include_backend_state: Some(false),
+            },
+        )
+    }
+
+    pub fn recent_debug_checkpoints(&self, pid: u64) -> Result<Vec<serde_json::Value>, String> {
+        self.storage
+            .recent_debug_checkpoints_for_pid(pid, 64)
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .rev()
+            .map(|record| {
+                let snapshot: serde_json::Value =
+                    serde_json::from_str(&record.snapshot_json).map_err(|err| err.to_string())?;
+                Ok(serde_json::json!({
+                    "checkpoint_id": record.checkpoint_id,
+                    "recorded_at_ms": record.recorded_at_ms,
+                    "boundary": record.boundary,
+                    "state": record.state,
+                    "snapshot": snapshot,
+                }))
+            })
+            .collect()
+    }
+
+    pub fn recent_tool_invocations(&self, pid: u64) -> Result<Vec<serde_json::Value>, String> {
+        self.storage
+            .recent_tool_invocations_for_pid(pid, 64)
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .rev()
+            .map(|record| {
+                let input: serde_json::Value =
+                    serde_json::from_str(&record.input_json).map_err(|err| err.to_string())?;
+                let output = record
+                    .output_json
+                    .as_deref()
+                    .map(serde_json::from_str::<serde_json::Value>)
+                    .transpose()
+                    .map_err(|err| err.to_string())?;
+                let warnings = record
+                    .warnings_json
+                    .as_deref()
+                    .map(serde_json::from_str::<Vec<String>>)
+                    .transpose()
+                    .map_err(|err| err.to_string())?
+                    .unwrap_or_default();
+                let effects = record
+                    .effect_json
+                    .as_deref()
+                    .map(serde_json::from_str::<Vec<serde_json::Value>>)
+                    .transpose()
+                    .map_err(|err| err.to_string())?
+                    .unwrap_or_default();
+
+                let mut payload = BTreeMap::new();
+                payload.insert(
+                    "tool_call_id".to_string(),
+                    serde_json::Value::String(record.tool_call_id),
+                );
+                payload.insert(
+                    "tool_name".to_string(),
+                    serde_json::Value::String(record.tool_name),
+                );
+                payload.insert(
+                    "status".to_string(),
+                    serde_json::Value::String(record.status),
+                );
+                payload.insert("input".to_string(), input);
+                payload.insert(
+                    "output".to_string(),
+                    output.unwrap_or(serde_json::Value::Null),
+                );
+                payload.insert(
+                    "output_text".to_string(),
+                    record
+                        .output_text
+                        .map(serde_json::Value::String)
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                payload.insert(
+                    "warnings".to_string(),
+                    serde_json::to_value(warnings).map_err(|err| err.to_string())?,
+                );
+                payload.insert(
+                    "error_kind".to_string(),
+                    record
+                        .error_kind
+                        .map(serde_json::Value::String)
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                payload.insert(
+                    "effects".to_string(),
+                    serde_json::to_value(effects).map_err(|err| err.to_string())?,
+                );
+                payload.insert("kill".to_string(), serde_json::Value::Bool(record.kill));
+                Ok(serde_json::Value::Object(payload.into_iter().collect()))
+            })
+            .collect()
+    }
+
     fn record_checked_out(&mut self, pid: u64) -> Result<(), String> {
         let engine = self
             .runtime_registry
@@ -645,8 +948,10 @@ impl KernelE2eHarness {
                 permission_policy: process.permission_policy.clone(),
                 state: format!("{:?}", process.state),
                 checked_out_at: Instant::now(),
-                tokens: process.tokens.len(),
+                token_count: process.tokens.len(),
+                tokens: process.tokens.clone(),
                 index_pos: process.index_pos,
+                turn_start_index: process.turn_start_index,
                 max_tokens: process.max_tokens,
                 context_slot_id: process.context_slot_id,
                 resident_slot_policy: process.resident_slot_policy_label(),
@@ -657,8 +962,13 @@ impl KernelE2eHarness {
                 backend_id: Some(engine.loaded_backend_id().to_string()),
                 backend_class: Some(engine.loaded_backend_class().as_str().to_string()),
                 backend_capabilities: Some(engine.loaded_backend_capabilities()),
+                prompt_text: process.prompt_text().to_string(),
+                resident_prompt_checkpoint_bytes: process.resident_prompt_checkpoint_bytes(),
+                context_policy: process.context_policy.clone(),
+                context_state: process.context_state.clone(),
                 context: process.context_status_snapshot(),
                 pending_human_request: process.pending_human_request.clone(),
+                termination_reason: process.termination_reason.clone(),
             },
         );
         Ok(())
@@ -678,6 +988,21 @@ impl Drop for KernelE2eHarness {
     fn drop(&mut self) {
         remove_temp_dir(&self._db_dir);
     }
+}
+
+fn test_client() -> Result<Client, String> {
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|err| err.to_string())?;
+    let addr = listener.local_addr().map_err(|err| err.to_string())?;
+    let join = thread::spawn(move || listener.accept().map(|pair| pair.0));
+    let client_stream = std::net::TcpStream::connect(addr).map_err(|err| err.to_string())?;
+    let _server_stream = join
+        .join()
+        .map_err(|_| "accept thread panicked".to_string())?
+        .map_err(|err| err.to_string())?;
+    Ok(Client::new(
+        mio::net::TcpStream::from_std(client_stream),
+        true,
+    ))
 }
 
 fn spawn_mock_llamacpp_stream_server(

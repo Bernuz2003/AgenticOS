@@ -62,6 +62,7 @@ pub struct WorkspaceSnapshot {
     pub context: Option<WorkspaceContextSnapshot>,
     pub pending_human_request: Option<WorkspaceHumanInputRequest>,
     pub audit_events: Vec<AuditEvent>,
+    pub replay: Option<WorkspaceReplayDebugSnapshot>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -100,6 +101,68 @@ pub struct WorkspaceHumanInputRequest {
     pub allow_free_text: bool,
     pub placeholder: Option<String>,
     pub requested_at_ms: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WorkspaceReplayDebugSnapshot {
+    pub source_dump_id: String,
+    pub source_session_id: Option<String>,
+    pub source_pid: Option<u64>,
+    pub source_fidelity: String,
+    pub replay_mode: String,
+    pub tool_mode: String,
+    pub initial_state: String,
+    pub patched_context_segments: usize,
+    pub patched_episodic_segments: usize,
+    pub stubbed_invocations: usize,
+    pub overridden_invocations: usize,
+    pub baseline: WorkspaceReplayBaselineSnapshot,
+    pub diff: WorkspaceReplayDiffSnapshot,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WorkspaceReplayBaselineSnapshot {
+    pub source_context_segments: usize,
+    pub source_episodic_segments: usize,
+    pub source_replay_messages: usize,
+    pub source_tool_invocations: usize,
+    pub source_context_chars: usize,
+    pub source_episodic_chars: usize,
+    pub source_context_kinds: Vec<String>,
+    pub source_episodic_kinds: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WorkspaceReplayDiffSnapshot {
+    pub current_context_segments: Option<usize>,
+    pub current_episodic_segments: Option<usize>,
+    pub current_replay_messages: usize,
+    pub current_tool_invocations: usize,
+    pub context_changed: Option<bool>,
+    pub context_segments_delta: Option<i64>,
+    pub episodic_segments_delta: Option<i64>,
+    pub replay_messages_delta: i64,
+    pub tool_invocations_delta: i64,
+    pub branch_only_messages: usize,
+    pub branch_only_tool_calls: usize,
+    pub changed_tool_outputs: usize,
+    pub completed_tool_calls: usize,
+    pub latest_branch_message: Option<String>,
+    pub invocation_diffs: Vec<WorkspaceReplayInvocationDiff>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WorkspaceReplayInvocationDiff {
+    pub source_tool_call_id: Option<String>,
+    pub replay_tool_call_id: Option<String>,
+    pub tool_name: String,
+    pub command_text: String,
+    pub source_status: Option<String>,
+    pub replay_status: Option<String>,
+    pub source_output_text: Option<String>,
+    pub replay_output_text: Option<String>,
+    pub branch_only: bool,
+    pub changed: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]

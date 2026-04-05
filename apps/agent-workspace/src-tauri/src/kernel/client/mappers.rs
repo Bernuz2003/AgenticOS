@@ -206,6 +206,7 @@ pub(super) fn map_pid_status_to_workspace_snapshot(
             }
         }),
         audit_events: Vec::new(),
+        replay: None,
     }
 }
 

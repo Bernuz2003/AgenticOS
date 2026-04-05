@@ -119,6 +119,18 @@ fn handle_kernel_event(
     last_workspace_refresh: &mut std::collections::HashMap<u64, Instant>,
 ) {
     match &event {
+        KernelEvent::CoreDumpCreated { pid, .. } => {
+            maybe_emit_workspace_snapshot(
+                app,
+                workspace_root,
+                bridge,
+                timeline_store,
+                *pid,
+                last_workspace_refresh,
+                true,
+            );
+            maybe_emit_lobby_snapshot(app, bridge, last_lobby_refresh, false);
+        }
         KernelEvent::LobbyChanged { .. } | KernelEvent::ModelChanged { .. } => {
             maybe_emit_lobby_snapshot(app, bridge, last_lobby_refresh, false);
         }
@@ -233,6 +245,7 @@ fn handle_kernel_event(
 
 pub(crate) fn apply_timeline_store_event(store: &mut TimelineStore, event: &KernelEvent) {
     match event {
+        KernelEvent::CoreDumpCreated { .. } => {}
         KernelEvent::SessionStarted {
             session_id,
             pid,

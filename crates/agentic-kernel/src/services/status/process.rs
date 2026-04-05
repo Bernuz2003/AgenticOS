@@ -173,7 +173,7 @@ pub(crate) fn checked_out_pid_status_response(
             .as_ref()
             .map(|(_, task_id, _)| task_id.clone()),
         state: metadata.state.clone(),
-        tokens: metadata.tokens,
+        tokens: metadata.token_count,
         index_pos: metadata.index_pos,
         max_tokens: metadata.max_tokens,
         priority: sched.map(|s| format!("{}", s.priority)).unwrap_or_default(),

@@ -4,6 +4,7 @@ use crate::models::kernel::WorkspaceSnapshot;
 
 use super::audit::{load_accounting_summary, load_audit_events};
 use super::db::{load_session_identity, load_turns, open_connection, StoredTurn};
+use super::replay::hydrate_workspace_snapshot_replay;
 
 pub fn load_workspace_snapshot(
     workspace_root: &Path,
@@ -31,7 +32,7 @@ pub fn load_workspace_snapshot(
     let accounting = load_accounting_summary(&connection, Some(&identity.session_id))?;
     let audit_events = load_audit_events(&connection, Some(&identity.session_id), 64)?;
 
-    Ok(Some(WorkspaceSnapshot {
+    let mut snapshot = WorkspaceSnapshot {
         session_id: identity.session_id,
         pid,
         active_pid: identity.active_pid,
@@ -65,7 +66,10 @@ pub fn load_workspace_snapshot(
         context: None,
         pending_human_request: None,
         audit_events,
-    }))
+        replay: None,
+    };
+    hydrate_workspace_snapshot_replay(workspace_root, &mut snapshot)?;
+    Ok(Some(snapshot))
 }
 
 pub(crate) fn derive_persisted_workspace_state(

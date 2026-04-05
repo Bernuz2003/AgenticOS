@@ -1,3 +1,7 @@
+#[path = "e2e/core_dump.rs"]
+mod core_dump;
+#[path = "e2e/core_dump_replay.rs"]
+mod core_dump_replay;
 #[path = "e2e/live_local.rs"]
 mod live_local;
 #[path = "e2e/live_protocol.rs"]

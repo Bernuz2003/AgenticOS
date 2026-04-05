@@ -4,6 +4,10 @@ use std::sync::mpsc;
 
 use agentic_control_models::KernelEvent;
 
+use crate::core_dump::{
+    core_dump_created_event, maybe_capture_automatic_core_dump, AutomaticCaptureKind,
+    CaptureCoreDumpArgs,
+};
 use crate::inference_worker::InferenceCmd;
 use crate::memory::NeuralMemory;
 use crate::model_catalog::ModelCatalog;
@@ -33,6 +37,7 @@ pub(crate) fn advance_orchestrator(
     orchestrator: &mut Orchestrator,
     session_registry: &mut SessionRegistry,
     storage: &mut StorageService,
+    turn_assembly: &crate::runtime::TurnAssemblyStore,
     in_flight: &mut HashSet<u64>,
     pending_kills: &mut Vec<u64>,
     pending_events: &mut Vec<KernelEvent>,
@@ -96,6 +101,35 @@ pub(crate) fn advance_orchestrator(
             "reason=orchestrator_killed",
             audit_context,
         );
+        match maybe_capture_automatic_core_dump(
+            CaptureCoreDumpArgs {
+                runtime_registry: &*runtime_registry,
+                scheduler: &*scheduler,
+                session_registry: &*session_registry,
+                storage,
+                turn_assembly,
+                memory: &*memory,
+                in_flight: &*in_flight,
+            },
+            pid,
+            "orchestrator_fail_fast",
+            Some("fail_fast orchestration kill".to_string()),
+            AutomaticCaptureKind::Kill,
+        ) {
+            Ok(Some(summary)) => {
+                if let Some(event) = core_dump_created_event(&summary) {
+                    pending_events.push(event);
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    pid,
+                    %err,
+                    "COREDUMP: automatic capture failed after orchestrator kill"
+                );
+            }
+        }
         {
             let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
                 continue;

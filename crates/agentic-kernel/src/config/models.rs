@@ -13,6 +13,7 @@ pub struct KernelConfig {
     pub resources: ResourceGovernorConfig,
     pub context: ContextConfig,
     pub checkpoint: CheckpointConfig,
+    pub core_dump: CoreDumpConfig,
     pub auth: AuthConfig,
     pub external_llamacpp: ExternalLlamaCppConfig,
     pub openai_responses: OpenAIResponsesConfig,
@@ -51,6 +52,8 @@ impl Default for ProtocolRuntimeConfig {
                 "scheduled_job_list_v1".to_string(),
                 "scheduled_job_control_v1".to_string(),
                 "artifact_list_v1".to_string(),
+                "core_dump_v1".to_string(),
+                "core_dump_replay_v1".to_string(),
                 "workflow_definition_schema_v1".to_string(),
                 "list_models_v1".to_string(),
                 "model_info_v1".to_string(),
@@ -193,6 +196,42 @@ impl Default for ContextConfig {
 #[serde(default)]
 pub struct CheckpointConfig {
     pub interval_secs: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CoreDumpConfig {
+    pub enabled: bool,
+    pub dump_dir: PathBuf,
+    pub auto_capture_on_kill: bool,
+    pub auto_capture_on_error: bool,
+    pub retention_max_files: usize,
+    pub retention_max_age_hours: u64,
+    pub include_workspace_by_default: bool,
+    pub include_backend_state_by_default: bool,
+    pub max_debug_checkpoints_per_pid: usize,
+    pub max_tool_invocations_per_pid: usize,
+    pub max_session_audit_events: usize,
+    pub max_tool_audit_lines: usize,
+}
+
+impl Default for CoreDumpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            dump_dir: repository_path("workspace/core-dumps"),
+            auto_capture_on_kill: true,
+            auto_capture_on_error: true,
+            retention_max_files: 128,
+            retention_max_age_hours: 168,
+            include_workspace_by_default: false,
+            include_backend_state_by_default: false,
+            max_debug_checkpoints_per_pid: 32,
+            max_tool_invocations_per_pid: 128,
+            max_session_audit_events: 256,
+            max_tool_audit_lines: 256,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

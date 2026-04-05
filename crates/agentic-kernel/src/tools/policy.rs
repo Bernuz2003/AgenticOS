@@ -123,16 +123,27 @@ pub(crate) fn enforce_remote_http_policy(
     tool_name: &str,
     endpoint: &HttpEndpoint,
 ) -> Result<(), String> {
+    enforce_remote_host_policy(tool_name, &endpoint.host, endpoint.port)
+}
+
+pub(crate) fn enforce_remote_host_policy(
+    tool_name: &str,
+    host: &str,
+    port: u16,
+) -> Result<(), String> {
     let allowed_hosts = remote_http_allowed_hosts();
-    let host = endpoint.host.trim().to_ascii_lowercase();
-    if !allowed_hosts.iter().any(|allowed| allowed == &host) {
+    let normalized_host = host.trim().to_ascii_lowercase();
+    if !allowed_hosts
+        .iter()
+        .any(|allowed| allowed == &normalized_host)
+    {
         return Err(format!(
             "Remote tool '{}' endpoint host '{}' is not allowlisted.",
-            tool_name, endpoint.host
+            tool_name, host
         ));
     }
 
-    let addr = format!("{}:{}", endpoint.host, endpoint.port);
+    let addr = format!("{}:{}", host, port);
     let resolved: Vec<_> = addr
         .to_socket_addrs()
         .map_err(|e| {
@@ -150,14 +161,14 @@ pub(crate) fn enforce_remote_http_policy(
         ));
     }
 
-    let declared_ip = endpoint.host.parse::<IpAddr>().ok();
+    let declared_ip = host.parse::<IpAddr>().ok();
     for socket_addr in resolved {
         let resolved_ip = socket_addr.ip();
         if is_disallowed_remote_ip(resolved_ip) && declared_ip != Some(resolved_ip) {
             return Err(format!(
                 "Remote tool '{}' resolved host '{}' to disallowed address '{}'. Use an explicitly declared literal IP if this endpoint is intentional.",
                 tool_name,
-                endpoint.host,
+                host,
                 resolved_ip
             ));
         }

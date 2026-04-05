@@ -8,3 +8,9 @@ executable = "/usr/local/bin/llama-server"
 [openrouter]
 http_referer = "http://localhost"
 app_title = "AgenticOS"
+
+[tools]
+# Alternative to the env vars above when you prefer machine-local TOML overrides.
+remote_http_allowed_hosts = ["www.agno.com", "agno.com", "api.duckduckgo.com"]
+remote_http_max_request_bytes = 16384
+remote_http_max_response_bytes = 262144

@@ -6,5 +6,6 @@ mod token_path;
 pub(crate) mod turn_assembly;
 mod turn_completion;
 
+pub(crate) use assistant_turn_store::TurnAssemblySnapshot;
 pub(crate) use drain::drain_worker_results;
 pub(crate) use turn_assembly::TurnAssemblyStore;

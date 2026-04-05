@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod core_dump;
 pub mod e2e;
 pub mod fixtures;
 pub mod helpers;

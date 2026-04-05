@@ -4,6 +4,7 @@ use crate::tool_registry::ToolRegistry;
 
 use super::audit::{append_audit_log, ToolAuditRecord};
 use super::dispatcher::ToolDispatcher;
+use super::effects::{summarize_tool_effects, tool_error_kind};
 use super::error::ToolError;
 use super::invocation::{ToolContext, ToolInvocation};
 use super::policy::{rate_limit_postcheck, rate_limit_precheck, syscall_config, SysCallConfig};
@@ -19,6 +20,10 @@ pub struct GovernedToolResult {
     pub success: bool,
     pub duration_ms: u128,
     pub should_kill_process: bool,
+    pub output_json: Option<serde_json::Value>,
+    pub warnings: Vec<String>,
+    pub error_kind: Option<String>,
+    pub effects: Vec<serde_json::Value>,
 }
 
 /// Execute a tool invocation through the full governance pipeline:
@@ -59,6 +64,10 @@ pub fn govern_tool_execution(
             success: false,
             duration_ms: start.elapsed().as_millis(),
             should_kill_process: true,
+            output_json: None,
+            warnings: Vec::new(),
+            error_kind: Some(tool_error_kind(&err).to_string()),
+            effects: Vec::new(),
         };
     }
 
@@ -66,16 +75,34 @@ pub fn govern_tool_execution(
     let dispatcher = ToolDispatcher::new();
     let exec_result = dispatcher.dispatch(invocation, context, registry);
 
-    let (success, output, tool_name) = match exec_result {
+    let (success, output, output_json, warnings, error_kind, effects, tool_name) = match exec_result
+    {
         Ok(result) => {
-            let rendered = if let Some(text) = result.display_text {
+            let rendered = if let Some(text) = result.display_text.clone() {
                 text
             } else {
                 serde_json::to_string_pretty(&result.output).unwrap_or_else(|_| "{}".into())
             };
-            (true, rendered, Some(invocation.name.clone()))
+            let effects = summarize_tool_effects(invocation, Some(&result.output), registry);
+            (
+                true,
+                rendered,
+                Some(result.output),
+                result.warnings,
+                None,
+                effects,
+                Some(invocation.name.clone()),
+            )
         }
-        Err(e) => (false, format!("SysCall Error: {}", e), None),
+        Err(e) => (
+            false,
+            format!("SysCall Error: {}", e),
+            None,
+            Vec::new(),
+            Some(tool_error_kind(&e).to_string()),
+            Vec::new(),
+            None,
+        ),
     };
 
     // — Rate-limit postcheck (burst kill) —
@@ -103,6 +130,10 @@ pub fn govern_tool_execution(
         success,
         duration_ms: start.elapsed().as_millis(),
         should_kill_process: kill_from_burst,
+        output_json,
+        warnings,
+        error_kind,
+        effects,
     }
 }
 

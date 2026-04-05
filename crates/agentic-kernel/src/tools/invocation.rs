@@ -168,6 +168,26 @@ impl ProcessPermissionPolicy {
         }
     }
 
+    pub fn derive_replay_safe(&self, registry: &ToolRegistry) -> Self {
+        let allowed_tools = self
+            .allowed_tools
+            .iter()
+            .filter(|tool_name| {
+                registry
+                    .get(tool_name)
+                    .is_some_and(|entry| entry.descriptor.enabled && !entry.descriptor.dangerous)
+            })
+            .cloned()
+            .collect();
+
+        Self {
+            trust_scope: self.trust_scope.clone(),
+            actions_allowed: false,
+            allowed_tools,
+            path_scopes: self.path_scopes.clone(),
+        }
+    }
+
     pub fn allows_tool(&self, tool_name: &str) -> bool {
         self.allowed_tools
             .iter()

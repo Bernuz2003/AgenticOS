@@ -33,6 +33,10 @@ impl InFlightAssistantTurn {
         &self.visible_projection
     }
 
+    pub(crate) fn thinking_projection(&self) -> &str {
+        &self.thinking_projection
+    }
+
     pub(crate) fn pending_invocation(&self) -> Option<&str> {
         self.pending_invocation.as_deref()
     }

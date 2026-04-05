@@ -42,6 +42,17 @@ pub(crate) struct FinalizedTurnStep {
     pub syscall_command: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnAssemblySnapshot {
+    pub raw_transport_text: String,
+    pub visible_projection: String,
+    pub thinking_projection: String,
+    pub pending_invocation: Option<String>,
+    pub pending_segments: Vec<AssistantOutputSegment>,
+    pub output_stop_requested: bool,
+    pub generated_token_count: usize,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct InFlightAssistantTurnStore {
     by_pid: HashMap<u64, TurnAssemblyState>,
@@ -206,6 +217,19 @@ impl InFlightAssistantTurnStore {
         self.by_pid
             .get(&pid)
             .and_then(|state| state.turn.pending_invocation())
+    }
+
+    pub(crate) fn snapshot(&self, pid: u64) -> Option<TurnAssemblySnapshot> {
+        let state = self.by_pid.get(&pid)?;
+        Some(TurnAssemblySnapshot {
+            raw_transport_text: state.turn.raw_transport_text().to_string(),
+            visible_projection: state.turn.visible_projection().to_string(),
+            thinking_projection: state.turn.thinking_projection().to_string(),
+            pending_invocation: state.turn.pending_invocation().map(ToString::to_string),
+            pending_segments: state.pending_segments.clone(),
+            output_stop_requested: state.output_stop_requested,
+            generated_token_count: state.turn.generated_token_count(),
+        })
     }
 
     pub(crate) fn drain_pending_segments(

@@ -19,16 +19,26 @@ fn builtins_are_registered_and_sorted() {
     assert_eq!(
         names,
         vec![
+            "append_file",
             "ask_human",
             "calc",
+            "diff_files",
+            "download_url",
+            "exec_command",
             "find_files",
+            "get_time",
+            "http_get_json",
             "list_files",
+            "list_tree",
             "mkdir",
             "path_info",
             "python",
             "read_file",
             "read_file_range",
+            "replace_in_file",
             "search_text",
+            "web_fetch",
+            "web_search",
             "write_file"
         ]
     );
@@ -98,7 +108,7 @@ fn rejects_runtime_host_backend_registration() {
             source: ToolSource::Runtime,
         },
         backend: ToolBackendConfig::Host {
-            executor: HostExecutor::Python,
+            executor: HostExecutor::Dynamic("python".to_string()),
         },
     });
 

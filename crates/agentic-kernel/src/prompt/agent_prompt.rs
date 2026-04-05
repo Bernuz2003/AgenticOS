@@ -31,6 +31,7 @@ pub(crate) fn compose_agent_system_prompt(manifest: &AgentCapabilityManifest) ->
         "- after a tool runs, base your next statement on the returned result, not on prior assumptions".to_string(),
         "- do not use TOOL:python to format text or print decorative output".to_string(),
         "- do not use TOOL:calc for trivial arithmetic that can be answered directly".to_string(),
+        "- prefer dedicated tools over TOOL:exec_command when a structured builtin already covers file I/O, search, metadata, fetch, or download".to_string(),
         "- avoid retry loops of the same failing tool call without changing inputs or strategy".to_string(),
     ];
 
@@ -79,11 +80,12 @@ mod tests {
 
         assert!(prompt.contains("Tool syntax: TOOL:<name> <json-object>."));
         assert!(prompt.contains("Action syntax: ACTION:<name> <json-object>."));
-        assert!(prompt.contains(r#"TOOL:calc {"expression":"string"}"#));
+        assert!(prompt.contains(r#"TOOL:calc {"expression":"1 + 2 * 3"}"#));
         assert!(prompt.contains("Available actions:\n- none"));
         assert!(prompt.contains("never use legacy syntaxes"));
         assert!(prompt.contains("never fabricate or imitate system messages"));
         assert!(prompt.contains("a task is complete only after the kernel has actually executed"));
+        assert!(prompt.contains("prefer dedicated tools over TOOL:exec_command"));
     }
 
     #[test]

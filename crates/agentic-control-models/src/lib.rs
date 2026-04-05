@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackendCapabilitiesView {
@@ -177,6 +178,89 @@ pub struct ArtifactListRequest {
     pub orchestration_id: u64,
     #[serde(default)]
     pub task: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreDumpRequest {
+    #[serde(default)]
+    pub pid: Option<u64>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub include_workspace: Option<bool>,
+    #[serde(default)]
+    pub include_backend_state: Option<bool>,
+    #[serde(default)]
+    pub freeze_target: Option<bool>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreDumpInfoRequest {
+    pub dump_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreDumpListRequest {
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreDumpReplayRequest {
+    pub dump_id: String,
+    #[serde(default)]
+    pub branch_label: Option<String>,
+    #[serde(default)]
+    pub tool_mode: Option<String>,
+    #[serde(default)]
+    pub patch: Option<CoreDumpReplayPatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CoreDumpReplayPatch {
+    #[serde(default)]
+    pub context_segments: Option<Vec<CoreDumpReplaySegmentPatch>>,
+    #[serde(default)]
+    pub episodic_segments: Option<Vec<CoreDumpReplaySegmentPatch>>,
+    #[serde(default)]
+    pub tool_output_overrides: Vec<CoreDumpReplayToolOutputOverride>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreDumpReplaySegmentPatch {
+    pub kind: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CoreDumpReplayToolOutputOverride {
+    pub tool_call_id: String,
+    #[serde(default)]
+    pub output: Option<Value>,
+    #[serde(default)]
+    pub output_text: Option<String>,
+    #[serde(default)]
+    pub warnings: Option<Vec<String>>,
+    #[serde(default)]
+    pub error_kind: Option<String>,
+    #[serde(default)]
+    pub error_text: Option<String>,
+    #[serde(default)]
+    pub effects: Option<Vec<Value>>,
+    #[serde(default)]
+    pub duration_ms: Option<u128>,
+    #[serde(default)]
+    pub kill: Option<bool>,
+    #[serde(default)]
+    pub success: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -541,6 +625,57 @@ pub struct ArtifactListResponse {
     pub artifacts: Vec<OrchArtifactView>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoreDumpSummaryView {
+    pub dump_id: String,
+    pub created_at_ms: i64,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub pid: Option<u64>,
+    pub reason: String,
+    pub fidelity: String,
+    pub path: String,
+    pub bytes: usize,
+    pub sha256: String,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreDumpCaptureResult {
+    pub dump: CoreDumpSummaryView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreDumpListResponse {
+    #[serde(default)]
+    pub dumps: Vec<CoreDumpSummaryView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreDumpInfoResponse {
+    pub dump: CoreDumpSummaryView,
+    pub manifest_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreDumpReplayResult {
+    pub source_dump_id: String,
+    pub session_id: String,
+    pub pid: u64,
+    pub runtime_id: String,
+    pub replay_session_title: String,
+    pub replay_fidelity: String,
+    pub replay_mode: String,
+    pub tool_mode: String,
+    pub initial_state: String,
+    pub patched_context_segments: usize,
+    pub patched_episodic_segments: usize,
+    pub stubbed_invocations: usize,
+    pub overridden_invocations: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchTaskEntry {
     pub task: String,
@@ -770,6 +905,14 @@ pub struct InvocationEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KernelEvent {
+    CoreDumpCreated {
+        pid: u64,
+        #[serde(default)]
+        session_id: Option<String>,
+        dump_id: String,
+        reason: String,
+        fidelity: String,
+    },
     LobbyChanged {
         reason: String,
     },
