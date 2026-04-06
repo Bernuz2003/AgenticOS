@@ -13,7 +13,9 @@ use crate::model_catalog::{RemoteModelEntry, ResolvedModelTarget, WorkloadClass}
 use crate::process::ProcessLifecyclePolicy;
 use crate::prompting::PromptFamily;
 use crate::scheduler::{ProcessPriority, ProcessQuota, ProcessScheduler};
-use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
+use crate::tools::invocation::{
+    default_path_grants, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller,
+};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokenizers::models::wordlevel::WordLevel;
@@ -521,6 +523,7 @@ fn test_permissions() -> ProcessPermissionPolicy {
         trust_scope: ProcessTrustScope::InteractiveChat,
         actions_allowed: false,
         allowed_tools: Vec::new(),
+        path_grants: default_path_grants(),
         path_scopes: vec![".".to_string()],
     }
 }

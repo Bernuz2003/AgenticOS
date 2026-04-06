@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use agentic_control_models::{
     BackendCapabilitiesView, BackendTelemetryView, ProcessPermissionsView,
@@ -25,6 +25,24 @@ pub struct AgentSessionSummary {
     pub backend_class: Option<String>,
     pub orchestration_id: Option<u64>,
     pub orchestration_task_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPathGrantAccessMode {
+    ReadOnly,
+    WriteApproved,
+    AutonomousWrite,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionPathGrantInput {
+    pub root: String,
+    pub access_mode: SessionPathGrantAccessMode,
+    #[serde(default)]
+    pub capsule: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -62,7 +80,36 @@ pub struct WorkspaceSnapshot {
     pub context: Option<WorkspaceContextSnapshot>,
     pub pending_human_request: Option<WorkspaceHumanInputRequest>,
     pub audit_events: Vec<AuditEvent>,
+    pub lineage: Option<WorkspaceLineageSnapshot>,
     pub replay: Option<WorkspaceReplayDebugSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceLineageBranchKind {
+    Base,
+    Replay,
+    Fork,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WorkspaceLineageBranch {
+    pub session_id: String,
+    pub kind: WorkspaceLineageBranchKind,
+    pub title: String,
+    pub created_at_ms: i64,
+    pub active_pid: Option<u64>,
+    pub last_pid: Option<u64>,
+    pub source_dump_id: Option<String>,
+    pub selected: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct WorkspaceLineageSnapshot {
+    pub anchor_session_id: String,
+    pub selected_session_id: String,
+    pub selected_kind: WorkspaceLineageBranchKind,
+    pub branches: Vec<WorkspaceLineageBranch>,
 }
 
 #[derive(Debug, Serialize, Clone)]

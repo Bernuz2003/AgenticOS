@@ -12,7 +12,9 @@ use crate::scheduler::{ProcessPriority, ProcessScheduler};
 use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
-use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
+use crate::tools::invocation::{
+    default_path_grants, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -308,6 +310,7 @@ fn test_permissions() -> ProcessPermissionPolicy {
         trust_scope: ProcessTrustScope::InteractiveChat,
         actions_allowed: false,
         allowed_tools: Vec::new(),
+        path_grants: default_path_grants(),
         path_scopes: vec![".".to_string()],
     }
 }

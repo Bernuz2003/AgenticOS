@@ -12,6 +12,7 @@ pub(crate) struct SessionIdentity {
     pub(crate) runtime_label: Option<String>,
     pub(crate) backend_class: Option<String>,
     pub(crate) workload: String,
+    pub(crate) created_at_ms: i64,
     pub(crate) updated_at_ms: i64,
     pub(crate) turn_count: usize,
     pub(crate) prompt_preview: String,
@@ -174,6 +175,7 @@ pub(crate) fn session_identity_select_query(filter_placeholder: Option<&str>) ->
                 ),
                 'general'
             ) AS workload,
+            s.created_at_ms,
             s.updated_at_ms,
             COALESCE(
                 (
@@ -237,6 +239,7 @@ pub(crate) fn session_identity_legacy_select_query(filter_placeholder: Option<&s
                 ),
                 'general'
             ) AS workload,
+            s.created_at_ms,
             s.updated_at_ms,
             COALESCE(
                 (
@@ -278,9 +281,10 @@ pub(crate) fn map_session_identity_row(
         runtime_label: row.get(6)?,
         backend_class: row.get(7)?,
         workload: row.get(8)?,
-        updated_at_ms: row.get(9)?,
-        turn_count: row.get::<_, i64>(10)? as usize,
-        prompt_preview: row.get(11)?,
+        created_at_ms: row.get(9)?,
+        updated_at_ms: row.get(10)?,
+        turn_count: row.get::<_, i64>(11)? as usize,
+        prompt_preview: row.get(12)?,
     })
 }
 

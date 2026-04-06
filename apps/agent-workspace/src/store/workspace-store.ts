@@ -17,6 +17,10 @@ interface WorkspaceMatchCandidate {
   pid: number | null;
 }
 
+function isPidFallbackSessionId(sessionId: string | null): boolean {
+  return sessionId !== null && sessionId.startsWith("pid-");
+}
+
 interface WorkspaceState {
   activeSessionId: string | null;
   activePid: number | null;
@@ -70,7 +74,11 @@ function matchesActiveWorkspace(
     return true;
   }
 
-  return candidate.pid !== null && collectActiveWorkspacePids(state).has(candidate.pid);
+  return (
+    isPidFallbackSessionId(state.activeSessionId) &&
+    candidate.pid !== null &&
+    collectActiveWorkspacePids(state).has(candidate.pid)
+  );
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
@@ -158,7 +166,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const requestId = ++snapshotRequestSeq;
     const sessionChanged = get().activeSessionId !== sessionId;
     const liveRevisionAtStart = get().liveSnapshotRevision;
-    const nextActivePid = pid ?? get().activePid;
+    const nextActivePid = pid ?? (sessionChanged ? null : get().activePid);
 
     set((state) => ({
       activeSessionId: sessionId,
@@ -208,7 +216,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const requestId = ++timelineRequestSeq;
     const sessionChanged = get().activeSessionId !== sessionId;
     const liveRevisionAtStart = get().liveTimelineRevision;
-    const nextActivePid = pid ?? get().activePid;
+    const nextActivePid = pid ?? (sessionChanged ? null : get().activePid);
 
     set((state) => ({
       activeSessionId: sessionId,

@@ -125,7 +125,28 @@ export interface WorkspaceSnapshot {
   context: WorkspaceContextSnapshot | null;
   pendingHumanRequest: HumanInputRequest | null;
   auditEvents: AuditEvent[];
+  lineage: WorkspaceLineage | null;
   replay: WorkspaceReplayDebugSnapshot | null;
+}
+
+export type WorkspaceBranchKind = "base" | "replay" | "fork";
+
+export interface WorkspaceLineageBranch {
+  sessionId: string;
+  kind: WorkspaceBranchKind;
+  title: string;
+  createdAtMs: number;
+  activePid: number | null;
+  lastPid: number | null;
+  sourceDumpId: string | null;
+  selected: boolean;
+}
+
+export interface WorkspaceLineage {
+  anchorSessionId: string;
+  selectedSessionId: string;
+  selectedKind: WorkspaceBranchKind;
+  branches: WorkspaceLineageBranch[];
 }
 
 export interface WorkspaceReplayDebugSnapshot {
@@ -190,7 +211,25 @@ export interface ProcessPermissions {
   trustScope: string;
   actionsAllowed: boolean;
   allowedTools: string[];
+  pathGrants: PathGrant[];
   pathScopes: string[];
+}
+
+export type PathGrantAccessMode = "read_only" | "write_approved" | "autonomous_write";
+
+export interface PathGrant {
+  root: string;
+  accessMode: PathGrantAccessMode;
+  capsule: string | null;
+  label: string | null;
+  workspaceRelative: boolean;
+}
+
+export interface PathGrantInput {
+  root: string;
+  accessMode: PathGrantAccessMode;
+  capsule?: string | null;
+  label?: string | null;
 }
 
 export interface MemoryStatus {
@@ -966,6 +1005,13 @@ export interface WorkspaceSnapshotDto {
     trust_scope: string;
     actions_allowed: boolean;
     allowed_tools: string[];
+    path_grants: Array<{
+      root: string;
+      access_mode: PathGrantAccessMode;
+      capsule: string | null;
+      label: string | null;
+      workspace_relative: boolean;
+    }>;
     path_scopes: string[];
   } | null;
   tokens_generated: number;
@@ -1026,6 +1072,21 @@ export interface WorkspaceSnapshotDto {
     requested_at_ms: number;
   };
   audit_events: AuditEventDto[];
+  lineage: null | {
+    anchor_session_id: string;
+    selected_session_id: string;
+    selected_kind: WorkspaceBranchKind;
+    branches: Array<{
+      session_id: string;
+      kind: WorkspaceBranchKind;
+      title: string;
+      created_at_ms: number;
+      active_pid: number | null;
+      last_pid: number | null;
+      source_dump_id: string | null;
+      selected: boolean;
+    }>;
+  };
   replay: null | {
     source_dump_id: string;
     source_session_id: string | null;

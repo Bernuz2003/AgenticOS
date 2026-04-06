@@ -5,7 +5,9 @@ use super::run_blocking;
 use crate::kernel::client::transport::KernelBridgeError;
 use crate::kernel::composer;
 use crate::kernel::{history, live_timeline};
-use crate::models::kernel::{StartSessionResult, TimelineSnapshot, WorkspaceSnapshot};
+use crate::models::kernel::{
+    SessionPathGrantInput, StartSessionResult, TimelineSnapshot, WorkspaceSnapshot,
+};
 use crate::state::AppState;
 use crate::utils::ids::pid_session_fallback;
 
@@ -35,6 +37,7 @@ pub async fn start_session(
     prompt: String,
     quota_tokens: Option<u64>,
     quota_syscalls: Option<u64>,
+    path_grants: Option<Vec<SessionPathGrantInput>>,
     state: State<'_, AppState>,
 ) -> Result<StartSessionResult, String> {
     let kernel_addr = state.kernel_addr.clone();
@@ -47,6 +50,7 @@ pub async fn start_session(
             prompt,
             quota_tokens,
             quota_syscalls,
+            path_grants,
             timeline_store,
         )
     })

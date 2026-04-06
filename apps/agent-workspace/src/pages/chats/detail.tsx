@@ -55,11 +55,14 @@ export function WorkspacePage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const selectedBranchId = searchParams.get("branch");
+  const selectedSessionId =
+    selectedBranchId && selectedBranchId.trim().length > 0 ? selectedBranchId : sessionId;
   const listedSession = useSessionsStore((state) =>
-    state.sessions.find((item) => item.sessionId === sessionId),
+    state.sessions.find((item) => item.sessionId === selectedSessionId),
   );
-  const snapshot = useWorkspaceStore((state) => state.snapshot);
-  const timeline = useWorkspaceStore((state) => state.timeline);
+  const rawSnapshot = useWorkspaceStore((state) => state.snapshot);
+  const rawTimeline = useWorkspaceStore((state) => state.timeline);
   const loading = useWorkspaceStore((state) => state.loading);
   const liveSnapshotRevision = useWorkspaceStore(
     (state) => state.liveSnapshotRevision,
@@ -83,8 +86,18 @@ export function WorkspacePage() {
 
   const routePid =
     sessionId && sessionId.startsWith("pid-") ? Number(sessionId.slice(4)) : Number.NaN;
+  const selectionMatchesWorkspace = (candidate: { sessionId: string; pid: number }) => {
+    if (!Number.isNaN(routePid)) {
+      return candidate.pid === routePid;
+    }
+    return selectedSessionId !== undefined && candidate.sessionId === selectedSessionId;
+  };
+  const snapshot =
+    rawSnapshot && selectionMatchesWorkspace(rawSnapshot) ? rawSnapshot : null;
+  const timeline =
+    rawTimeline && selectionMatchesWorkspace(rawTimeline) ? rawTimeline : null;
   const session = useMemo(() => {
-    if (!sessionId) {
+    if (!selectedSessionId) {
       return undefined;
     }
 
@@ -98,7 +111,7 @@ export function WorkspacePage() {
     );
 
     if (!Number.isNaN(routePid)) {
-      const liveSessionId = sessionId ?? `pid-${routePid}`;
+      const liveSessionId = selectedSessionId ?? `pid-${routePid}`;
       const synthetic = buildSyntheticSession(
         liveSessionId,
         routePid,
@@ -117,7 +130,7 @@ export function WorkspacePage() {
     }
 
     return buildSyntheticSession(
-      sessionId,
+      selectedSessionId,
       snapshot?.activePid ?? snapshot?.lastPid ?? timeline?.pid ?? 0,
       "Sessione persistita dal control plane SQLite",
       snapshot ? `${Math.round(snapshot.elapsedSecs)}s` : "persisted",
@@ -125,7 +138,36 @@ export function WorkspacePage() {
       snapshot,
       timeline,
     );
-  }, [listedSession, routePid, sessionId, snapshot, timeline?.pid, timeline?.running]);
+  }, [
+    listedSession,
+    routePid,
+    selectedSessionId,
+    snapshot,
+    timeline?.pid,
+    timeline?.running,
+  ]);
+  const requestedPid = useMemo(() => {
+    if (!selectedSessionId) {
+      return null;
+    }
+    if (!Number.isNaN(routePid)) {
+      return routePid;
+    }
+    if (snapshot) {
+      return snapshot.activePid ?? snapshot.pid;
+    }
+    if (timeline) {
+      return timeline.pid;
+    }
+    return listedSession?.activePid ?? listedSession?.lastPid ?? null;
+  }, [
+    listedSession?.activePid,
+    listedSession?.lastPid,
+    routePid,
+    selectedSessionId,
+    snapshot,
+    timeline,
+  ]);
 
   const activePid = snapshot?.activePid ?? session?.activePid ?? null;
   const pendingHumanRequest = snapshot?.pendingHumanRequest ?? null;
@@ -138,22 +180,25 @@ export function WorkspacePage() {
     searchParams.get("dump"),
   );
   const selectedDumpId = searchParams.get("dump");
+  const anchorSessionId =
+    snapshot?.lineage?.anchorSessionId ??
+    (sessionId && !sessionId.startsWith("pid-") ? sessionId : session?.sessionId ?? "");
   const coreDumps = useCoreDumps({
-    sessionId: session?.sessionId ?? sessionId ?? "",
+    sessionId: anchorSessionId,
     pid: activePid ?? session?.lastPid ?? null,
     refreshKey: liveSnapshotRevision,
     selectedDumpId,
   });
 
   useEffect(() => {
-    if (!sessionId) {
+    if (!selectedSessionId) {
       clear();
       return;
     }
 
-    void refreshTimeline(sessionId, activePid);
-    void refresh(sessionId, activePid);
-  }, [activePid, clear, refresh, refreshTimeline, sessionId]);
+    void refreshTimeline(selectedSessionId, requestedPid);
+    void refresh(selectedSessionId, requestedPid);
+  }, [clear, refresh, refreshTimeline, requestedPid, selectedSessionId]);
 
   useEffect(() => {
     setComposerValue("");
@@ -178,7 +223,7 @@ export function WorkspacePage() {
   }, [snapshot?.context?.lastCompactionReason]);
 
   useEffect(() => {
-    if (!sessionId || !snapshot || !timelineHasStreamingItems) {
+    if (!selectedSessionId || !snapshot || !timelineHasStreamingItems) {
       timelineResyncRef.current = null;
       return;
     }
@@ -189,20 +234,48 @@ export function WorkspacePage() {
     }
 
     const refreshPid = activePid ?? snapshot.activePid ?? snapshot.pid;
-    const resyncKey = `${sessionId}:${refreshPid}:${snapshot.state}:${timelineHasStreamingItems}`;
+    const resyncKey = `${selectedSessionId}:${refreshPid}:${snapshot.state}:${timelineHasStreamingItems}`;
     if (timelineResyncRef.current === resyncKey) {
       return;
     }
 
     timelineResyncRef.current = resyncKey;
-    void refreshTimeline(sessionId, refreshPid);
+    void refreshTimeline(selectedSessionId, refreshPid);
   }, [
     activePid,
     refreshTimeline,
-    sessionId,
+    selectedSessionId,
     snapshot,
     timelineHasStreamingItems,
   ]);
+
+  useEffect(() => {
+    if (!sessionId || !snapshot?.lineage) {
+      return;
+    }
+
+    const canonicalAnchor = snapshot.lineage.anchorSessionId;
+    const canonicalBranch =
+      snapshot.lineage.selectedSessionId === canonicalAnchor
+        ? null
+        : snapshot.lineage.selectedSessionId;
+
+    if (sessionId === canonicalAnchor && selectedBranchId === canonicalBranch) {
+      return;
+    }
+
+    const nextSearch = updateWorkspaceSearchParams(searchParams, {
+      branch: canonicalBranch,
+    });
+    const nextQuery = nextSearch.toString();
+    navigate(
+      {
+        pathname: `/workspace/${canonicalAnchor}`,
+        search: nextQuery ? `?${nextQuery}` : "",
+      },
+      { replace: true },
+    );
+  }, [navigate, searchParams, selectedBranchId, sessionId, snapshot?.lineage]);
 
   useEffect(() => {
     if (mode !== "debug") {
@@ -271,6 +344,7 @@ export function WorkspacePage() {
   function applyViewState(patch: {
     mode?: "conversation" | "debug" | null;
     dump?: string | null;
+    branch?: string | null;
   }) {
     setSearchParams(
       (current) => updateWorkspaceSearchParams(current, patch),
@@ -364,7 +438,17 @@ export function WorkspacePage() {
   }
 
   function handleReplayReady(result: ReplayCoreDumpResult) {
-    navigate(`/workspace/${result.sessionId}`);
+    const nextAnchorSessionId =
+      snapshot?.lineage?.anchorSessionId ??
+      (sessionId && !sessionId.startsWith("pid-") ? sessionId : result.sessionId);
+    const nextSearch = updateWorkspaceSearchParams(searchParams, {
+      branch: result.sessionId,
+    });
+    const nextQuery = nextSearch.toString();
+    navigate({
+      pathname: `/workspace/${nextAnchorSessionId}`,
+      search: nextQuery ? `?${nextQuery}` : "",
+    });
   }
 
   async function handleCaptureDump() {
@@ -398,6 +482,22 @@ export function WorkspacePage() {
     applyViewState({ mode: "debug", dump: coreDumps.resolvedSelectedDumpId });
   }
 
+  function handleSelectBranch(nextSessionId: string) {
+    const nextAnchorSessionId =
+      snapshot?.lineage?.anchorSessionId ??
+      (sessionId && !sessionId.startsWith("pid-") ? sessionId : nextSessionId);
+    const nextBranch =
+      nextSessionId === nextAnchorSessionId ? null : nextSessionId;
+    const nextSearch = updateWorkspaceSearchParams(searchParams, {
+      branch: nextBranch,
+    });
+    const nextQuery = nextSearch.toString();
+    navigate({
+      pathname: `/workspace/${nextAnchorSessionId}`,
+      search: nextQuery ? `?${nextQuery}` : "",
+    });
+  }
+
   if (!session) {
     return (
       <div className="flex items-center justify-center p-20">
@@ -428,6 +528,7 @@ export function WorkspacePage() {
             session={session}
             snapshot={snapshot}
             mode={mode}
+            onSelectBranch={handleSelectBranch}
             onOpenAudit={handleOpenAudit}
             onToggleWorkspaceMode={handleToggleWorkspaceMode}
           />

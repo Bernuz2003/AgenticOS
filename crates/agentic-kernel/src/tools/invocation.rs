@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +62,59 @@ impl fmt::Display for ProcessTrustScope {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathGrantAccessMode {
+    ReadOnly,
+    WriteApproved,
+    AutonomousWrite,
+}
+
+impl PathGrantAccessMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::WriteApproved => "write_approved",
+            Self::AutonomousWrite => "autonomous_write",
+        }
+    }
+
+    pub fn allows_write(&self) -> bool {
+        matches!(self, Self::WriteApproved | Self::AutonomousWrite)
+    }
+}
+
+impl fmt::Display for PathGrantAccessMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessPathGrant {
+    pub root: String,
+    #[serde(default = "default_path_grant_access_mode")]
+    pub access_mode: PathGrantAccessMode,
+    #[serde(default)]
+    pub capsule: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+impl ProcessPathGrant {
+    pub fn workspace_relative(&self) -> bool {
+        !Path::new(&self.root).is_absolute()
+    }
+
+    pub fn allows_write(&self) -> bool {
+        self.access_mode.allows_write()
+    }
+}
+
+fn default_path_grant_access_mode() -> PathGrantAccessMode {
+    PathGrantAccessMode::AutonomousWrite
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessPermissionOverrides {
     #[serde(default)]
@@ -72,6 +125,8 @@ pub struct ProcessPermissionOverrides {
     pub allowed_tools: Option<Vec<String>>,
     #[serde(default)]
     pub path_scopes: Option<Vec<String>>,
+    #[serde(default)]
+    pub path_grants: Option<Vec<ProcessPathGrant>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,17 +134,25 @@ pub struct ProcessPermissionPolicy {
     pub trust_scope: ProcessTrustScope,
     pub actions_allowed: bool,
     pub allowed_tools: Vec<String>,
+    pub path_grants: Vec<ProcessPathGrant>,
     pub path_scopes: Vec<String>,
 }
 
 impl ProcessPermissionPolicy {
     pub fn interactive_chat(registry: &ToolRegistry) -> Result<Self, String> {
+        Self::interactive_chat_with_overrides(registry, None)
+    }
+
+    pub fn interactive_chat_with_overrides(
+        registry: &ToolRegistry,
+        overrides: Option<&ProcessPermissionOverrides>,
+    ) -> Result<Self, String> {
         Self::build_for_caller(
             registry,
             &ToolCaller::AgentText,
             ProcessTrustScope::InteractiveChat,
             false,
-            None,
+            overrides,
         )
     }
 
@@ -142,19 +205,28 @@ impl ProcessPermissionPolicy {
             .and_then(|policy| policy.allow_actions)
             .unwrap_or(default_actions_allowed)
             && caller.can_orchestrate_actions();
-        let allowed_tools = match overrides.and_then(|policy| policy.allowed_tools.clone()) {
+        let mut allowed_tools = match overrides.and_then(|policy| policy.allowed_tools.clone()) {
             Some(tools) => normalize_tool_allowlist(tools)?,
             None => allowlisted_tools_for_caller(registry, caller),
         };
-        let path_scopes = match overrides.and_then(|policy| policy.path_scopes.clone()) {
-            Some(scopes) => normalize_path_scopes(scopes)?,
-            None => default_path_scopes(),
+        let path_grants = match overrides.and_then(|policy| policy.path_grants.clone()) {
+            Some(grants) => normalize_path_grants(grants)?,
+            None => match overrides.and_then(|policy| policy.path_scopes.clone()) {
+                Some(scopes) => path_grants_from_scopes(scopes)?,
+                None => default_path_grants(),
+            },
         };
+        allowed_tools = filter_tools_for_path_grants(allowed_tools, &path_grants);
+        let path_scopes = path_grants
+            .iter()
+            .map(|grant| grant.root.clone())
+            .collect::<Vec<_>>();
 
         Ok(Self {
             trust_scope,
             actions_allowed,
             allowed_tools,
+            path_grants,
             path_scopes,
         })
     }
@@ -164,6 +236,7 @@ impl ProcessPermissionPolicy {
             trust_scope: ProcessTrustScope::InteractiveChat,
             actions_allowed: false,
             allowed_tools: self.allowed_tools.clone(),
+            path_grants: self.path_grants.clone(),
             path_scopes: self.path_scopes.clone(),
         }
     }
@@ -184,6 +257,7 @@ impl ProcessPermissionPolicy {
             trust_scope: self.trust_scope.clone(),
             actions_allowed: false,
             allowed_tools,
+            path_grants: self.path_grants.clone(),
             path_scopes: self.path_scopes.clone(),
         }
     }
@@ -303,8 +377,91 @@ fn normalize_tool_allowlist(raw: Vec<String>) -> Result<Vec<String>, String> {
     Ok(normalized)
 }
 
-fn default_path_scopes() -> Vec<String> {
-    vec![".".to_string()]
+fn filter_tools_for_path_grants(
+    mut allowed_tools: Vec<String>,
+    path_grants: &[ProcessPathGrant],
+) -> Vec<String> {
+    let has_external_grants = path_grants
+        .iter()
+        .any(|grant| grant.root != "." && Path::new(&grant.root).is_absolute());
+    if !has_external_grants {
+        return allowed_tools;
+    }
+
+    allowed_tools
+        .retain(|tool_name| !matches!(tool_name.as_str(), "python" | "calc" | "exec_command"));
+    allowed_tools
+}
+
+pub(crate) fn default_path_grants() -> Vec<ProcessPathGrant> {
+    vec![ProcessPathGrant {
+        root: ".".to_string(),
+        access_mode: PathGrantAccessMode::AutonomousWrite,
+        capsule: Some("workspace".to_string()),
+        label: Some("Workspace".to_string()),
+    }]
+}
+
+fn path_grants_from_scopes(raw: Vec<String>) -> Result<Vec<ProcessPathGrant>, String> {
+    let scopes = normalize_path_scopes(raw)?;
+    Ok(scopes
+        .into_iter()
+        .map(|root| ProcessPathGrant {
+            root,
+            access_mode: PathGrantAccessMode::AutonomousWrite,
+            capsule: None,
+            label: None,
+        })
+        .collect())
+}
+
+fn normalize_path_grants(raw: Vec<ProcessPathGrant>) -> Result<Vec<ProcessPathGrant>, String> {
+    let mut normalized: Vec<ProcessPathGrant> = Vec::new();
+    for grant in raw {
+        let canonical_root = normalize_path_scope(&grant.root)?;
+        let canonical_capsule = grant
+            .capsule
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty());
+        let canonical_label = grant
+            .label
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let candidate = ProcessPathGrant {
+            root: canonical_root,
+            access_mode: grant.access_mode,
+            capsule: canonical_capsule,
+            label: canonical_label,
+        };
+
+        if let Some(existing) = normalized
+            .iter_mut()
+            .find(|existing| existing.root == candidate.root)
+        {
+            if path_grant_rank(&candidate.access_mode) > path_grant_rank(&existing.access_mode) {
+                existing.access_mode = candidate.access_mode.clone();
+            }
+            if existing.capsule.is_none() {
+                existing.capsule = candidate.capsule.clone();
+            }
+            if existing.label.is_none() {
+                existing.label = candidate.label.clone();
+            }
+            continue;
+        }
+
+        normalized.push(candidate);
+    }
+
+    Ok(normalized)
+}
+
+fn path_grant_rank(mode: &PathGrantAccessMode) -> u8 {
+    match mode {
+        PathGrantAccessMode::ReadOnly => 0,
+        PathGrantAccessMode::WriteApproved => 1,
+        PathGrantAccessMode::AutonomousWrite => 2,
+    }
 }
 
 fn normalize_path_scopes(raw: Vec<String>) -> Result<Vec<String>, String> {
@@ -326,10 +483,7 @@ fn normalize_path_scope(scope: &str) -> Result<String, String> {
 
     let candidate = Path::new(trimmed);
     if candidate.is_absolute() {
-        return Err(format!(
-            "Path scope '{}' must be workspace-relative.",
-            scope
-        ));
+        return normalize_absolute_path_scope(candidate);
     }
 
     let mut segments = Vec::new();
@@ -358,11 +512,54 @@ fn normalize_path_scope(scope: &str) -> Result<String, String> {
     }
 }
 
+fn normalize_absolute_path_scope(candidate: &Path) -> Result<String, String> {
+    let mut normalized = PathBuf::new();
+    let mut saw_root = false;
+    let mut depth = 0usize;
+
+    for component in candidate.components() {
+        match component {
+            Component::Prefix(prefix) => {
+                normalized.push(prefix.as_os_str());
+            }
+            Component::RootDir => {
+                normalized.push(std::path::MAIN_SEPARATOR_STR);
+                saw_root = true;
+            }
+            Component::Normal(segment) => {
+                normalized.push(segment);
+                depth += 1;
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if depth == 0 || !normalized.pop() {
+                    return Err(format!(
+                        "Path scope '{}' escapes the filesystem root.",
+                        candidate.display()
+                    ));
+                }
+                depth -= 1;
+            }
+        }
+    }
+
+    if !saw_root && candidate.is_absolute() && normalized.as_os_str().is_empty() {
+        return Err(format!("Path scope '{}' is invalid.", candidate.display()));
+    }
+
+    Ok(normalized.to_string_lossy().replace('\\', "/"))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{normalize_path_scope, ToolInvocation};
+    use crate::tool_registry::ToolRegistry;
+
+    use super::{
+        normalize_path_grants, normalize_path_scope, PathGrantAccessMode, ProcessPathGrant,
+        ProcessPermissionOverrides, ProcessPermissionPolicy, ToolInvocation,
+    };
 
     #[test]
     fn structured_invocation_normalizes_mixed_case_names() {
@@ -379,6 +576,63 @@ mod tests {
         );
         assert_eq!(normalize_path_scope(".").expect("root"), ".");
         assert!(normalize_path_scope("../etc").is_err());
-        assert!(normalize_path_scope("/tmp").is_err());
+        assert_eq!(
+            normalize_path_scope("/tmp/../var/data").expect("absolute normalized"),
+            "/var/data"
+        );
+    }
+
+    #[test]
+    fn normalizes_and_merges_path_grants() {
+        let grants = normalize_path_grants(vec![
+            ProcessPathGrant {
+                root: ".".to_string(),
+                access_mode: PathGrantAccessMode::ReadOnly,
+                capsule: Some("workspace".to_string()),
+                label: None,
+            },
+            ProcessPathGrant {
+                root: "./".to_string(),
+                access_mode: PathGrantAccessMode::AutonomousWrite,
+                capsule: None,
+                label: Some("Workspace".to_string()),
+            },
+        ])
+        .expect("normalize grants");
+
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].root, ".");
+        assert_eq!(grants[0].access_mode, PathGrantAccessMode::AutonomousWrite);
+        assert_eq!(grants[0].capsule.as_deref(), Some("workspace"));
+        assert_eq!(grants[0].label.as_deref(), Some("Workspace"));
+    }
+
+    #[test]
+    fn external_absolute_grants_disable_unconfined_host_tools() {
+        let registry = ToolRegistry::with_builtins();
+        let policy = ProcessPermissionPolicy::interactive_chat_with_overrides(
+            &registry,
+            Some(&ProcessPermissionOverrides {
+                allowed_tools: Some(vec![
+                    "read_file".to_string(),
+                    "python".to_string(),
+                    "calc".to_string(),
+                    "exec_command".to_string(),
+                ]),
+                path_grants: Some(vec![ProcessPathGrant {
+                    root: "/tmp/agenticos-external".to_string(),
+                    access_mode: PathGrantAccessMode::AutonomousWrite,
+                    capsule: Some("host_fs".to_string()),
+                    label: Some("External".to_string()),
+                }]),
+                ..ProcessPermissionOverrides::default()
+            }),
+        )
+        .expect("policy");
+
+        assert!(policy.allows_tool("read_file"));
+        assert!(!policy.allows_tool("python"));
+        assert!(!policy.allows_tool("calc"));
+        assert!(!policy.allows_tool("exec_command"));
     }
 }

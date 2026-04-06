@@ -198,6 +198,7 @@ fn finalize_workspace_snapshot(
     mut snapshot: WorkspaceSnapshot,
 ) -> Result<WorkspaceSnapshot, String> {
     ensure_live_timeline_from_snapshot(workspace_root, timeline_store, snapshot.clone())?;
+    history::hydrate_workspace_snapshot_lineage(workspace_root, &mut snapshot)?;
     history::hydrate_workspace_snapshot_replay(workspace_root, &mut snapshot)?;
     Ok(snapshot)
 }

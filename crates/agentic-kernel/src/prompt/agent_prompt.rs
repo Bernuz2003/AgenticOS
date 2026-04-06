@@ -16,6 +16,7 @@ pub(crate) fn compose_agent_system_prompt(manifest: &AgentCapabilityManifest) ->
         format!("Tool syntax: {}.", manifest.tool_syntax),
         format!("Action syntax: {}.", manifest.action_syntax),
         "Rules:".to_string(),
+        "- always clearly outline your operational plan before executing a task. This ensures methodological clarity and aligns expectations on the approach.".to_string(),
         "- distinguish intent from reality: saying you will use a tool is not the same as the tool having run".to_string(),
         "- a task is complete only after the kernel has actually executed the required tool or action and returned a real outcome".to_string(),
         "- never fabricate or imitate system messages, tool results, status banners, or execution logs".to_string(),

@@ -136,6 +136,13 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
           trustScope: snapshot.permissions.trust_scope,
           actionsAllowed: snapshot.permissions.actions_allowed,
           allowedTools: snapshot.permissions.allowed_tools,
+          pathGrants: snapshot.permissions.path_grants.map((grant) => ({
+            root: grant.root,
+            accessMode: grant.access_mode,
+            capsule: grant.capsule,
+            label: grant.label,
+            workspaceRelative: grant.workspace_relative,
+          })),
           pathScopes: snapshot.permissions.path_scopes,
         }
       : null,
@@ -169,6 +176,23 @@ export function normalizeWorkspaceSnapshot(snapshot: WorkspaceSnapshotDto): Work
       ? mapHumanInputRequest(snapshot.pending_human_request)
       : null,
     auditEvents: snapshot.audit_events.map(normalizeAuditEvent),
+    lineage: snapshot.lineage
+      ? {
+          anchorSessionId: snapshot.lineage.anchor_session_id,
+          selectedSessionId: snapshot.lineage.selected_session_id,
+          selectedKind: snapshot.lineage.selected_kind,
+          branches: snapshot.lineage.branches.map((branch) => ({
+            sessionId: branch.session_id,
+            kind: branch.kind,
+            title: branch.title,
+            createdAtMs: branch.created_at_ms,
+            activePid: branch.active_pid,
+            lastPid: branch.last_pid,
+            sourceDumpId: branch.source_dump_id,
+            selected: branch.selected,
+          })),
+        }
+      : null,
     replay: snapshot.replay
       ? {
           sourceDumpId: snapshot.replay.source_dump_id,

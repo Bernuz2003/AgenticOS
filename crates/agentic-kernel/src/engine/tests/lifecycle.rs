@@ -13,7 +13,9 @@ use crate::process::{
 };
 use crate::prompting::GenerationConfig;
 use crate::prompting::PromptFamily;
-use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
+use crate::tools::invocation::{
+    default_path_grants, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller,
+};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -118,6 +120,7 @@ fn test_engine() -> (LLMEngine, SavedSlots, SavedSlots, FreedSlots) {
             trust_scope: ProcessTrustScope::InteractiveChat,
             actions_allowed: false,
             allowed_tools: Vec::new(),
+            path_grants: default_path_grants(),
             path_scopes: vec![".".to_string()],
         },
         ProcessLifecyclePolicy::Interactive,

@@ -49,10 +49,7 @@ pub(super) fn try_fetch_live_snapshot_by_pid_for_session(
         return Ok(None);
     };
     if snapshot.session_id != session_id {
-        return Err(format!(
-            "PID {} is associated with session {}, not {}",
-            pid, snapshot.session_id, session_id
-        ));
+        return Ok(None);
     }
     Ok(Some(snapshot))
 }

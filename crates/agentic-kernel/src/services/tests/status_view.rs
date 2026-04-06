@@ -23,7 +23,9 @@ use crate::services::job_scheduler::{
 };
 use crate::session::SessionRegistry;
 use crate::storage::{current_timestamp_ms, StorageService};
-use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
+use crate::tools::invocation::{
+    default_path_grants, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller,
+};
 use anyhow::Result;
 use std::collections::HashSet;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -490,6 +492,7 @@ fn test_permissions() -> ProcessPermissionPolicy {
         trust_scope: ProcessTrustScope::InteractiveChat,
         actions_allowed: false,
         allowed_tools: vec!["read_file".to_string()],
+        path_grants: default_path_grants(),
         path_scopes: vec![".".to_string()],
     }
 }
@@ -549,6 +552,7 @@ fn sample_workflow_graph() -> TaskGraphDef {
                 allow_actions: None,
                 allowed_tools: None,
                 path_scopes: None,
+                path_grants: None,
                 deps: Vec::new(),
             },
             TaskNodeDef {
@@ -566,6 +570,7 @@ fn sample_workflow_graph() -> TaskGraphDef {
                 allow_actions: None,
                 allowed_tools: None,
                 path_scopes: None,
+                path_grants: None,
                 deps: vec!["plan".to_string()],
             },
         ],

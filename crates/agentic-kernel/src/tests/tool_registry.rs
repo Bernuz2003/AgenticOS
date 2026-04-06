@@ -28,6 +28,7 @@ fn builtins_are_registered_and_sorted() {
             "find_files",
             "get_time",
             "http_get_json",
+            "inspect_document",
             "list_files",
             "list_tree",
             "mkdir",

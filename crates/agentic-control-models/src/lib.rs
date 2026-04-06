@@ -483,7 +483,28 @@ pub struct ProcessPermissionsView {
     pub trust_scope: String,
     pub actions_allowed: bool,
     pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub path_grants: Vec<PathGrantView>,
     pub path_scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PathGrantAccessMode {
+    ReadOnly,
+    WriteApproved,
+    AutonomousWrite,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PathGrantView {
+    pub root: String,
+    pub access_mode: PathGrantAccessMode,
+    #[serde(default)]
+    pub capsule: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    pub workspace_relative: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

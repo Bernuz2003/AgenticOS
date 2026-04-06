@@ -36,6 +36,7 @@ export function PermissionsSection({ snapshot }: { snapshot: WorkspaceSnapshot |
           values={permissions?.allowedTools ?? []}
           emptyLabel="none"
         />
+        <PathGrantList snapshot={snapshot} />
         <DetailList
           label="Path scopes"
           values={permissions?.pathScopes ?? []}
@@ -49,6 +50,56 @@ export function PermissionsSection({ snapshot }: { snapshot: WorkspaceSnapshot |
         </div>
       </div>
     </InspectSection>
+  );
+}
+
+function PathGrantList({ snapshot }: { snapshot: WorkspaceSnapshot | null }) {
+  const grants = snapshot?.permissions?.pathGrants ?? [];
+
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Path grants</div>
+      {grants.length === 0 ? (
+        <div className="mt-2 text-sm text-slate-500">none</div>
+      ) : (
+        <div className="mt-2 space-y-2">
+          {grants.map((grant) => {
+            const key = [
+              grant.root,
+              grant.accessMode,
+              grant.capsule ?? "",
+              grant.label ?? "",
+              grant.workspaceRelative ? "workspace" : "absolute",
+            ].join("|");
+
+            return (
+              <div
+                key={key}
+                className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3"
+              >
+                <div className="break-all font-medium text-slate-900">{grant.root}</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <GrantMetaPill value={grant.accessMode} />
+                  <GrantMetaPill
+                    value={grant.workspaceRelative ? "workspace-relative" : "absolute-root"}
+                  />
+                  {grant.capsule ? <GrantMetaPill value={`capsule:${grant.capsule}`} /> : null}
+                  {grant.label ? <GrantMetaPill value={`label:${grant.label}`} /> : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GrantMetaPill({ value }: { value: string }) {
+  return (
+    <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700">
+      {value}
+    </span>
   );
 }
 

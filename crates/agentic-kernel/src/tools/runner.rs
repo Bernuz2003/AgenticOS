@@ -14,7 +14,10 @@ use super::api::{Tool, ToolResult};
 use super::error::ToolError;
 use super::host_exec::run_with_timeout;
 use super::invocation::{ToolContext, ToolInvocation};
-use super::path_guard::{resolve_safe_path, resolve_safe_path_for_context, workspace_root};
+use super::path_guard::{
+    display_path, resolve_context_grant_roots, resolve_safe_path_for_context,
+    resolve_safe_write_path_for_context, workspace_root,
+};
 use super::policy::{
     enforce_remote_http_policy, remote_http_max_request_bytes, remote_http_max_response_bytes,
     syscall_config, SandboxMode,
@@ -292,7 +295,7 @@ fn write_file(input: WriteFileInput, ctx: &ToolContext) -> Result<WriteFileOutpu
         ));
     }
 
-    let path = resolve_safe_path_for_context(&input.path, ctx)
+    let path = resolve_safe_write_path_for_context(&input.path, ctx)
         .map_err(|err| ToolError::ExecutionFailed("write_file".into(), err.to_string()))?;
 
     if let Some(parent) = path.parent() {
@@ -420,38 +423,12 @@ fn list_files(_input: ListFilesInput, ctx: &ToolContext) -> Result<ListFilesOutp
 }
 
 fn resolve_list_roots(ctx: &ToolContext) -> Result<Vec<std::path::PathBuf>, ToolError> {
-    let workspace = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
-    if ctx.permissions.path_scopes.is_empty() {
-        return Err(ToolError::PolicyDenied(
-            "list_files".into(),
-            "no path scopes are available for this process".into(),
-        ));
-    }
-
-    let mut roots = Vec::new();
-    for scope in &ctx.permissions.path_scopes {
-        let root = if scope == "." {
-            workspace.clone()
-        } else {
-            resolve_safe_path(scope)
-                .map_err(|err| ToolError::ExecutionFailed("list_files".into(), err))?
-        };
-        if !roots.contains(&root) {
-            roots.push(root);
-        }
-    }
-    Ok(roots)
+    resolve_context_grant_roots(ctx)
+        .map_err(|err| ToolError::ExecutionFailed("list_files".into(), err))
 }
 
 fn to_workspace_relative_string(tool_name: &str, path: &Path) -> Result<String, ToolError> {
-    let root = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
-    let relative = path.strip_prefix(&root).map_err(|_| {
-        ToolError::ExecutionFailed(
-            tool_name.into(),
-            format!("Path '{}' escaped the workspace root.", path.display()),
-        )
-    })?;
-    Ok(relative.to_string_lossy().replace('\\', "/"))
+    display_path(path).map_err(|err| ToolError::ExecutionFailed(tool_name.into(), err))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

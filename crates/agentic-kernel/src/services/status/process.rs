@@ -1,6 +1,7 @@
 use agentic_control_models::{
     ContextStatusSnapshot as ControlContextStatusSnapshot, HumanInputRequestView,
-    PidStatusResponse, ProcessPermissionsView,
+    PathGrantAccessMode as ControlPathGrantAccessMode, PathGrantView, PidStatusResponse,
+    ProcessPermissionsView,
 };
 
 use crate::engine::LLMEngine;
@@ -54,6 +55,7 @@ pub(super) fn build_pid_status_or_placeholder(
             trust_scope: "unknown".to_string(),
             actions_allowed: false,
             allowed_tools: Vec::new(),
+            path_grants: Vec::new(),
             path_scopes: Vec::new(),
         },
         context: None,
@@ -257,7 +259,34 @@ fn map_permissions_view(
         trust_scope: policy.trust_scope.as_str().to_string(),
         actions_allowed: policy.actions_allowed,
         allowed_tools: policy.allowed_tools.clone(),
+        path_grants: policy
+            .path_grants
+            .iter()
+            .map(|grant| PathGrantView {
+                root: grant.root.clone(),
+                access_mode: map_path_grant_access_mode(&grant.access_mode),
+                capsule: grant.capsule.clone(),
+                label: grant.label.clone(),
+                workspace_relative: grant.workspace_relative(),
+            })
+            .collect(),
         path_scopes: policy.path_scopes.clone(),
+    }
+}
+
+fn map_path_grant_access_mode(
+    mode: &crate::tools::invocation::PathGrantAccessMode,
+) -> ControlPathGrantAccessMode {
+    match mode {
+        crate::tools::invocation::PathGrantAccessMode::ReadOnly => {
+            ControlPathGrantAccessMode::ReadOnly
+        }
+        crate::tools::invocation::PathGrantAccessMode::WriteApproved => {
+            ControlPathGrantAccessMode::WriteApproved
+        }
+        crate::tools::invocation::PathGrantAccessMode::AutonomousWrite => {
+            ControlPathGrantAccessMode::AutonomousWrite
+        }
     }
 }
 

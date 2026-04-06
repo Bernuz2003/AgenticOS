@@ -43,6 +43,7 @@ pub(crate) fn host_builtin_registrations() -> Vec<HostBuiltinRegistration> {
         crate::tools::network_tools::download_url_host_builtin_registration(),
         crate::tools::network_tools::web_fetch_host_builtin_registration(),
         crate::tools::network_tools::web_search_host_builtin_registration(),
+        crate::tools::document_tools::inspect_document_host_builtin_registration(),
         crate::tools::workspace_tools::path_info_host_builtin_registration(),
         crate::tools::workspace_tools::find_files_host_builtin_registration(),
         crate::tools::workspace_tools::search_text_host_builtin_registration(),

@@ -1,5 +1,7 @@
 use super::*;
-use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
+use crate::tools::invocation::{
+    default_path_grants, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller,
+};
 
 fn make_test_snapshot() -> KernelSnapshot {
     KernelSnapshot {
@@ -140,6 +142,7 @@ fn test_permissions() -> ProcessPermissionPolicy {
         trust_scope: ProcessTrustScope::InteractiveChat,
         actions_allowed: false,
         allowed_tools: Vec::new(),
+        path_grants: default_path_grants(),
         path_scopes: vec![".".to_string()],
     }
 }

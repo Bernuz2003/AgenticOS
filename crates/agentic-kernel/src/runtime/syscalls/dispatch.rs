@@ -19,7 +19,9 @@ use crate::services::process_runtime::{
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 use crate::tool_registry::ToolRegistry;
-use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
+use crate::tools::invocation::{
+    PathGrantAccessMode, ProcessPathGrant, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller,
+};
 
 use super::human::dispatch_native_human_input_request;
 use super::ids::{next_action_call_id, next_tool_call_id};
@@ -102,6 +104,12 @@ pub(crate) fn dispatch_process_syscall(
             trust_scope: ProcessTrustScope::InteractiveChat,
             actions_allowed: false,
             allowed_tools: Vec::new(),
+            path_grants: vec![ProcessPathGrant {
+                root: ".".to_string(),
+                access_mode: PathGrantAccessMode::AutonomousWrite,
+                capsule: Some("workspace".to_string()),
+                label: Some("Workspace".to_string()),
+            }],
             path_scopes: vec![".".to_string()],
         });
 

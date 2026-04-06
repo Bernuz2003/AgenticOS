@@ -6,7 +6,7 @@ use crate::backend::BackendClass;
 use crate::errors::OrchestratorError;
 use crate::model_catalog::WorkloadClass;
 use crate::process::{ContextPolicy, ContextStrategy};
-use crate::tools::invocation::{ProcessPermissionOverrides, ProcessTrustScope};
+use crate::tools::invocation::{ProcessPathGrant, ProcessPermissionOverrides, ProcessTrustScope};
 
 /// Failure policy for an orchestration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -52,6 +52,8 @@ pub struct TaskNodeDef {
     #[serde(default)]
     pub path_scopes: Option<Vec<String>>,
     #[serde(default)]
+    pub path_grants: Option<Vec<ProcessPathGrant>>,
+    #[serde(default)]
     pub deps: Vec<String>,
 }
 
@@ -82,6 +84,7 @@ impl TaskNodeDef {
             allow_actions: self.allow_actions,
             allowed_tools: self.allowed_tools.clone(),
             path_scopes: self.path_scopes.clone(),
+            path_grants: self.path_grants.clone(),
         };
 
         if overrides == ProcessPermissionOverrides::default() {

@@ -8,6 +8,7 @@ pub mod audit;
 pub(crate) mod builtins;
 pub(crate) mod command_tools;
 pub mod dispatcher;
+pub(crate) mod document_tools;
 pub(crate) mod effects;
 pub mod error;
 pub mod executor;

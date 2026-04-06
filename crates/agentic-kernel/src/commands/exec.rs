@@ -5,7 +5,9 @@ use crate::scheduler::ProcessPriority;
 use crate::scheduler::ProcessQuota;
 use crate::services::model_runtime::{activate_model_target, ModelActivationError};
 use crate::services::process_runtime::{spawn_managed_process_with_session, ManagedProcessRequest};
-use crate::tools::invocation::{ProcessPermissionPolicy, ToolCaller};
+use crate::tools::invocation::{
+    ProcessPathGrant, ProcessPermissionOverrides, ProcessPermissionPolicy, ToolCaller,
+};
 use agentic_control_models::{ExecStartPayload, KernelEvent};
 use agentic_protocol::ControlErrorCode;
 use serde::Deserialize;
@@ -50,6 +52,7 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
     let ResolvedExecRequest {
         prompt_raw,
         quota_override,
+        permission_overrides,
     } = requested;
     let resolved = resolve_exec_policy(&prompt_raw);
     let workload = resolved.workload;
@@ -173,7 +176,10 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
     });
 
     if let Some(runtime_id) = runtime_id {
-        let permission_policy = match ProcessPermissionPolicy::interactive_chat(tool_registry) {
+        let permission_policy = match ProcessPermissionPolicy::interactive_chat_with_overrides(
+            tool_registry,
+            permission_overrides.as_ref(),
+        ) {
             Ok(policy) => policy,
             Err(err) => {
                 return Some(protocol::response_protocol_err_typed(
@@ -302,11 +308,16 @@ struct ExecRequestPayload {
     max_tokens: Option<u64>,
     #[serde(default)]
     max_syscalls: Option<u64>,
+    #[serde(default)]
+    path_scopes: Option<Vec<String>>,
+    #[serde(default)]
+    path_grants: Option<Vec<ProcessPathGrant>>,
 }
 
 struct ResolvedExecRequest {
     prompt_raw: String,
     quota_override: Option<ProcessQuota>,
+    permission_overrides: Option<ProcessPermissionOverrides>,
 }
 
 fn parse_exec_request(payload: &[u8]) -> Result<ResolvedExecRequest, String> {
@@ -317,12 +328,21 @@ fn parse_exec_request(payload: &[u8]) -> Result<ResolvedExecRequest, String> {
                 max_tokens: parse_exec_quota_limit("max_tokens", parsed.max_tokens)?,
                 max_syscalls: parse_exec_quota_limit("max_syscalls", parsed.max_syscalls)?,
             }),
+            permission_overrides: (parsed.path_scopes.is_some() || parsed.path_grants.is_some())
+                .then_some(ProcessPermissionOverrides {
+                    trust_scope: None,
+                    allow_actions: None,
+                    allowed_tools: None,
+                    path_scopes: parsed.path_scopes,
+                    path_grants: parsed.path_grants,
+                }),
         });
     }
 
     Ok(ResolvedExecRequest {
         prompt_raw: String::from_utf8_lossy(payload).to_string(),
         quota_override: None,
+        permission_overrides: None,
     })
 }
 

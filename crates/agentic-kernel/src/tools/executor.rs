@@ -56,7 +56,7 @@ mod tests {
     };
     use crate::tools::error::ToolError;
     use crate::tools::invocation::{
-        ProcessPermissionPolicy, ProcessTrustScope, ToolCaller, ToolContext,
+        default_path_grants, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller, ToolContext,
         ToolInvocationTransport,
     };
 
@@ -73,6 +73,7 @@ mod tests {
                     "list_files".to_string(),
                     "restricted".to_string(),
                 ],
+                path_grants: default_path_grants(),
                 path_scopes: vec![".".to_string()],
             },
             transport: ToolInvocationTransport::Text,

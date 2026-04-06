@@ -15,6 +15,7 @@ export function updateWorkspaceSearchParams(
   patch: {
     mode?: WorkspaceMode | null;
     dump?: string | null;
+    branch?: string | null;
   },
 ): URLSearchParams {
   const next = new URLSearchParams(current);
@@ -35,6 +36,14 @@ export function updateWorkspaceSearchParams(
       next.delete("dump");
     } else {
       next.set("dump", patch.dump);
+    }
+  }
+
+  if ("branch" in patch) {
+    if (!patch.branch) {
+      next.delete("branch");
+    } else {
+      next.set("branch", patch.branch);
     }
   }
 

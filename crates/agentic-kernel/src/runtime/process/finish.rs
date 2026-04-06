@@ -176,7 +176,9 @@ mod tests {
     };
     use crate::session::SessionRegistry;
     use crate::storage::StorageService;
-    use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
+    use crate::tools::invocation::{
+        default_path_grants, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller,
+    };
     use mio::Poll;
     use std::collections::HashMap;
     use std::fs;
@@ -336,6 +338,7 @@ mod tests {
             trust_scope: ProcessTrustScope::InteractiveChat,
             actions_allowed: false,
             allowed_tools: Vec::new(),
+            path_grants: default_path_grants(),
             path_scopes: vec![".".to_string()],
         }
     }

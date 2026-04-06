@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::process::{ContextPolicy, ContextState, HumanInputRequest};
-use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
+use crate::tools::invocation::{
+    PathGrantAccessMode, ProcessPathGrant, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller,
+};
 
 fn current_family_snapshot(
     engine_state: Option<&crate::engine::LLMEngine>,
@@ -86,6 +88,12 @@ fn default_permission_policy() -> ProcessPermissionPolicy {
         trust_scope: ProcessTrustScope::InteractiveChat,
         actions_allowed: false,
         allowed_tools: Vec::new(),
+        path_grants: vec![ProcessPathGrant {
+            root: ".".to_string(),
+            access_mode: PathGrantAccessMode::AutonomousWrite,
+            capsule: Some("workspace".to_string()),
+            label: Some("Workspace".to_string()),
+        }],
         path_scopes: vec![".".to_string()],
     }
 }

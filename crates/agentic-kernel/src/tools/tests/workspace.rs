@@ -4,14 +4,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
-use super::workspace_root;
 use crate::tool_registry::ToolRegistry;
 use crate::tools::executor::{
     build_structured_invocation, execute_structured_invocation, execute_text_invocation,
 };
 use crate::tools::invocation::{
-    ProcessPermissionPolicy, ProcessTrustScope, ToolCaller, ToolContext, ToolInvocationTransport,
+    default_path_grants, PathGrantAccessMode, ProcessPathGrant, ProcessPermissionPolicy,
+    ProcessTrustScope, ToolCaller, ToolContext, ToolInvocationTransport,
 };
+use crate::tools::path_guard::workspace_root;
 
 struct WorkspaceFixture {
     absolute: PathBuf,
@@ -41,6 +42,32 @@ impl Drop for WorkspaceFixture {
     }
 }
 
+struct ExternalFixture {
+    absolute: PathBuf,
+}
+
+impl ExternalFixture {
+    fn new(prefix: &str) -> Self {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_secs(0))
+            .as_nanos();
+        let absolute = std::env::temp_dir().join(format!("{prefix}_{unique}"));
+        fs::create_dir_all(&absolute).expect("create external fixture directory");
+        Self { absolute }
+    }
+
+    fn grant_root(&self) -> String {
+        self.absolute.to_string_lossy().replace('\\', "/")
+    }
+}
+
+impl Drop for ExternalFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.absolute);
+    }
+}
+
 fn text_context() -> ToolContext {
     ToolContext {
         pid: Some(1),
@@ -60,6 +87,7 @@ fn text_context() -> ToolContext {
                 "list_files".to_string(),
                 "calc".to_string(),
             ],
+            path_grants: default_path_grants(),
             path_scopes: vec![".".to_string()],
         },
         transport: ToolInvocationTransport::Text,
@@ -73,7 +101,38 @@ fn scoped_text_context(scope: String) -> ToolContext {
             trust_scope: ProcessTrustScope::InteractiveChat,
             actions_allowed: false,
             allowed_tools: vec!["read_file".to_string()],
+            path_grants: vec![ProcessPathGrant {
+                root: scope.clone(),
+                access_mode: PathGrantAccessMode::AutonomousWrite,
+                capsule: Some("workspace".to_string()),
+                label: Some("Scoped test root".to_string()),
+            }],
             path_scopes: vec![scope],
+        },
+        ..text_context()
+    }
+}
+
+fn granted_text_context(
+    root: String,
+    access_mode: PathGrantAccessMode,
+    allowed_tools: &[&str],
+) -> ToolContext {
+    ToolContext {
+        permissions: ProcessPermissionPolicy {
+            trust_scope: ProcessTrustScope::InteractiveChat,
+            actions_allowed: false,
+            allowed_tools: allowed_tools
+                .iter()
+                .map(|tool| (*tool).to_string())
+                .collect(),
+            path_grants: vec![ProcessPathGrant {
+                root: root.clone(),
+                access_mode,
+                capsule: Some("host_fs".to_string()),
+                label: Some("External test root".to_string()),
+            }],
+            path_scopes: vec![root],
         },
         ..text_context()
     }
@@ -333,4 +392,105 @@ fn read_file_rejects_paths_outside_process_scope() {
         err,
         crate::tools::error::ToolError::ExecutionFailed(_, _)
     ));
+}
+
+#[test]
+fn read_file_accepts_absolute_external_grant() {
+    let fixture = ExternalFixture::new("read_external_grant");
+    let absolute_file = fixture.absolute.join("allowed.txt");
+    fs::write(&absolute_file, "external").expect("write external file");
+
+    let registry = ToolRegistry::with_builtins();
+    let result = execute_structured_invocation(
+        build_structured_invocation(
+            "read_file",
+            json!({ "path": absolute_file.to_string_lossy() }),
+            None,
+        )
+        .expect("structured invocation"),
+        &ToolContext {
+            transport: ToolInvocationTransport::Structured,
+            ..granted_text_context(
+                fixture.grant_root(),
+                PathGrantAccessMode::ReadOnly,
+                &["read_file"],
+            )
+        },
+        &registry,
+    )
+    .expect("external grant read succeeds");
+
+    assert_eq!(result.result.output["output"], json!("external"));
+}
+
+#[test]
+fn write_file_accepts_absolute_external_autonomous_grant() {
+    let fixture = ExternalFixture::new("write_external_grant");
+    let absolute_file = fixture.absolute.join("written.txt");
+
+    let registry = ToolRegistry::with_builtins();
+    let result = execute_structured_invocation(
+        build_structured_invocation(
+            "write_file",
+            json!({
+                "path": absolute_file.to_string_lossy(),
+                "content": "external write"
+            }),
+            None,
+        )
+        .expect("structured invocation"),
+        &ToolContext {
+            transport: ToolInvocationTransport::Structured,
+            ..granted_text_context(
+                fixture.grant_root(),
+                PathGrantAccessMode::AutonomousWrite,
+                &["write_file"],
+            )
+        },
+        &registry,
+    )
+    .expect("external write succeeds");
+
+    assert_eq!(result.result.output["bytes_written"], json!(14));
+    assert_eq!(
+        fs::read_to_string(&absolute_file).expect("written external file"),
+        "external write"
+    );
+}
+
+#[test]
+fn write_file_rejects_read_only_absolute_external_grant() {
+    let fixture = ExternalFixture::new("write_external_read_only");
+    let absolute_file = fixture.absolute.join("blocked.txt");
+
+    let registry = ToolRegistry::with_builtins();
+    let err = execute_structured_invocation(
+        build_structured_invocation(
+            "write_file",
+            json!({
+                "path": absolute_file.to_string_lossy(),
+                "content": "blocked"
+            }),
+            None,
+        )
+        .expect("structured invocation"),
+        &ToolContext {
+            transport: ToolInvocationTransport::Structured,
+            ..granted_text_context(
+                fixture.grant_root(),
+                PathGrantAccessMode::ReadOnly,
+                &["write_file"],
+            )
+        },
+        &registry,
+    )
+    .expect_err("read-only grant denies write");
+
+    match err {
+        crate::tools::error::ToolError::ExecutionFailed(_, detail) => {
+            assert!(detail.contains("read-only under grants"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert!(!absolute_file.exists());
 }

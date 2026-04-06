@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use super::error::ToolError;
 use super::invocation::ToolContext;
-use super::path_guard::{resolve_safe_path, resolve_safe_path_for_context, workspace_root};
+use super::path_guard::{
+    display_path, resolve_context_grant_roots, resolve_safe_path_for_context,
+    resolve_safe_write_path_for_context,
+};
 
 pub(crate) const MAX_TEXT_FILE_BYTES: u64 = 1024 * 1024;
 const DEFAULT_FIND_FILES_MAX_RESULTS: usize = 100;
@@ -403,7 +406,7 @@ struct MkdirOutput {
 )]
 fn mkdir(input: MkdirInput, ctx: &ToolContext) -> Result<MkdirOutput, ToolError> {
     ensure_non_empty_path("mkdir", &input.path)?;
-    let path = resolve_safe_path_for_context(&input.path, ctx)
+    let path = resolve_safe_write_path_for_context(&input.path, ctx)
         .map_err(|err| ToolError::ExecutionFailed("mkdir".into(), err))?;
 
     if path.exists() {
@@ -484,24 +487,17 @@ pub(crate) fn default_scoped_search_root(
     tool_name: &str,
     ctx: &ToolContext,
 ) -> Result<SearchRoot, ToolError> {
-    let root = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
-    match ctx.permissions.path_scopes.as_slice() {
+    let roots = resolve_context_grant_roots(ctx)
+        .map_err(|err| ToolError::ExecutionFailed(tool_name.into(), err))?;
+    match roots.as_slice() {
         [] => Err(ToolError::PolicyDenied(
             tool_name.into(),
-            "no path scopes are available for this process".into(),
+            "no path grants are available for this process".into(),
         )),
-        [scope] if scope == "." => Ok(SearchRoot {
-            absolute: root,
-            display: ".".to_string(),
+        [root] => Ok(SearchRoot {
+            absolute: root.clone(),
+            display: to_workspace_relative_string(tool_name, root)?,
         }),
-        [scope] => {
-            let absolute = resolve_safe_path(scope)
-                .map_err(|err| ToolError::ExecutionFailed(tool_name.into(), err))?;
-            Ok(SearchRoot {
-                absolute,
-                display: scope.clone(),
-            })
-        }
         _ => Err(ToolError::InvalidInput(
             tool_name.into(),
             "this process is scoped to multiple roots; provide an explicit 'path'".into(),
@@ -607,19 +603,7 @@ pub(crate) fn to_workspace_relative_string(
     tool_name: &str,
     path: &Path,
 ) -> Result<String, ToolError> {
-    let root = workspace_root().map_err(|err| ToolError::Internal(err.to_string()))?;
-    let relative = path.strip_prefix(&root).map_err(|err| {
-        ToolError::ExecutionFailed(
-            tool_name.into(),
-            format!("Path '{}' escaped workspace root: {err}", path.display()),
-        )
-    })?;
-    let text = relative.to_string_lossy();
-    if text.is_empty() {
-        Ok(".".to_string())
-    } else {
-        Ok(text.into_owned())
-    }
+    display_path(path).map_err(|err| ToolError::ExecutionFailed(tool_name.into(), err))
 }
 
 fn filename_matches(file_name: &str, pattern: Option<&str>, extension: Option<&str>) -> bool {

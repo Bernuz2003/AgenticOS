@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::error::ToolError;
 use super::invocation::ToolContext;
-use super::path_guard::resolve_safe_path_for_context;
+use super::path_guard::{resolve_safe_path_for_context, resolve_safe_write_path_for_context};
 use super::workspace_tools::{
     ensure_non_empty_path, read_required_utf8_file, resolve_search_root,
     to_workspace_relative_string, MAX_TEXT_FILE_BYTES,
@@ -46,7 +46,7 @@ struct AppendFileOutput {
 )]
 fn append_file(input: AppendFileInput, ctx: &ToolContext) -> Result<AppendFileOutput, ToolError> {
     ensure_non_empty_path("append_file", &input.path)?;
-    let path = resolve_safe_path_for_context(&input.path, ctx)
+    let path = resolve_safe_write_path_for_context(&input.path, ctx)
         .map_err(|err| ToolError::ExecutionFailed("append_file".into(), err))?;
     let created = !path.exists();
 
@@ -120,7 +120,7 @@ fn replace_in_file(
         ));
     }
 
-    let path = resolve_safe_path_for_context(&input.path, ctx)
+    let path = resolve_safe_write_path_for_context(&input.path, ctx)
         .map_err(|err| ToolError::ExecutionFailed("replace_in_file".into(), err))?;
     let content = read_required_utf8_file("replace_in_file", &path, MAX_TEXT_FILE_BYTES)?;
     let replacements = content.matches(&input.find).count() as u64;

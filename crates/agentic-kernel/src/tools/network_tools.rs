@@ -11,7 +11,7 @@ use crate::config::kernel_config;
 
 use super::error::ToolError;
 use super::invocation::ToolContext;
-use super::path_guard::resolve_safe_path_for_context;
+use super::path_guard::resolve_safe_write_path_for_context;
 use super::policy::{enforce_remote_host_policy, remote_http_max_response_bytes, syscall_config};
 
 const DEFAULT_WEB_SEARCH_BASE_URL: &str = "https://api.duckduckgo.com/";
@@ -120,7 +120,7 @@ fn download_url(
     }
 
     let response = fetch_url_bytes("download_url", &input.url, input.timeout_ms, None)?;
-    let path = resolve_safe_path_for_context(&input.path, ctx)
+    let path = resolve_safe_write_path_for_context(&input.path, ctx)
         .map_err(|err| ToolError::ExecutionFailed("download_url".into(), err))?;
     let created = !path.exists();
 

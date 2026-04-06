@@ -13,7 +13,7 @@ use agentic_protocol::OpCode;
 
 use crate::kernel::auth::kernel_token_path;
 use crate::kernel::client::transport;
-use crate::models::kernel::StartSessionResult;
+use crate::models::kernel::{SessionPathGrantInput, StartSessionResult};
 
 #[derive(Debug, Default)]
 pub struct TimelineStore {
@@ -299,6 +299,7 @@ pub fn start_exec_session(
     prompt: String,
     quota_tokens: Option<u64>,
     quota_syscalls: Option<u64>,
+    path_grants: Option<Vec<SessionPathGrantInput>>,
     timeline_store: Arc<Mutex<TimelineStore>>,
 ) -> Result<StartSessionResult, String> {
     let mut stream = TcpStream::connect(&addr).map_err(|err| err.to_string())?;
@@ -316,6 +317,7 @@ pub fn start_exec_session(
         "prompt": prompt.clone(),
         "max_tokens": quota_tokens,
         "max_syscalls": quota_syscalls,
+        "path_grants": path_grants,
     }))
     .map_err(|err| err.to_string())?;
 

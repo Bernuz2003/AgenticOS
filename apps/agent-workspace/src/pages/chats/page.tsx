@@ -6,11 +6,43 @@ import {
   Waypoints,
 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
-import { deleteSession, startSession } from "../../lib/api";
+import {
+  deleteSession,
+  startSession,
+  type PathGrantAccessMode,
+  type PathGrantInput,
+} from "../../lib/api";
 import { useState } from "react";
 import { SessionsList } from "./list";
 
 type QuotaMode = "unlimited" | "limit";
+type GrantCapsule = "repo" | "docs" | "downloads" | "watch_folder" | "general";
+
+interface SessionGrantDraft {
+  id: string;
+  root: string;
+  accessMode: PathGrantAccessMode;
+  capsule: GrantCapsule;
+  label: string;
+}
+
+const GRANT_CAPSULE_OPTIONS: Array<{ value: GrantCapsule; label: string }> = [
+  { value: "repo", label: "Repo" },
+  { value: "docs", label: "Docs" },
+  { value: "downloads", label: "Downloads" },
+  { value: "watch_folder", label: "Watch Folder" },
+  { value: "general", label: "General" },
+];
+
+function createEmptyGrantDraft(index: number): SessionGrantDraft {
+  return {
+    id: `grant-${index}`,
+    root: "",
+    accessMode: "read_only",
+    capsule: "general",
+    label: "",
+  };
+}
 
 interface SessionQuotaFieldProps {
   label: string;
@@ -114,17 +146,181 @@ function parseQuotaInput(
   return { value: parsed, error: null };
 }
 
+function normalizeGrantInput(
+  grants: SessionGrantDraft[],
+): { value: PathGrantInput[]; error: string | null } {
+  const value: PathGrantInput[] = [];
+
+  for (const [index, grant] of grants.entries()) {
+    const root = grant.root.trim();
+    if (!root) {
+      return {
+        value: [],
+        error: `Grant ${index + 1}: inserisci un path assoluto o relativo al workspace.`,
+      };
+    }
+
+    value.push({
+      root,
+      accessMode: grant.accessMode,
+      capsule: grant.capsule,
+      label: grant.label.trim() || null,
+    });
+  }
+
+  return { value, error: null };
+}
+
+function SessionGrantEditor({
+  grants,
+  disabled,
+  onAdd,
+  onRemove,
+  onChange,
+}: {
+  grants: SessionGrantDraft[];
+  disabled: boolean;
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+  onChange: (id: string, patch: Partial<SessionGrantDraft>) => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-slate-900">Local Filesystem Grants</div>
+          <div className="mt-1 text-xs leading-relaxed text-slate-500">
+            Aggiungi root locali esplicite fuori da `workspace/`. I tool confinati rispettano questi
+            grants; gli executor host non confinabili vengono esclusi automaticamente.
+          </div>
+        </div>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onAdd}
+          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:text-slate-950 disabled:opacity-50"
+        >
+          Add Grant
+        </button>
+      </div>
+
+      {grants.length === 0 ? (
+        <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white/70 px-4 py-4 text-sm text-slate-500">
+          Nessun grant esterno configurato. La sessione resta confinata al workspace implicito.
+        </div>
+      ) : (
+        <div className="mt-4 space-y-3">
+          {grants.map((grant, index) => (
+            <div
+              key={grant.id}
+              className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Grant {index + 1}
+                </div>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onRemove(grant.id)}
+                  className="rounded-full p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
+                  aria-label={`Remove grant ${index + 1}`}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <label className="block">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Root Path
+                  </div>
+                  <input
+                    type="text"
+                    value={grant.root}
+                    disabled={disabled}
+                    onChange={(event) => onChange(grant.id, { root: event.target.value })}
+                    placeholder="/path/to/repo oppure docs/reference"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 disabled:bg-slate-100"
+                  />
+                </label>
+
+                <label className="block">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Access Mode
+                  </div>
+                  <select
+                    value={grant.accessMode}
+                    disabled={disabled}
+                    onChange={(event) =>
+                      onChange(grant.id, {
+                        accessMode: event.target.value as PathGrantAccessMode,
+                      })
+                    }
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 disabled:bg-slate-100"
+                  >
+                    <option value="read_only">read_only</option>
+                    <option value="write_approved">write_approved</option>
+                    <option value="autonomous_write">autonomous_write</option>
+                  </select>
+                </label>
+
+                <label className="block">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Capsule
+                  </div>
+                  <select
+                    value={grant.capsule}
+                    disabled={disabled}
+                    onChange={(event) =>
+                      onChange(grant.id, {
+                        capsule: event.target.value as GrantCapsule,
+                      })
+                    }
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 disabled:bg-slate-100"
+                  >
+                    {GRANT_CAPSULE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Label
+                  </div>
+                  <input
+                    type="text"
+                    value={grant.label}
+                    disabled={disabled}
+                    onChange={(event) => onChange(grant.id, { label: event.target.value })}
+                    placeholder="Optional human label"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 disabled:bg-slate-100"
+                  />
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SessionsPage() {
   const sessions = useSessionsStore((state) => state.sessions);
   const refreshLobby = useSessionsStore((state) => state.refresh);
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
-  
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newPrompt, setNewPrompt] = useState("");
   const [tokenQuotaMode, setTokenQuotaMode] = useState<QuotaMode>("unlimited");
   const [tokenQuotaValue, setTokenQuotaValue] = useState("");
   const [syscallQuotaMode, setSyscallQuotaMode] = useState<QuotaMode>("unlimited");
   const [syscallQuotaValue, setSyscallQuotaValue] = useState("");
+  const [pathGrants, setPathGrants] = useState<SessionGrantDraft[]>([]);
   const [isStarting, setIsStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -136,7 +332,22 @@ export function SessionsPage() {
     setTokenQuotaValue("");
     setSyscallQuotaMode("unlimited");
     setSyscallQuotaValue("");
+    setPathGrants([]);
     setStartError(null);
+  };
+
+  const addPathGrant = () => {
+    setPathGrants((current) => [...current, createEmptyGrantDraft(current.length + 1)]);
+  };
+
+  const updatePathGrant = (id: string, patch: Partial<SessionGrantDraft>) => {
+    setPathGrants((current) =>
+      current.map((grant) => (grant.id === id ? { ...grant, ...patch } : grant)),
+    );
+  };
+
+  const removePathGrant = (id: string) => {
+    setPathGrants((current) => current.filter((grant) => grant.id !== id));
   };
 
   const handleDelete = async (sessionId: string) => {
@@ -175,6 +386,12 @@ export function SessionsPage() {
       return;
     }
 
+    const grants = normalizeGrantInput(pathGrants);
+    if (grants.error) {
+      setStartError(grants.error);
+      return;
+    }
+
     try {
       setIsStarting(true);
       setStartError(null);
@@ -182,6 +399,7 @@ export function SessionsPage() {
         prompt,
         quotaTokens: tokenQuota.value,
         quotaSyscalls: syscallQuota.value,
+        pathGrants: grants.value,
       });
       await refreshLobby();
       closeStartModal();
@@ -279,8 +497,15 @@ export function SessionsPage() {
                    onModeChange={setSyscallQuotaMode}
                    onValueChange={setSyscallQuotaValue}
                  />
+                 <SessionGrantEditor
+                   grants={pathGrants}
+                   disabled={isStarting}
+                   onAdd={addPathGrant}
+                   onRemove={removePathGrant}
+                   onChange={updatePathGrant}
+                 />
                </div>
-               
+
                {startError && (
                  <div className="mb-4 mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
                    {startError}

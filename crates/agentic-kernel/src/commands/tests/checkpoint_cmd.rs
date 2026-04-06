@@ -6,7 +6,9 @@ use crate::checkpoint::{
 use crate::model_catalog::ModelCatalog;
 use crate::process::{ContextPolicy, ContextState, ContextStrategy};
 use crate::scheduler::ProcessScheduler;
-use crate::tools::invocation::{ProcessPermissionPolicy, ProcessTrustScope, ToolCaller};
+use crate::tools::invocation::{
+    default_path_grants, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller,
+};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -118,6 +120,7 @@ fn test_permissions() -> ProcessPermissionPolicy {
         trust_scope: ProcessTrustScope::InteractiveChat,
         actions_allowed: false,
         allowed_tools: Vec::new(),
+        path_grants: default_path_grants(),
         path_scopes: vec![".".to_string()],
     }
 }

@@ -23,6 +23,7 @@ fn task_node(id: &str, prompt: &str, workload: Option<&str>, deps: Vec<&str>) ->
         allow_actions: None,
         allowed_tools: None,
         path_scopes: None,
+        path_grants: None,
         deps: deps.into_iter().map(str::to_string).collect(),
     }
 }
@@ -80,6 +81,7 @@ fn task_context_policy_overrides_are_preserved_in_spawn_requests() {
             allow_actions: None,
             allowed_tools: None,
             path_scopes: None,
+            path_grants: None,
             deps: vec![],
         }],
         failure_policy: FailurePolicy::FailFast,
@@ -114,6 +116,7 @@ fn task_backend_class_is_preserved_in_spawn_requests() {
             allow_actions: None,
             allowed_tools: None,
             path_scopes: None,
+            path_grants: None,
             deps: vec![],
         }],
         failure_policy: FailurePolicy::FailFast,

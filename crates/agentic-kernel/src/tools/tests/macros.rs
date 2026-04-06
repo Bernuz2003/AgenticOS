@@ -11,8 +11,8 @@ use super::api::{typed_output_to_tool_result, Tool, ToolResult};
 use super::error::ToolError;
 use super::executor::{build_structured_invocation, execute_structured_invocation};
 use super::invocation::{
-    ProcessPermissionPolicy, ProcessTrustScope, ToolCaller, ToolContext, ToolInvocation,
-    ToolInvocationTransport,
+    default_path_grants, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller, ToolContext,
+    ToolInvocation, ToolInvocationTransport,
 };
 use super::path_guard::workspace_root;
 use crate::tool_registry::{
@@ -124,6 +124,7 @@ fn text_context() -> ToolContext {
                 "read_file".to_string(),
                 "write_file".to_string(),
             ],
+            path_grants: default_path_grants(),
             path_scopes: vec![".".to_string()],
         },
         transport: ToolInvocationTransport::Text,

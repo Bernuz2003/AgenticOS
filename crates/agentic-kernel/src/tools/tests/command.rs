@@ -7,7 +7,8 @@ use serde_json::json;
 use crate::tool_registry::ToolRegistry;
 use crate::tools::executor::{build_structured_invocation, execute_structured_invocation};
 use crate::tools::invocation::{
-    ProcessPermissionPolicy, ProcessTrustScope, ToolCaller, ToolContext, ToolInvocationTransport,
+    default_path_grants, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller, ToolContext,
+    ToolInvocationTransport,
 };
 use crate::tools::path_guard::workspace_root;
 
@@ -44,6 +45,7 @@ fn text_context() -> ToolContext {
             trust_scope: ProcessTrustScope::InteractiveChat,
             actions_allowed: false,
             allowed_tools: vec!["exec_command".to_string()],
+            path_grants: default_path_grants(),
             path_scopes: vec![".".to_string()],
         },
         transport: ToolInvocationTransport::Structured,

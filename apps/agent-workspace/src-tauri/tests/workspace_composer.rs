@@ -66,6 +66,69 @@ fn timeline_composer_falls_back_to_persisted_history_when_live_bridge_is_unavail
 }
 
 #[test]
+fn workspace_composer_ignores_foreign_pid_hints_when_loading_by_session() {
+    let root = make_temp_root("agenticos-composer-foreign-workspace");
+    seed_persisted_session(
+        &root,
+        SessionSeed::single_completed("sess-one", 11, "hello one", "answer one"),
+    )
+    .expect("seed first session");
+    seed_persisted_session(
+        &root,
+        SessionSeed::single_completed("sess-two", 22, "hello two", "answer two"),
+    )
+    .expect("seed second session");
+    let bridge = offline_bridge(root.clone());
+    let timeline_store = Arc::new(Mutex::new(TimelineStore::default()));
+
+    let snapshot = compose_workspace_snapshot_for_session(
+        &root,
+        &bridge,
+        &timeline_store,
+        "sess-two",
+        Some(11),
+    )
+    .expect("compose workspace snapshot");
+
+    assert_eq!(snapshot.session_id, "sess-two");
+    assert_eq!(snapshot.pid, 22);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn timeline_composer_ignores_foreign_pid_hints_when_loading_by_session() {
+    let root = make_temp_root("agenticos-composer-foreign-timeline");
+    seed_persisted_session(
+        &root,
+        SessionSeed::single_completed("sess-one", 11, "hello one", "answer one"),
+    )
+    .expect("seed first session");
+    seed_persisted_session(
+        &root,
+        SessionSeed::single_completed("sess-two", 22, "hello two", "answer two"),
+    )
+    .expect("seed second session");
+    let bridge = offline_bridge(root.clone());
+    let timeline_store = Arc::new(Mutex::new(TimelineStore::default()));
+
+    let timeline = compose_timeline_snapshot_for_session(
+        &root,
+        &bridge,
+        &timeline_store,
+        "sess-two",
+        Some(11),
+    )
+    .expect("compose timeline snapshot");
+
+    assert_eq!(timeline.session_id, "sess-two");
+    assert_eq!(timeline.pid, 22);
+    assert_eq!(timeline.items[0].text, "hello two");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn register_live_user_input_appends_new_turn_after_seeding_existing_history() {
     let root = make_temp_root("agenticos-composer-resume-seed");
     seed_persisted_session(
@@ -218,7 +281,7 @@ fn seed_persisted_session(root: &Path, seed: SessionSeed<'_>) -> Result<(), Stri
     connection
         .execute_batch(
             r#"
-            CREATE TABLE sessions (
+            CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -227,7 +290,7 @@ fn seed_persisted_session(root: &Path, seed: SessionSeed<'_>) -> Result<(), Stri
                 created_at_ms INTEGER NOT NULL,
                 updated_at_ms INTEGER NOT NULL
             );
-            CREATE TABLE process_runs (
+            CREATE TABLE IF NOT EXISTS process_runs (
                 run_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 boot_id INTEGER NOT NULL,
@@ -236,7 +299,7 @@ fn seed_persisted_session(root: &Path, seed: SessionSeed<'_>) -> Result<(), Stri
                 started_at_ms INTEGER NOT NULL,
                 ended_at_ms INTEGER NULL
             );
-            CREATE TABLE session_turns (
+            CREATE TABLE IF NOT EXISTS session_turns (
                 turn_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 pid INTEGER NOT NULL,
@@ -249,7 +312,7 @@ fn seed_persisted_session(root: &Path, seed: SessionSeed<'_>) -> Result<(), Stri
                 completed_at_ms INTEGER NULL,
                 finish_reason TEXT NULL
             );
-            CREATE TABLE session_messages (
+            CREATE TABLE IF NOT EXISTS session_messages (
                 message_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 turn_id INTEGER NOT NULL,

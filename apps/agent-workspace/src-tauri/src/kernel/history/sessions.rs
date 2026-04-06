@@ -1,18 +1,21 @@
+use std::collections::HashSet;
 use std::path::Path;
 
-use rusqlite::params;
+use rusqlite::{params, Connection};
 
 use crate::models::kernel::AgentSessionSummary;
 use crate::utils::time::relative_age_label;
 
-use super::db::{load_all_session_identities, open_connection, SessionIdentity};
+use super::db::{load_all_session_identities, open_connection, table_exists, SessionIdentity};
 
 pub fn load_lobby_sessions(workspace_root: &Path) -> Result<Vec<AgentSessionSummary>, String> {
     let Some(connection) = open_connection(workspace_root)? else {
         return Ok(Vec::new());
     };
+    let replay_branch_session_ids = load_replay_branch_session_ids(&connection)?;
     load_all_session_identities(&connection)?
         .into_iter()
+        .filter(|identity| !replay_branch_session_ids.contains(&identity.session_id))
         .map(agent_session_summary_from_identity)
         .collect()
 }
@@ -66,4 +69,23 @@ pub(crate) fn agent_session_summary_from_identity(
         orchestration_id: None,
         orchestration_task_id: None,
     })
+}
+
+fn load_replay_branch_session_ids(connection: &Connection) -> Result<HashSet<String>, String> {
+    if !table_exists(connection, "replay_branch_index")? {
+        return Ok(HashSet::new());
+    }
+
+    let mut statement = connection
+        .prepare("SELECT session_id FROM replay_branch_index")
+        .map_err(|err| err.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|err| err.to_string())?;
+
+    let mut session_ids = HashSet::new();
+    for row in rows {
+        session_ids.insert(row.map_err(|err| err.to_string())?);
+    }
+    Ok(session_ids)
 }

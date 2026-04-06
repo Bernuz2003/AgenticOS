@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
+  PathGrantInput,
   SendInputResult,
   StartSessionResult,
   TurnControlResult,
@@ -10,6 +11,7 @@ export interface StartSessionInput {
   prompt: string;
   quotaTokens: number | null;
   quotaSyscalls: number | null;
+  pathGrants?: PathGrantInput[];
 }
 
 export async function startSession(
@@ -22,6 +24,7 @@ export async function startSession(
     prompt: input.prompt,
     quotaTokens: input.quotaTokens,
     quotaSyscalls: input.quotaSyscalls,
+    pathGrants: input.pathGrants ?? null,
   });
 
   return {
