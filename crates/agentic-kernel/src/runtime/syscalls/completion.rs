@@ -270,12 +270,14 @@ pub(crate) fn drain_syscall_results(
                     storage,
                     spec,
                     format!(
-                        "tool_call_id={} command={} caller={} transport=text duration_ms={} detail={}",
+                        "tool_call_id={} command={} caller={} transport=text duration_ms={} detail={}{}{}",
                         completion.tool_call_id,
                         completion.command,
                         completion.caller.as_str(),
                         completion.outcome.duration_ms,
-                        completion.outcome.output
+                        completion.outcome.output,
+                        error_kind_audit_suffix(completion.outcome.error_kind.as_deref()),
+                        mcp_audit_suffix(completion.outcome.output_json.as_ref())
                     ),
                     audit_context,
                 );
@@ -293,6 +295,48 @@ pub(crate) fn drain_syscall_results(
     processed_results
 }
 
+fn mcp_audit_suffix(output_json: Option<&serde_json::Value>) -> String {
+    let Some(mcp) = output_json.and_then(|value| value.get("mcp")) else {
+        return String::new();
+    };
+
+    let server_id = mcp
+        .get("server_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let target_name = mcp
+        .get("target_name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let trust_level = mcp
+        .get("trust_level")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let validation_passed = mcp
+        .get("validation_passed")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let approval_required = mcp
+        .get("approval_required")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let latency_ms = mcp
+        .get("latency_ms")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+
+    format!(
+        " provider=mcp mcp_server={} mcp_tool={} trust_level={} validation_passed={} approval_required={} latency_ms={}",
+        server_id, target_name, trust_level, validation_passed, approval_required, latency_ms
+    )
+}
+
+fn error_kind_audit_suffix(error_kind: Option<&str>) -> String {
+    error_kind
+        .map(|kind| format!(" error_kind={kind}"))
+        .unwrap_or_default()
+}
+
 fn auto_reason_for_syscall_kill(output: &str) -> &'static str {
     let lowered = output.to_ascii_lowercase();
     if lowered.contains("timeout") || lowered.contains("timed out") {
@@ -301,5 +345,46 @@ fn auto_reason_for_syscall_kill(output: &str) -> &'static str {
         "tool_error_burst_kill"
     } else {
         "syscall_killed"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{error_kind_audit_suffix, mcp_audit_suffix};
+
+    #[test]
+    fn formats_mcp_completion_audit_suffix() {
+        let suffix = mcp_audit_suffix(Some(&json!({
+            "mcp": {
+                "server_id": "demo",
+                "target_name": "echo",
+                "trust_level": "trusted",
+                "validation_passed": true,
+                "approval_required": true,
+                "latency_ms": 12
+            }
+        })));
+
+        assert_eq!(
+            suffix,
+            " provider=mcp mcp_server=demo mcp_tool=echo trust_level=trusted validation_passed=true approval_required=true latency_ms=12"
+        );
+    }
+
+    #[test]
+    fn omits_mcp_completion_audit_suffix_without_metadata() {
+        assert!(mcp_audit_suffix(Some(&json!({"output": "ok"}))).is_empty());
+        assert!(mcp_audit_suffix(None).is_empty());
+    }
+
+    #[test]
+    fn formats_error_kind_suffix() {
+        assert_eq!(
+            error_kind_audit_suffix(Some("timeout")),
+            " error_kind=timeout"
+        );
+        assert!(error_kind_audit_suffix(None).is_empty());
     }
 }

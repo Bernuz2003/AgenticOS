@@ -8,6 +8,7 @@ import {
   type BackendTelemetry,
   type ManagedLocalRuntime,
   type MemoryStatus,
+  type McpStatus,
   type RemoteRuntimeModel,
   type ResourceGovernorStatus,
   type RuntimeInstance,
@@ -69,6 +70,7 @@ interface SessionsState {
   managedLocalRuntimes: ManagedLocalRuntime[];
   resourceGovernor: ResourceGovernorStatus | null;
   runtimeLoadQueue: RuntimeLoadQueueEntry[];
+  mcp: McpStatus | null;
   globalAuditEvents: AuditEvent[];
   scheduledJobs: ScheduledJob[];
   loading: boolean;
@@ -110,6 +112,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
   managedLocalRuntimes: [],
   resourceGovernor: null,
   runtimeLoadQueue: [],
+  mcp: null,
   globalAuditEvents: [],
   scheduledJobs: [],
   loading: false,
@@ -133,6 +136,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
       managedLocalRuntimes: snapshot.managedLocalRuntimes,
       resourceGovernor: snapshot.resourceGovernor,
       runtimeLoadQueue: snapshot.runtimeLoadQueue,
+      mcp: snapshot.mcp,
       globalAuditEvents: snapshot.globalAuditEvents,
       scheduledJobs: snapshot.scheduledJobs,
       orchestrations: snapshot.orchestrations,
@@ -210,6 +214,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
         managedLocalRuntimes: [],
         resourceGovernor: null,
         runtimeLoadQueue: [],
+        mcp: null,
         globalAuditEvents: [],
         scheduledJobs: [],
         orchestrations: [],

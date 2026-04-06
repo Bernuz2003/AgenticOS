@@ -100,6 +100,9 @@ fn manual_echo_registry_entry() -> ToolRegistryEntry {
             capabilities: vec!["test".to_string(), "echo".to_string()],
             dangerous: false,
             enabled: true,
+            default_allowlisted: true,
+            approval_required: false,
+            interop: None,
             source: ToolSource::BuiltIn,
         },
         backend: ToolBackendConfig::Host {

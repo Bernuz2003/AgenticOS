@@ -1,6 +1,6 @@
 # AgenticOS — Architecture
 
-> Versione: `0.5.0` · Aggiornamento: 2026-03-10
+> Versione: `0.5.0` · Aggiornamento: 2026-04-06
 
 AgenticOS è un **AI workstation OS local-first, single-node**: un kernel per agenti LLM che espone un runtime TCP event-driven e una GUI di controllo per gestire processi autonomi basati su Large Language Model.
 Ogni processo possiede un'istanza del modello, genera token in streaming, può invocare tool di sistema (syscall) e comunicare con altri processi.
@@ -21,7 +21,7 @@ Questo documento descrive l'architettura interna del kernel, i flussi end-to-end
 6. [Engine e processi](#6-engine-e-processi)
 7. [Memory subsystem](#7-memory-subsystem)
 8. [Scheduler](#8-scheduler)
-9. [Syscall sandbox](#9-syscall-sandbox)
+9. [Tool e action plane](#9-tool-e-action-plane)
 10. [Model catalog e routing](#10-model-catalog-e-routing)
 11. [Checkpoint / Restore](#11-checkpoint--restore)
 12. [Configurazione](#12-configurazione)
@@ -61,6 +61,7 @@ Questo documento descrive l'architettura interna del kernel, i flussi end-to-end
 - **Resident-slot memory** — residency manager per PID, parking asincrono e restore backend-owned dei context slot.
 - **Priority scheduler** — 4 livelli di priorità (Low → Critical), quote token e syscall per workload class. Governa ordine e limiti locali; non e' un motore di parallelismo forte.
 - **Tool plane + action plane** — i processi LLM invocano tool registrati tramite `TOOL:<name> <json-object>` e mutazioni del runtime tramite `ACTION:<name> <json-object>`, con parser stretti, rate-limit, timeout e audit separati.
+- **Selective MCP edge interop** — i server MCP entrano solo al bordo del sistema tramite un bridge locale che li espone come tool runtime governati dal kernel; control-plane, workflow, replay e policy per processo restano nativi AgenticOS.
 - **Multi-model** — catalogo auto-discovery, routing capability-aware, hot-swap tra famiglie LLM.
 
 ---
@@ -76,7 +77,7 @@ graph TB
     end
 
     subgraph "Command Layer"
-        CMD["execute_command<br/>18 opcodes"]
+        CMD["execute_command<br/>control-plane opcodes"]
         MET["Metrics<br/>uptime, commands, errors"]
         PAR["Parsing<br/>memw, generation"]
     end
@@ -335,7 +336,7 @@ AgentProcess
 ├── tokens: Vec<u32>            # Buffer token (prompt + generati)
 ├── index_pos: usize            # Posizione corrente nella sequenza
 ├── max_tokens: usize           # Limite token massimi
-├── syscall_buffer: String      # Accumulo output per detection [[...]]
+├── syscall_buffer: String      # Accumulo output per detection canonica TOOL:/ACTION:
 ├── context_policy              # Strategia per-PID (`sliding_window`/`summarize`/`retrieve`)
 └── context_state               # Ledger segmenti, compaction stats, retrieval hits, episodic store
 ```
@@ -473,7 +474,7 @@ flowchart LR
     TOKEN --> CHECK{quota<br/>exceeded?}
     CHECK -->|sì| KILL["force kill process"]
     CHECK -->|no| SCAN["check syscall buffer"]
-    SCAN --> SYSCALL{found<br/>[[...]]?}
+    SCAN --> SYSCALL{found canonical<br/>TOOL:/ACTION:?}
     SYSCALL -->|sì| DISPATCH["dispatch_process_syscall"]
     DISPATCH --> RSYS["record_syscall(pid)"]
     RSYS --> SCHECK{quota<br/>exceeded?}
@@ -528,6 +529,28 @@ Anche le action esposte all'agente entrano nel manifest dinamico, ma restano sem
   - testo agente -> parser -> `ToolInvocation`
   - invocazione strutturata -> `ToolInvocation`
 - **Audit minimo**: il log JSONL dei tool include caller, transport (`text` o `structured`) e nome tool, cosi' il workspace puo' distinguere come e da chi e' arrivata l'invocazione.
+
+### MCP edge interop (M44)
+
+L'integrazione MCP e' selettiva e resta fuori dal kernel core. In fase 1 il percorso effettivo e':
+
+```text
+processo AgenticOS
+  -> policy nativa per processo
+  -> ToolRegistry
+  -> backend remote_http
+  -> bridge MCP locale autenticato
+  -> server MCP stdio
+```
+
+Principi implementati:
+
+- **Policy nativa prima di tutto**: `allowed_tools`, `allowed_callers`, trust scope e replay-safe vengono verificati prima di qualunque invocazione MCP.
+- **Interop senza riscrittura del kernel**: i tool MCP vengono registrati come tool runtime nel `ToolRegistry`; workflow, scheduler, artifacts, checkpoint e core-dump/replay non dipendono da semantiche MCP.
+- **Roots derivate dai grant**: se un server MCP richiede `roots/list`, il bridge espone solo path ottenuti dai `path_grants`/`path_scopes` del processo.
+- **Trust separato per server**: il trust del server MCP e il trust del processo restano distinti; server non trusted producono tool marcati `dangerous` e vengono filtrati nei flussi replay-safe.
+- **Osservabilita' esplicita**: output tool, audit ed effetti runtime includono provider, server MCP, tool originario, trust level, esito validazione e latenza.
+- **Rollback semplice**: con `mcp.enabled = false` o `AGENTIC_MCP_ENABLED=false` il bridge non parte e nessun tool MCP viene registrato.
 
 ### Modalità sandbox
 
@@ -679,6 +702,7 @@ Le variabili d'ambiente esplicite del processo continuano ad avere precedenza su
 | `AGENTIC_SYSCALL_MAX_PER_WINDOW` | `12` | Rate limit: max chiamate per finestra |
 | `AGENTIC_SYSCALL_WINDOW_S` | `10` | Rate limit: dimensione finestra (secondi) |
 | `AGENTIC_SYSCALL_ERROR_BURST_KILL` | `3` | Errori consecutivi prima del kill |
+| `AGENTIC_MCP_ENABLED` | `false` | Abilita o disabilita il bridge MCP edge-only |
 
 ---
 
@@ -735,7 +759,7 @@ Tutti gli errori usano `thiserror` per derivazione automatica di `Display` e `Er
 | **SwapManager** | Gestore dello swap asincrono — worker thread che persiste dati su disco quando la RAM è piena |
 | **Scheduler (ProcessScheduler)** | Governa ordine di esecuzione (priorità) e limiti risorse (quote token/syscall) |
 | **WorkloadClass** | Classificazione del tipo di task (Fast, Code, Reasoning, General) — determina quote e routing |
-| **Syscall** | Invocazione di tool da parte di un processo LLM, rilevata dal pattern `[[COMMAND: ...]]` nell'output |
+| **Syscall** | Invocazione di tool o action da parte di un processo LLM, rilevata dalle linee canoniche `TOOL:<name> <json>` o `ACTION:<name> <json>` |
 | **Checkpoint** | Snapshot serializzato (JSON) dello stato kernel — scheduler, processi, metriche, config |
 | **OpCode** | Codice operativo del protocollo TCP — identifica il tipo di comando (PING, EXEC, STATUS, ...) |
 | **ModelCatalog** | Registry dei modelli GGUF disponibili, con auto-discovery e routing capability-aware |

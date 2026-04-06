@@ -46,6 +46,10 @@ pub(crate) fn summarize_tool_effects(
         }));
     }
 
+    if let Some(mcp_effect) = mcp_effect(invocation, output, registry) {
+        effects.push(mcp_effect);
+    }
+
     effects
 }
 
@@ -95,4 +99,35 @@ fn workspace_directory_effect(input: &Value, output: Option<&Value>) -> Value {
             .and_then(|payload| payload.get("created"))
             .and_then(Value::as_bool),
     })
+}
+
+fn mcp_effect(
+    invocation: &ToolInvocation,
+    output: Option<&Value>,
+    registry: &ToolRegistry,
+) -> Option<Value> {
+    let entry = registry.get(&invocation.name)?;
+    let interop = entry.descriptor.interop.as_ref()?;
+    if interop.provider != "mcp" {
+        return None;
+    }
+
+    let metadata = output
+        .and_then(|payload| payload.get("mcp"))
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "server_id": interop.server_id,
+                "target_name": interop.target_name,
+                "trust_level": interop.trust_level,
+                "auth_mode": interop.auth_mode,
+            })
+        });
+
+    Some(json!({
+        "kind": "mcp_invocation",
+        "tool_name": invocation.name,
+        "provider": interop.provider,
+        "mcp": metadata,
+    }))
 }

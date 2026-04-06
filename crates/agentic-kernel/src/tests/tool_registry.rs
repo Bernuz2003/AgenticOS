@@ -70,6 +70,9 @@ fn rejects_backend_kind_mismatch() {
             capabilities: vec!["echo".to_string()],
             dangerous: false,
             enabled: true,
+            default_allowlisted: true,
+            approval_required: false,
+            interop: None,
             source: ToolSource::Runtime,
         },
         backend: ToolBackendConfig::RemoteHttp {
@@ -106,6 +109,9 @@ fn rejects_runtime_host_backend_registration() {
             capabilities: vec![],
             dangerous: false,
             enabled: true,
+            default_allowlisted: true,
+            approval_required: false,
+            interop: None,
             source: ToolSource::Runtime,
         },
         backend: ToolBackendConfig::Host {
@@ -135,6 +141,9 @@ fn rejects_runtime_wasm_backend_registration() {
             capabilities: vec![],
             dangerous: false,
             enabled: true,
+            default_allowlisted: true,
+            approval_required: false,
+            interop: None,
             source: ToolSource::Runtime,
         },
         backend: ToolBackendConfig::Wasm {

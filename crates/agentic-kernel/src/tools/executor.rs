@@ -148,6 +148,9 @@ mod tests {
                     capabilities: vec![],
                     dangerous: false,
                     enabled: true,
+                    default_allowlisted: true,
+                    approval_required: false,
+                    interop: None,
                     source: ToolSource::BuiltIn,
                 },
                 backend: ToolBackendConfig::Host {

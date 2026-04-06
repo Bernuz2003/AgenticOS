@@ -37,6 +37,7 @@ pub async fn start_session(
     prompt: String,
     quota_tokens: Option<u64>,
     quota_syscalls: Option<u64>,
+    allowed_tools: Option<Vec<String>>,
     path_grants: Option<Vec<SessionPathGrantInput>>,
     state: State<'_, AppState>,
 ) -> Result<StartSessionResult, String> {
@@ -50,6 +51,7 @@ pub async fn start_session(
             prompt,
             quota_tokens,
             quota_syscalls,
+            allowed_tools,
             path_grants,
             timeline_store,
         )

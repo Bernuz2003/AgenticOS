@@ -5,10 +5,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use agentic_kernel_macros::agentic_tool;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::backend::{HttpEndpoint, HttpRequestOptions};
 use crate::config::kernel_config;
-use crate::tool_registry::ToolBackendConfig;
+use crate::mcp::models::{McpBridgeErrorResponse, McpBridgeInvocationRequest};
+use crate::tool_registry::{ToolBackendConfig, ToolInteropDescriptor};
 
 use super::api::{Tool, ToolResult};
 use super::error::ToolError;
@@ -466,6 +468,7 @@ fn calc(input: CalcInput, ctx: &ToolContext) -> Result<CalcOutput, ToolError> {
 pub struct RemoteHttpTool {
     pub name: String,
     pub backend: ToolBackendConfig,
+    pub interop: Option<ToolInteropDescriptor>,
 }
 
 impl Tool for RemoteHttpTool {
@@ -476,7 +479,7 @@ impl Tool for RemoteHttpTool {
     fn execute(
         &self,
         invocation: &ToolInvocation,
-        _context: &ToolContext,
+        context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let ToolBackendConfig::RemoteHttp {
             url,
@@ -495,8 +498,10 @@ impl Tool for RemoteHttpTool {
             ToolError::ExecutionFailed(self.name().into(), format!("Invalid endpoint: {}", e))
         })?;
 
-        enforce_remote_http_policy(self.name(), &endpoint)
-            .map_err(|e| ToolError::PolicyDenied(self.name().into(), e))?;
+        if !is_internal_mcp_bridge_endpoint(self.interop.as_ref(), &endpoint) {
+            enforce_remote_http_policy(self.name(), &endpoint)
+                .map_err(|e| ToolError::PolicyDenied(self.name().into(), e))?;
+        }
 
         let path = if endpoint.base_path.is_empty() {
             "/"
@@ -508,7 +513,11 @@ impl Tool for RemoteHttpTool {
             .request_json_with_options(
                 &method.to_ascii_uppercase(),
                 path,
-                Some(&invocation.input),
+                Some(&remote_http_payload(
+                    invocation,
+                    context,
+                    self.interop.as_ref(),
+                )),
                 HttpRequestOptions {
                     timeout_ms: *timeout_ms,
                     max_request_bytes: remote_http_max_request_bytes(),
@@ -525,12 +534,14 @@ impl Tool for RemoteHttpTool {
             })?;
 
         if !(200..300).contains(&response.status_code) {
-            return Err(ToolError::ExecutionFailed(
-                self.name().into(),
-                format!(
-                    "HTTP {} ({}). {}",
-                    response.status_code, response.status_line, response.body
-                ),
+            return Err(classify_http_response_failure(
+                self.name(),
+                response.status_code,
+                response.status_line,
+                response.body,
+                response.json,
+                *timeout_ms,
+                self.interop.as_ref(),
             ));
         }
 
@@ -541,11 +552,89 @@ impl Tool for RemoteHttpTool {
                 .map(ToString::to_string)
                 .or_else(|| serde_json::to_string_pretty(&json_body).ok())
                 .unwrap_or_else(|| "Valid JSON response".into());
-            Ok(ToolResult::json_with_text(json_body, display_text))
+            let warnings = json_body
+                .get("warnings")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            Ok(ToolResult {
+                output: json_body,
+                display_text: Some(display_text),
+                warnings,
+            })
         } else {
             Ok(ToolResult::plain_text(response.body))
         }
     }
+}
+
+fn remote_http_payload(
+    invocation: &ToolInvocation,
+    context: &ToolContext,
+    interop: Option<&ToolInteropDescriptor>,
+) -> Value {
+    if interop.is_some_and(|interop| interop.provider == "mcp") {
+        return serde_json::to_value(McpBridgeInvocationRequest {
+            input: invocation.input.clone(),
+            context: context.clone(),
+        })
+        .unwrap_or_else(|_| invocation.input.clone());
+    }
+
+    invocation.input.clone()
+}
+
+fn classify_http_response_failure(
+    tool_name: &str,
+    status_code: u16,
+    status_line: String,
+    body: String,
+    json_body: Option<Value>,
+    timeout_ms: u64,
+    interop: Option<&ToolInteropDescriptor>,
+) -> ToolError {
+    if interop.is_some_and(|interop| interop.provider == "mcp") {
+        if let Some(json_body) = json_body {
+            if let Ok(parsed) = serde_json::from_value::<McpBridgeErrorResponse>(json_body) {
+                return match parsed.error.kind.as_str() {
+                    "policy_denied" | "roots_denied" => {
+                        ToolError::PolicyDenied(tool_name.to_string(), parsed.error.message)
+                    }
+                    "mcp_result_validation_failed" => ToolError::OutputSchemaViolation(
+                        tool_name.to_string(),
+                        parsed.error.message,
+                    ),
+                    "mcp_transport_failed" if status_code == 504 => {
+                        ToolError::Timeout(tool_name.to_string(), timeout_ms)
+                    }
+                    "mcp_transport_failed" => {
+                        ToolError::BackendUnavailable(tool_name.to_string(), parsed.error.message)
+                    }
+                    _ => ToolError::ExecutionFailed(tool_name.to_string(), parsed.error.message),
+                };
+            }
+        }
+    }
+
+    ToolError::ExecutionFailed(
+        tool_name.to_string(),
+        format!("HTTP {} ({}). {}", status_code, status_line, body),
+    )
+}
+
+fn is_internal_mcp_bridge_endpoint(
+    interop: Option<&ToolInteropDescriptor>,
+    endpoint: &HttpEndpoint,
+) -> bool {
+    interop.is_some_and(|interop| {
+        interop.provider == "mcp" && matches!(endpoint.host.as_str(), "127.0.0.1" | "localhost")
+    })
 }
 
 #[cfg(test)]

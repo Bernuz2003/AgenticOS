@@ -45,10 +45,6 @@ pub(crate) fn advance_orchestrator(
     tool_registry: &ToolRegistry,
 ) {
     let (spawn_requests, kill_pids) = collect_orchestrator_actions(orchestrator);
-    let system_prompt = crate::agent_prompt::build_agent_system_prompt(
-        tool_registry,
-        crate::tools::invocation::ToolCaller::AgentSupervisor,
-    );
 
     for pid in kill_pids {
         tracing::warn!(pid, "ORCHESTRATOR: killing task (fail_fast policy)");
@@ -166,7 +162,6 @@ pub(crate) fn advance_orchestrator(
             pending_events,
             cmd_tx,
             tool_registry,
-            &system_prompt,
             req,
         );
     }

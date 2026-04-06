@@ -45,6 +45,7 @@ export function normalizeLobbySnapshot(snapshot: LobbySnapshotDto): LobbySnapsho
     ),
     resourceGovernor: mapResourceGovernor(snapshot.resource_governor),
     runtimeLoadQueue: snapshot.runtime_load_queue.map(mapRuntimeLoadQueueEntry),
+    mcp: mapMcpStatus(snapshot.mcp),
     globalAuditEvents: snapshot.global_audit_events.map(normalizeAuditEvent),
     scheduledJobs: snapshot.scheduled_jobs.map(mapScheduledJob),
     orchestrations: snapshot.orchestrations.map((orchestration) => ({
@@ -494,6 +495,57 @@ function mapScheduledJob(job: LobbySnapshotDto["scheduled_jobs"][number]): Sched
       orchestrationId: run.orchestration_id,
       deadlineAtMs: run.deadline_at_ms,
       error: run.error,
+    })),
+  };
+}
+
+function mapMcpStatus(mcp: LobbySnapshotDto["mcp"]) {
+  if (!mcp) {
+    return null;
+  }
+
+  return {
+    servers: mcp.servers.map((server) => ({
+      serverId: server.server_id,
+      label: server.label,
+      transport: server.transport,
+      trustLevel: server.trust_level,
+      authMode: server.auth_mode,
+      health: server.health,
+      toolPrefix: server.tool_prefix,
+      enabled: server.enabled,
+      connected: server.connected,
+      defaultAllowlisted: server.default_allowlisted,
+      approvalRequired: server.approval_required,
+      rootsEnabled: server.roots_enabled,
+      exposedTools: server.exposed_tools,
+      discoveredTools: server.discovered_tools.map((tool) => ({
+        agenticToolName: tool.agentic_tool_name,
+        targetName: tool.target_name,
+        title: tool.title,
+        description: tool.description,
+        dangerous: tool.dangerous,
+        defaultAllowlisted: tool.default_allowlisted,
+        approvalRequired: tool.approval_required,
+        readOnlyHint: tool.read_only_hint,
+        destructiveHint: tool.destructive_hint,
+        idempotentHint: tool.idempotent_hint,
+        openWorldHint: tool.open_world_hint,
+      })),
+      prompts: server.prompts.map((prompt) => ({
+        name: prompt.name,
+        title: prompt.title,
+        description: prompt.description,
+      })),
+      resources: server.resources.map((resource) => ({
+        name: resource.name,
+        title: resource.title,
+        uri: resource.uri,
+        description: resource.description,
+        mimeType: resource.mime_type,
+      })),
+      lastLatencyMs: server.last_latency_ms,
+      lastError: server.last_error,
     })),
   };
 }

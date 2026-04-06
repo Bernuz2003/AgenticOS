@@ -37,6 +37,7 @@ pub(crate) struct CommandContext<'a> {
     pub turn_assembly: &'a mut TurnAssemblyStore,
     pub client_id: usize,
     pub shutdown_requested: &'a Arc<AtomicBool>,
+    pub mcp_bridge: Option<&'a crate::mcp::bridge::McpBridgeRuntime>,
     // ── Inference worker (checkout/checkin) ──────────────────────
     pub in_flight: &'a HashSet<u64>,
     pub pending_kills: &'a mut Vec<u64>,
@@ -194,6 +195,7 @@ impl<'a> CommandContext<'a> {
                 metrics: &*self.metrics,
                 session_registry: &*self.session_registry,
                 storage: &*self.storage,
+                mcp_bridge: self.mcp_bridge,
             },
         }
     }

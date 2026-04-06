@@ -331,6 +331,7 @@ fn emit_lobby_snapshot(app: &AppHandle, bridge: &Arc<Mutex<KernelBridge>>) {
             managed_local_runtimes: Vec::new(),
             resource_governor: None,
             runtime_load_queue: Vec::new(),
+            mcp: None,
             global_audit_events: Vec::new(),
             scheduled_jobs: Vec::new(),
             orchestrations: Vec::new(),

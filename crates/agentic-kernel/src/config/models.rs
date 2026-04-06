@@ -1,6 +1,7 @@
 use super::environment::repository_path;
 /// Configuration models and structures.
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -22,6 +23,7 @@ pub struct KernelConfig {
     pub exec: ExecConfig,
     pub orchestrator: OrchestratorConfig,
     pub tools: ToolsRuntimeConfig,
+    pub mcp: McpConfig,
     pub generation: GenerationProfilesConfig,
     pub scheduler: SchedulerConfig,
 }
@@ -432,6 +434,117 @@ impl Default for ToolsRuntimeConfig {
             temp_script_prefix: "agent_script_".to_string(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct McpConfig {
+    pub enabled: bool,
+    pub bridge_host: String,
+    pub bridge_port: u16,
+    pub bridge_token_header: String,
+    pub servers: Vec<McpServerConfig>,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bridge_host: "127.0.0.1".to_string(),
+            bridge_port: 0,
+            bridge_token_header: "X-AgenticOS-MCP-Bridge-Token".to_string(),
+            servers: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct McpServerConfig {
+    pub id: String,
+    pub label: Option<String>,
+    pub enabled: bool,
+    pub tool_prefix: Option<String>,
+    pub exposed_tools: Vec<String>,
+    pub default_allowlisted: bool,
+    pub approval_required: bool,
+    pub roots_enabled: bool,
+    pub trust_level: McpTrustLevel,
+    pub transport: McpTransportConfig,
+}
+
+impl Default for McpServerConfig {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            label: None,
+            enabled: true,
+            tool_prefix: None,
+            exposed_tools: Vec::new(),
+            default_allowlisted: false,
+            approval_required: false,
+            roots_enabled: true,
+            trust_level: McpTrustLevel::Untrusted,
+            transport: McpTransportConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTrustLevel {
+    #[default]
+    Untrusted,
+    Trusted,
+}
+
+impl McpTrustLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Untrusted => "untrusted",
+            Self::Trusted => "trusted",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum McpTransportConfig {
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        cwd: Option<PathBuf>,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+        #[serde(default = "default_mcp_timeout_ms")]
+        timeout_ms: u64,
+    },
+}
+
+impl Default for McpTransportConfig {
+    fn default() -> Self {
+        Self::Stdio {
+            command: String::new(),
+            args: Vec::new(),
+            cwd: None,
+            env: BTreeMap::new(),
+            timeout_ms: default_mcp_timeout_ms(),
+        }
+    }
+}
+
+impl McpTransportConfig {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Stdio { .. } => "stdio",
+        }
+    }
+}
+
+fn default_mcp_timeout_ms() -> u64 {
+    15_000
 }
 
 #[derive(Debug, Clone, Deserialize)]

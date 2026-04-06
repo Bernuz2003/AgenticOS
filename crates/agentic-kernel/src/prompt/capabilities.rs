@@ -36,15 +36,22 @@ pub(crate) struct AgentActionManifestEntry {
     pub(crate) notes: Vec<String>,
 }
 
-pub(crate) fn build_agent_capability_manifest(
+pub(crate) fn build_agent_capability_manifest_with_allowlist(
     registry: &ToolRegistry,
     caller: ToolCaller,
+    allowed_tools: Option<&[String]>,
 ) -> AgentCapabilityManifest {
     let tools = registry
         .list()
         .into_iter()
         .filter(|entry| entry.descriptor.enabled)
         .filter(|entry| entry.descriptor.allowed_callers.contains(&caller))
+        .filter(|entry| match allowed_tools {
+            Some(allowlist) => allowlist
+                .iter()
+                .any(|tool_name| tool_name == &entry.descriptor.name),
+            None => entry.descriptor.default_allowlisted,
+        })
         .map(|entry| AgentToolManifestEntry {
             name: entry.descriptor.name.clone(),
             description: entry.descriptor.description.clone(),
@@ -139,7 +146,7 @@ fn synthesize_value(schema: &Value) -> Value {
 mod tests {
     use serde_json::json;
 
-    use super::build_agent_capability_manifest;
+    use super::build_agent_capability_manifest_with_allowlist;
     use crate::tool_registry::{
         HostExecutor, ToolBackendConfig, ToolBackendKind, ToolDescriptor, ToolRegistry,
         ToolRegistryEntry, ToolSource,
@@ -168,6 +175,9 @@ mod tests {
                     capabilities: vec!["fs".to_string()],
                     dangerous: false,
                     enabled: true,
+                    default_allowlisted: true,
+                    approval_required: false,
+                    interop: None,
                     source: ToolSource::BuiltIn,
                 },
                 backend: ToolBackendConfig::Host {
@@ -189,6 +199,9 @@ mod tests {
                     capabilities: vec![],
                     dangerous: false,
                     enabled: true,
+                    default_allowlisted: true,
+                    approval_required: false,
+                    interop: None,
                     source: ToolSource::BuiltIn,
                 },
                 backend: ToolBackendConfig::Host {
@@ -210,6 +223,9 @@ mod tests {
                     capabilities: vec![],
                     dangerous: false,
                     enabled: false,
+                    default_allowlisted: true,
+                    approval_required: false,
+                    interop: None,
                     source: ToolSource::BuiltIn,
                 },
                 backend: ToolBackendConfig::Host {
@@ -218,7 +234,8 @@ mod tests {
             })
             .expect("register disabled tool");
 
-        let manifest = build_agent_capability_manifest(&registry, ToolCaller::AgentText);
+        let manifest =
+            build_agent_capability_manifest_with_allowlist(&registry, ToolCaller::AgentText, None);
         let tool_names: Vec<&str> = manifest
             .tools
             .iter()
@@ -233,11 +250,18 @@ mod tests {
     fn exposes_actions_only_to_agent_text_callers() {
         let registry = ToolRegistry::with_builtins();
 
-        let agent_text_manifest = build_agent_capability_manifest(&registry, ToolCaller::AgentText);
-        let supervisor_manifest =
-            build_agent_capability_manifest(&registry, ToolCaller::AgentSupervisor);
-        let programmatic_manifest =
-            build_agent_capability_manifest(&registry, ToolCaller::Programmatic);
+        let agent_text_manifest =
+            build_agent_capability_manifest_with_allowlist(&registry, ToolCaller::AgentText, None);
+        let supervisor_manifest = build_agent_capability_manifest_with_allowlist(
+            &registry,
+            ToolCaller::AgentSupervisor,
+            None,
+        );
+        let programmatic_manifest = build_agent_capability_manifest_with_allowlist(
+            &registry,
+            ToolCaller::Programmatic,
+            None,
+        );
 
         assert!(agent_text_manifest.actions.is_empty());
         assert_eq!(supervisor_manifest.actions.len(), 4);

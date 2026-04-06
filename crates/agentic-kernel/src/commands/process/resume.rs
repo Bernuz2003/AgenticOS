@@ -206,8 +206,13 @@ pub(super) fn ensure_live_session_binding(
             )
         })?;
 
-    let system_prompt =
-        crate::agent_prompt::build_agent_system_prompt(ctx.tool_registry, ToolCaller::AgentText);
+    let permission_policy = ProcessPermissionPolicy::interactive_chat(ctx.tool_registry)
+        .map_err(|err| (ControlErrorCode::SpawnFailed, err))?;
+    let system_prompt = crate::agent_prompt::build_agent_system_prompt_with_allowed_tools(
+        ctx.tool_registry,
+        ToolCaller::AgentText,
+        Some(&permission_policy.allowed_tools),
+    );
     let rendered_prompt = {
         let Some(engine) = ctx.runtime_registry.engine(&runtime_id) else {
             return Err((
@@ -230,8 +235,6 @@ pub(super) fn ensure_live_session_binding(
         .flatten()
         .and_then(|value| parse_workload_label(&value))
         .unwrap_or_default();
-    let permission_policy = ProcessPermissionPolicy::interactive_chat(ctx.tool_registry)
-        .map_err(|err| (ControlErrorCode::SpawnFailed, err))?;
     let pid_floor = ctx.runtime_registry.next_pid_floor();
 
     let spawn_result = {

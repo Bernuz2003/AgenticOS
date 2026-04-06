@@ -80,6 +80,7 @@ impl ToolDispatcher {
                 let tool = crate::tools::runner::RemoteHttpTool {
                     name: invocation.name.clone(),
                     backend: entry.backend.clone(),
+                    interop: entry.descriptor.interop.clone(),
                 };
                 tool.execute(invocation, context)
             }
@@ -138,6 +139,9 @@ mod tests {
                     capabilities: vec!["test".to_string()],
                     dangerous: false,
                     enabled: true,
+                    default_allowlisted: true,
+                    approval_required: false,
+                    interop: None,
                     source: ToolSource::BuiltIn,
                 },
                 backend: ToolBackendConfig::Host {

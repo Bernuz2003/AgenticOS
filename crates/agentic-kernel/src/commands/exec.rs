@@ -67,8 +67,6 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
             "EXEC requires a non-empty prompt",
         ));
     }
-    let system_prompt =
-        crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentText);
     let auto_switch = crate::config::kernel_config().exec.auto_switch;
 
     let _ = model_catalog.refresh();
@@ -191,6 +189,11 @@ pub(crate) fn handle_exec(ctx: ExecCommandContext<'_>, payload: &[u8]) -> Option
                 ));
             }
         };
+        let system_prompt = crate::agent_prompt::build_agent_system_prompt_with_allowed_tools(
+            tool_registry,
+            ToolCaller::AgentText,
+            Some(&permission_policy.allowed_tools),
+        );
         let pid_floor = runtime_registry.next_pid_floor();
         let spawn_result = {
             let Some(engine) = runtime_registry.engine_mut(&runtime_id) else {
@@ -309,6 +312,8 @@ struct ExecRequestPayload {
     #[serde(default)]
     max_syscalls: Option<u64>,
     #[serde(default)]
+    allowed_tools: Option<Vec<String>>,
+    #[serde(default)]
     path_scopes: Option<Vec<String>>,
     #[serde(default)]
     path_grants: Option<Vec<ProcessPathGrant>>,
@@ -328,14 +333,16 @@ fn parse_exec_request(payload: &[u8]) -> Result<ResolvedExecRequest, String> {
                 max_tokens: parse_exec_quota_limit("max_tokens", parsed.max_tokens)?,
                 max_syscalls: parse_exec_quota_limit("max_syscalls", parsed.max_syscalls)?,
             }),
-            permission_overrides: (parsed.path_scopes.is_some() || parsed.path_grants.is_some())
-                .then_some(ProcessPermissionOverrides {
-                    trust_scope: None,
-                    allow_actions: None,
-                    allowed_tools: None,
-                    path_scopes: parsed.path_scopes,
-                    path_grants: parsed.path_grants,
-                }),
+            permission_overrides: (parsed.allowed_tools.is_some()
+                || parsed.path_scopes.is_some()
+                || parsed.path_grants.is_some())
+            .then_some(ProcessPermissionOverrides {
+                trust_scope: None,
+                allow_actions: None,
+                allowed_tools: parsed.allowed_tools,
+                path_scopes: parsed.path_scopes,
+                path_grants: parsed.path_grants,
+            }),
         });
     }
 

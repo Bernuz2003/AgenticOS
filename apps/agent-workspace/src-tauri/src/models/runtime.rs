@@ -1,8 +1,8 @@
 use serde::Serialize;
 
 use agentic_control_models::{
-    BackendCapabilitiesView, BackendTelemetryView, ManagedLocalRuntimeView, MemoryStatus,
-    RemoteModelRuntimeView, ResourceGovernorStatusView, RuntimeInstanceView,
+    BackendCapabilitiesView, BackendTelemetryView, ManagedLocalRuntimeView, McpStatusView,
+    MemoryStatus, RemoteModelRuntimeView, ResourceGovernorStatusView, RuntimeInstanceView,
     RuntimeLoadQueueEntryView,
 };
 
@@ -38,6 +38,7 @@ pub struct LobbySnapshot {
     pub managed_local_runtimes: Vec<ManagedLocalRuntimeView>,
     pub resource_governor: Option<ResourceGovernorStatusView>,
     pub runtime_load_queue: Vec<RuntimeLoadQueueEntryView>,
+    pub mcp: Option<McpStatusView>,
     pub global_audit_events: Vec<AuditEvent>,
     pub scheduled_jobs: Vec<ScheduledJobView>,
     pub orchestrations: Vec<LobbyOrchestrationSummary>,

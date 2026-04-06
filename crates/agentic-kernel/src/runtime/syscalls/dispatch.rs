@@ -23,7 +23,7 @@ use crate::tools::invocation::{
     PathGrantAccessMode, ProcessPathGrant, ProcessPermissionPolicy, ProcessTrustScope, ToolCaller,
 };
 
-use super::human::dispatch_native_human_input_request;
+use super::human::{dispatch_mcp_tool_approval_request, dispatch_native_human_input_request};
 use super::ids::{next_action_call_id, next_tool_call_id};
 use super::invocation_events::emit_invocation_updated;
 use super::ipc::{
@@ -282,10 +282,11 @@ pub(crate) fn dispatch_process_syscall(
             storage,
             audit::TOOL_DISPATCHED,
             format!(
-                "tool_call_id={} command={} caller={} transport=text",
+                "tool_call_id={} command={} caller={} transport=text{}",
                 tool_call_id,
                 content,
-                caller.as_str()
+                caller.as_str(),
+                tool_audit_suffix(tool_registry, extract_tool_name(content))
             ),
             AuditContext::for_process(
                 session_registry.session_id_for_pid(pid),
@@ -309,6 +310,26 @@ pub(crate) fn dispatch_process_syscall(
                     pid,
                     Some(runtime_id),
                 ),
+            );
+        }
+        if let Some((tool_name, server_id, target_name, trust_level)) =
+            mcp_tool_requiring_approval(tool_registry, extract_tool_name(content))
+        {
+            return dispatch_mcp_tool_approval_request(
+                runtime_id,
+                engine,
+                pid,
+                content,
+                &tool_call_id,
+                &caller,
+                turn_assembly,
+                session_registry,
+                storage,
+                pending_events,
+                &tool_name,
+                &server_id,
+                &target_name,
+                &trust_level,
             );
         }
         let queued_command =
@@ -398,6 +419,49 @@ pub(crate) fn dispatch_process_syscall(
             }
         }
     }
+}
+
+fn tool_audit_suffix(tool_registry: &ToolRegistry, tool_name: Option<&str>) -> String {
+    let Some(tool_name) = tool_name else {
+        return String::new();
+    };
+    let Some(entry) = tool_registry.get(tool_name) else {
+        return String::new();
+    };
+    let Some(interop) = entry.descriptor.interop.as_ref() else {
+        return String::new();
+    };
+    if interop.provider != "mcp" {
+        return String::new();
+    }
+
+    format!(
+        " provider={} mcp_server={} mcp_tool={} trust_level={} approval_required={}",
+        interop.provider,
+        interop.server_id,
+        interop.target_name,
+        interop.trust_level,
+        interop.approval_required
+    )
+}
+
+fn mcp_tool_requiring_approval(
+    tool_registry: &ToolRegistry,
+    tool_name: Option<&str>,
+) -> Option<(String, String, String, String)> {
+    let tool_name = tool_name?;
+    let entry = tool_registry.get(tool_name)?;
+    let interop = entry.descriptor.interop.as_ref()?;
+    if interop.provider != "mcp" || !interop.approval_required {
+        return None;
+    }
+
+    Some((
+        entry.descriptor.name.clone(),
+        interop.server_id.clone(),
+        interop.target_name.clone(),
+        interop.trust_level.clone(),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -669,6 +733,124 @@ fn dispatch_action_invocation(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{mcp_tool_requiring_approval, tool_audit_suffix};
+    use crate::tool_registry::{
+        ToolBackendConfig, ToolBackendKind, ToolDescriptor, ToolInteropDescriptor,
+        ToolInteropHints, ToolRegistry, ToolRegistryEntry, ToolSource,
+    };
+    use crate::tools::invocation::ToolCaller;
+
+    #[test]
+    fn includes_mcp_metadata_in_tool_dispatch_audit_suffix() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(ToolRegistryEntry {
+                descriptor: ToolDescriptor {
+                    name: "demo.echo".to_string(),
+                    aliases: Vec::new(),
+                    description: "MCP echo".to_string(),
+                    input_schema: json!({"type": "object"}),
+                    input_example: None,
+                    output_schema: json!({"type": "object"}),
+                    allowed_callers: vec![ToolCaller::AgentText],
+                    backend_kind: ToolBackendKind::RemoteHttp,
+                    capabilities: vec!["mcp".to_string()],
+                    dangerous: false,
+                    enabled: true,
+                    default_allowlisted: false,
+                    approval_required: false,
+                    interop: Some(ToolInteropDescriptor {
+                        provider: "mcp".to_string(),
+                        server_id: "demo".to_string(),
+                        server_label: Some("Demo".to_string()),
+                        transport: "stdio".to_string(),
+                        target_name: "echo".to_string(),
+                        trust_level: "trusted".to_string(),
+                        auth_mode: "environment".to_string(),
+                        default_allowlisted: false,
+                        approval_required: false,
+                        hints: ToolInteropHints::default(),
+                    }),
+                    source: ToolSource::Runtime,
+                },
+                backend: ToolBackendConfig::RemoteHttp {
+                    url: "http://127.0.0.1:1/demo".to_string(),
+                    method: "POST".to_string(),
+                    timeout_ms: 100,
+                    headers: Default::default(),
+                },
+            })
+            .expect("register tool");
+
+        let suffix = tool_audit_suffix(&registry, Some("demo.echo"));
+
+        assert_eq!(
+            suffix,
+            " provider=mcp mcp_server=demo mcp_tool=echo trust_level=trusted approval_required=false"
+        );
+    }
+
+    #[test]
+    fn detects_mcp_tools_that_require_approval() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(ToolRegistryEntry {
+                descriptor: ToolDescriptor {
+                    name: "demo.echo".to_string(),
+                    aliases: Vec::new(),
+                    description: "MCP echo".to_string(),
+                    input_schema: json!({"type": "object"}),
+                    input_example: None,
+                    output_schema: json!({"type": "object"}),
+                    allowed_callers: vec![ToolCaller::AgentText],
+                    backend_kind: ToolBackendKind::RemoteHttp,
+                    capabilities: vec!["mcp".to_string()],
+                    dangerous: false,
+                    enabled: true,
+                    default_allowlisted: false,
+                    approval_required: true,
+                    interop: Some(ToolInteropDescriptor {
+                        provider: "mcp".to_string(),
+                        server_id: "demo".to_string(),
+                        server_label: Some("Demo".to_string()),
+                        transport: "stdio".to_string(),
+                        target_name: "echo".to_string(),
+                        trust_level: "trusted".to_string(),
+                        auth_mode: "environment".to_string(),
+                        default_allowlisted: false,
+                        approval_required: true,
+                        hints: ToolInteropHints::default(),
+                    }),
+                    source: ToolSource::Runtime,
+                },
+                backend: ToolBackendConfig::RemoteHttp {
+                    url: "http://127.0.0.1:1/demo".to_string(),
+                    method: "POST".to_string(),
+                    timeout_ms: 100,
+                    headers: Default::default(),
+                },
+            })
+            .expect("register tool");
+
+        let approval = mcp_tool_requiring_approval(&registry, Some("demo.echo"))
+            .expect("approval-required tool");
+
+        assert_eq!(
+            approval,
+            (
+                "demo.echo".to_string(),
+                "demo".to_string(),
+                "echo".to_string(),
+                "trusted".to_string(),
+            )
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dispatch_spawn_action(
     runtime_id: &str,
@@ -769,10 +951,15 @@ fn dispatch_spawn_action(
         storage,
         ManagedProcessRequest {
             prompt: prompt.to_string(),
-            system_prompt: Some(crate::agent_prompt::build_agent_system_prompt(
-                tool_registry,
-                ToolCaller::AgentText,
-            )),
+            system_prompt: Some(
+                crate::agent_prompt::build_agent_system_prompt_with_allowed_tools(
+                    tool_registry,
+                    ToolCaller::AgentText,
+                    child_permission_policy
+                        .as_ref()
+                        .map(|policy| policy.allowed_tools.as_slice()),
+                ),
+            ),
             owner_id,
             tool_caller: ToolCaller::AgentText,
             permission_policy: child_permission_policy,

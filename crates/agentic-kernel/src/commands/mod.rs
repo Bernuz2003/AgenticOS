@@ -67,6 +67,7 @@ pub fn execute_command(
     pending_events: &mut Vec<KernelEvent>,
     metrics: &mut MetricsState,
     auth_token: &str,
+    mcp_bridge: Option<&crate::mcp::bridge::McpBridgeRuntime>,
 ) {
     let request_id = client.allocate_request_id(&header.agent_id);
 
@@ -144,6 +145,7 @@ pub fn execute_command(
         turn_assembly,
         client_id,
         shutdown_requested,
+        mcp_bridge,
         in_flight,
         pending_kills,
         pending_events,

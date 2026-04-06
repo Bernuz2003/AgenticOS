@@ -101,7 +101,45 @@ pub struct ToolDescriptor {
     pub capabilities: Vec<String>,
     pub dangerous: bool,
     pub enabled: bool,
+    #[serde(default = "default_default_allowlisted")]
+    pub default_allowlisted: bool,
+    #[serde(default)]
+    pub approval_required: bool,
+    #[serde(default)]
+    pub interop: Option<ToolInteropDescriptor>,
     pub source: ToolSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ToolInteropHints {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub read_only_hint: bool,
+    #[serde(default)]
+    pub destructive_hint: bool,
+    #[serde(default)]
+    pub idempotent_hint: bool,
+    #[serde(default)]
+    pub open_world_hint: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolInteropDescriptor {
+    pub provider: String,
+    pub server_id: String,
+    #[serde(default)]
+    pub server_label: Option<String>,
+    pub transport: String,
+    pub target_name: String,
+    pub trust_level: String,
+    pub auth_mode: String,
+    #[serde(default = "default_default_allowlisted")]
+    pub default_allowlisted: bool,
+    #[serde(default)]
+    pub approval_required: bool,
+    #[serde(default)]
+    pub hints: ToolInteropHints,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,6 +362,10 @@ fn validate_entry(entry: &ToolRegistryEntry) -> Result<(), String> {
 
 fn default_allowed_callers() -> Vec<ToolCaller> {
     vec![ToolCaller::AgentText, ToolCaller::AgentSupervisor]
+}
+
+fn default_default_allowlisted() -> bool {
+    true
 }
 
 #[cfg(test)]

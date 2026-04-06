@@ -88,6 +88,13 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
     // 6. Generazione del token di autenticazione per la sessione corrente
     let auth_disabled = config.auth.disabled;
     let auth_token = write_auth_token(config)?;
+    let mut tool_registry = ToolRegistry::with_builtins();
+    let mcp_bridge = crate::mcp::bridge::McpBridgeRuntime::start(config, &mut tool_registry)
+        .map_err(io::Error::other)?;
+    let mcp_registered_tools = mcp_bridge
+        .as_ref()
+        .map(|bridge| bridge.registered_tool_names().len())
+        .unwrap_or(0);
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -113,6 +120,8 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         persisted_sessions = session_registry.session_count(),
         checkpoint_interval_secs,
         auth_disabled,
+        mcp_enabled = config.mcp.enabled,
+        mcp_registered_tools,
         "AgenticOS Kernel ready"
     );
 
@@ -157,7 +166,8 @@ pub(crate) fn build_kernel(config: &config::KernelConfig) -> io::Result<Kernel> 
         worker_handle: Some(worker_handle),
         syscall_worker_handle: Some(syscall_worker_handle),
         metrics: MetricsState::new(),
-        tool_registry: ToolRegistry::with_builtins(),
+        tool_registry,
+        mcp_bridge,
         auth_token,
         auth_disabled,
         session_registry,

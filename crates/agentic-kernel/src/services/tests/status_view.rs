@@ -258,6 +258,7 @@ fn global_status_surfaces_cloud_backend_metadata_for_lobby() {
         metrics: &metrics,
         session_registry: &session_registry,
         storage: &runtime_storage,
+        mcp_bridge: None,
     });
 
     assert!(status.model.loaded);
@@ -337,6 +338,7 @@ fn orchestration_list_returns_active_orchestrations() {
         metrics: &metrics,
         session_registry: &session_registry,
         storage: &runtime_storage,
+        mcp_bridge: None,
     });
 
     assert_eq!(response.orchestrations.len(), 1);
@@ -393,6 +395,7 @@ fn scheduled_job_list_surfaces_scheduled_workflow_jobs() {
         metrics: &metrics,
         session_registry: &session_registry,
         storage: &runtime_storage,
+        mcp_bridge: None,
     });
 
     assert_eq!(response.jobs.len(), 1);
@@ -463,6 +466,7 @@ fn artifact_list_filters_by_task_and_rejects_missing_orchestrations() {
         metrics: &metrics,
         session_registry: &session_registry,
         storage: &runtime_storage,
+        mcp_bridge: None,
     };
 
     let filtered = build_artifact_list(&deps, orch_id, Some("draft")).expect("artifact list");

@@ -38,7 +38,6 @@ pub(super) fn spawn_orchestrator_request(
     pending_events: &mut Vec<KernelEvent>,
     _cmd_tx: &std::sync::mpsc::Sender<InferenceCmd>,
     tool_registry: &ToolRegistry,
-    system_prompt: &str,
     req: SpawnRequest,
 ) {
     let permission_policy = match ProcessPermissionPolicy::workflow_supervisor(
@@ -60,6 +59,11 @@ pub(super) fn spawn_orchestrator_request(
             return;
         }
     };
+    let system_prompt = crate::agent_prompt::build_agent_system_prompt_with_allowed_tools(
+        tool_registry,
+        ToolCaller::AgentSupervisor,
+        Some(&permission_policy.allowed_tools),
+    );
     let runtime_id = match resolve_runtime_for_spawn_request(
         runtime_registry,
         resource_governor,
@@ -113,7 +117,7 @@ pub(super) fn spawn_orchestrator_request(
             storage,
             ManagedProcessRequest {
                 prompt: req.prompt.clone(),
-                system_prompt: Some(system_prompt.to_string()),
+                system_prompt: Some(system_prompt),
                 owner_id: req.owner_id,
                 tool_caller: ToolCaller::AgentSupervisor,
                 permission_policy: Some(permission_policy),

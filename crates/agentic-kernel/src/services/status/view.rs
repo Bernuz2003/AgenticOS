@@ -17,6 +17,7 @@ use crate::services::job_scheduler::JobScheduler;
 use crate::session::SessionRegistry;
 use crate::storage::StorageService;
 
+use super::mcp::build_mcp_status_view;
 use super::orchestration::build_orchestration_summaries;
 use super::process::build_pid_status_or_placeholder;
 use super::resources::{
@@ -48,6 +49,7 @@ pub struct StatusSnapshotDeps<'a> {
     pub metrics: &'a MetricsState,
     pub session_registry: &'a SessionRegistry,
     pub storage: &'a StorageService,
+    pub mcp_bridge: Option<&'a crate::mcp::bridge::McpBridgeRuntime>,
 }
 
 pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
@@ -214,6 +216,7 @@ pub fn build_global_status(deps: &StatusSnapshotDeps<'_>) -> StatusResponse {
         total_exec_started: total_exec,
         total_signals,
         global_accounting,
+        mcp: build_mcp_status_view(deps),
         model: model_status,
         generation: gen_status,
         memory: MemoryStatus {

@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 
 import { friendlyModelLabel } from "../../lib/models/labels";
 import { useSessionsStore } from "../../store/sessions-store";
+import { McpSection } from "./mcp-section";
 import { RuntimeSection } from "./runtime-section";
 
 export function ControlCenterPage() {
@@ -26,6 +27,7 @@ export function ControlCenterPage() {
     managedLocalRuntimes,
     resourceGovernor,
     runtimeLoadQueue,
+    mcp,
     scheduledJobs,
     refresh,
   } = useSessionsStore();
@@ -154,6 +156,8 @@ export function ControlCenterPage() {
         memory={memory}
         runtimeLoadQueue={runtimeLoadQueue}
       />
+
+      <McpSection mcp={mcp} />
     </div>
   );
 }

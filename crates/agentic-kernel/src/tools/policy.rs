@@ -199,15 +199,24 @@ pub(crate) fn is_disallowed_remote_ip(ip: IpAddr) -> bool {
 }
 
 pub(crate) fn remote_http_allowed_hosts() -> Vec<String> {
-    if let Ok(value) = std::env::var("AGENTIC_REMOTE_TOOL_ALLOWED_HOSTS") {
-        return value
+    let mut allowed_hosts = if let Ok(value) = std::env::var("AGENTIC_REMOTE_TOOL_ALLOWED_HOSTS") {
+        value
             .split(',')
             .map(|item| item.trim().to_ascii_lowercase())
             .filter(|item| !item.is_empty())
-            .collect();
+            .collect()
+    } else {
+        kernel_config().tools.remote_http_allowed_hosts.clone()
+    };
+
+    if kernel_config().mcp.enabled {
+        let bridge_host = kernel_config().mcp.bridge_host.trim().to_ascii_lowercase();
+        if !bridge_host.is_empty() && !allowed_hosts.iter().any(|host| host == &bridge_host) {
+            allowed_hosts.push(bridge_host);
+        }
     }
 
-    kernel_config().tools.remote_http_allowed_hosts.clone()
+    allowed_hosts
 }
 
 pub(crate) fn remote_http_max_request_bytes() -> usize {

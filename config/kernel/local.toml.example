@@ -14,3 +14,31 @@ app_title = "AgenticOS"
 remote_http_allowed_hosts = ["www.agno.com", "agno.com", "api.duckduckgo.com"]
 remote_http_max_request_bytes = 16384
 remote_http_max_response_bytes = 262144
+
+[mcp]
+# Edge MCP interop stays disabled by default.
+enabled = false
+
+[[mcp.servers]]
+# Example: official filesystem MCP server over stdio.
+# Requires a local Node.js + `npx` install and an explicit allowed root path.
+id = "filesystem"
+label = "Filesystem MCP"
+enabled = false
+tool_prefix = "fs"
+exposed_tools = []
+default_allowlisted = false
+approval_required = true
+roots_enabled = true
+trust_level = "trusted"
+
+[mcp.servers.transport]
+kind = "stdio"
+command = "npx"
+args = [
+  "-y",
+  "@modelcontextprotocol/server-filesystem",
+  "/absolute/path/to/allowed/workspace",
+]
+cwd = "../.."
+timeout_ms = 10000

@@ -1,4 +1,38 @@
 
+## M44) Selective MCP Integration & External Interoperability Layer
+
+**Status:** `DONE`
+
+### Obiettivo
+
+Adottare MCP come layer di interoperabilita' verso l'esterno senza riscrivere il kernel o degradare la governance nativa di AgenticOS.
+
+### Cosa abbiamo ottenuto
+
+* bridge MCP locale edge-only con discovery e lifecycle negotiation
+* registrazione dei tool MCP come tool runtime governati nel `ToolRegistry`
+* enforcement nativo di `allowed_tools`, caller boundaries, replay-safe e path grants prima di ogni invocazione MCP
+* roots MCP derivate dai grant del processo, mai piu' ampie
+* audit/observability con provider, server, tool originario, trust level, validazione output e latenza
+* toggle di rollout/rollback tramite configurazione MCP dedicata
+
+### Perché è importante
+
+Perché consente integrazioni esterne standardizzate senza spostare il centro semantico del sistema fuori da AgenticOS. Workflow, scheduler, artifacts, checkpoint e core-dump/replay restano primitive native.
+
+### DoD
+
+* [x] almeno un server MCP consumabile in modo sicuro tramite path supportato
+* [x] capability MCP visibili come tool AgenticOS governati
+* [x] policy process-scoped applicata prima dell’invocazione MCP
+* [x] roots vincolate ai path grants/scopes nativi
+* [x] replay-safe coerente anche per tool MCP-backed
+* [x] audit e osservabilita' espliciti per esecuzioni MCP-backed
+* [x] nessuna regressione su workflow, scheduler, artifacts e core-dump/replay
+* [x] metriche di latenza/errore disponibili per i tool MCP-backed
+* [x] documentazione architetturale aggiornata
+* [x] rollout disattivabile o rollbackabile in modo pulito
+
 ## M34) Orchestrazione come feature di primo livello
 
 **Status:** `DONE`

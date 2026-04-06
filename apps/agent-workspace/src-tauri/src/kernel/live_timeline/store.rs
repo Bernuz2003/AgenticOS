@@ -299,6 +299,7 @@ pub fn start_exec_session(
     prompt: String,
     quota_tokens: Option<u64>,
     quota_syscalls: Option<u64>,
+    allowed_tools: Option<Vec<String>>,
     path_grants: Option<Vec<SessionPathGrantInput>>,
     timeline_store: Arc<Mutex<TimelineStore>>,
 ) -> Result<StartSessionResult, String> {
@@ -317,6 +318,7 @@ pub fn start_exec_session(
         "prompt": prompt.clone(),
         "max_tokens": quota_tokens,
         "max_syscalls": quota_syscalls,
+        "allowed_tools": allowed_tools,
         "path_grants": path_grants,
     }))
     .map_err(|err| err.to_string())?;

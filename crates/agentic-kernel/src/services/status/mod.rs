@@ -1,3 +1,4 @@
+mod mcp;
 mod orchestration;
 mod process;
 mod resources;

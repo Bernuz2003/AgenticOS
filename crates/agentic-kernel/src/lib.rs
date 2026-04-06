@@ -9,6 +9,7 @@ mod errors;
 mod events;
 mod invocation;
 mod kernel;
+mod mcp;
 mod memory;
 mod model_catalog;
 mod orchestrator;

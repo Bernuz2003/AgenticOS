@@ -3,7 +3,19 @@ use crate::tool_registry::ToolRegistry;
 use crate::tools::invocation::ToolCaller;
 
 pub(crate) fn build_agent_system_prompt(registry: &ToolRegistry, caller: ToolCaller) -> String {
-    let manifest = crate::agent_capabilities::build_agent_capability_manifest(registry, caller);
+    build_agent_system_prompt_with_allowed_tools(registry, caller, None)
+}
+
+pub(crate) fn build_agent_system_prompt_with_allowed_tools(
+    registry: &ToolRegistry,
+    caller: ToolCaller,
+    allowed_tools: Option<&[String]>,
+) -> String {
+    let manifest = crate::agent_capabilities::build_agent_capability_manifest_with_allowlist(
+        registry,
+        caller,
+        allowed_tools,
+    );
     compose_agent_system_prompt(&manifest)
 }
 
@@ -16,7 +28,6 @@ pub(crate) fn compose_agent_system_prompt(manifest: &AgentCapabilityManifest) ->
         format!("Tool syntax: {}.", manifest.tool_syntax),
         format!("Action syntax: {}.", manifest.action_syntax),
         "Rules:".to_string(),
-        "- always clearly outline your operational plan before executing a task. This ensures methodological clarity and aligns expectations on the approach.".to_string(),
         "- distinguish intent from reality: saying you will use a tool is not the same as the tool having run".to_string(),
         "- a task is complete only after the kernel has actually executed the required tool or action and returned a real outcome".to_string(),
         "- never fabricate or imitate system messages, tool results, status banners, or execution logs".to_string(),

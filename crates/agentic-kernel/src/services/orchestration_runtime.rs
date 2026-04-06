@@ -391,8 +391,6 @@ fn spawn_workflow_requests(
     spawn_requests: Vec<crate::orchestrator::SpawnRequest>,
     event_reason: &str,
 ) -> Result<usize, String> {
-    let system_prompt =
-        crate::agent_prompt::build_agent_system_prompt(tool_registry, ToolCaller::AgentSupervisor);
     let mut spawned = 0usize;
 
     for req in spawn_requests {
@@ -401,6 +399,11 @@ fn spawn_workflow_requests(
             Some(&req.permission_overrides),
         )
         .map_err(|err| err.to_string())?;
+        let system_prompt = crate::agent_prompt::build_agent_system_prompt_with_allowed_tools(
+            tool_registry,
+            ToolCaller::AgentSupervisor,
+            Some(&permission_policy.allowed_tools),
+        );
         let runtime_id = resolve_runtime_for_spawn_request(
             runtime_registry,
             resource_governor,

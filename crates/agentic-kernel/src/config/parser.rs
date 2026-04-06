@@ -167,6 +167,12 @@ pub(crate) fn normalize_config_paths(config: &mut KernelConfig, config_path: &Pa
     absolutize_from(&base_dir, &mut config.paths.remote_provider_catalog_path);
     absolutize_from(&base_dir, &mut config.memory.swap_dir);
     absolutize_from(&base_dir, &mut config.core_dump.dump_dir);
+    for server in &mut config.mcp.servers {
+        let crate::config::McpTransportConfig::Stdio { cwd, .. } = &mut server.transport;
+        if let Some(cwd) = cwd.as_mut() {
+            absolutize_from(&base_dir, cwd);
+        }
+    }
     absolutize_remote_tokenizer_path(&base_dir, &mut config.openai_responses.tokenizer_path);
     absolutize_remote_tokenizer_path(&base_dir, &mut config.groq_responses.tokenizer_path);
     absolutize_remote_tokenizer_path(&base_dir, &mut config.openrouter.tokenizer_path);
@@ -439,5 +445,8 @@ pub(crate) fn apply_env_overrides(config: &mut KernelConfig) {
     }
     if let Some(value) = env_usize_opt("AGENTIC_REMOTE_TOOL_MAX_RESPONSE_BYTES") {
         config.tools.remote_http_max_response_bytes = value.max(256);
+    }
+    if let Some(value) = env_bool_opt("AGENTIC_MCP_ENABLED") {
+        config.mcp.enabled = value;
     }
 }

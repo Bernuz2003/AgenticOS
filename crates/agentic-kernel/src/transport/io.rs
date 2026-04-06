@@ -159,6 +159,7 @@ pub fn handle_read_with_test_state(
             tool_registry,
             &mut turn_assembly,
             auth_token,
+            None,
         )
     })
 }
@@ -184,6 +185,7 @@ pub fn handle_read_with_registry(
     tool_registry: &mut ToolRegistry,
     turn_assembly: &mut TurnAssemblyStore,
     auth_token: &str,
+    mcp_bridge: Option<&crate::mcp::bridge::McpBridgeRuntime>,
 ) -> bool {
     let mut chunk = [0; 4096];
     match client.stream.read(&mut chunk) {
@@ -229,6 +231,7 @@ pub fn handle_read_with_registry(
                 pending_events,
                 metrics,
                 auth_token,
+                mcp_bridge,
             ),
             ParsedCommand::Err(e) => {
                 let request_id = client.allocate_request_id("transport");

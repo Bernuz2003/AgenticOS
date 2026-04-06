@@ -17,6 +17,59 @@ export interface LobbySnapshotSession {
   orchestrationTaskId: string | null;
 }
 
+export interface McpDiscoveredTool {
+  agenticToolName: string;
+  targetName: string;
+  title: string | null;
+  description: string;
+  dangerous: boolean;
+  defaultAllowlisted: boolean;
+  approvalRequired: boolean;
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
+export interface McpPrompt {
+  name: string;
+  title: string | null;
+  description: string | null;
+}
+
+export interface McpResource {
+  name: string;
+  title: string | null;
+  uri: string;
+  description: string | null;
+  mimeType: string | null;
+}
+
+export interface McpServerStatus {
+  serverId: string;
+  label: string | null;
+  transport: string;
+  trustLevel: string;
+  authMode: string;
+  health: string;
+  toolPrefix: string;
+  enabled: boolean;
+  connected: boolean;
+  defaultAllowlisted: boolean;
+  approvalRequired: boolean;
+  rootsEnabled: boolean;
+  exposedTools: string[];
+  discoveredTools: McpDiscoveredTool[];
+  prompts: McpPrompt[];
+  resources: McpResource[];
+  lastLatencyMs: number | null;
+  lastError: string | null;
+}
+
+export interface McpStatus {
+  servers: McpServerStatus[];
+}
+
 export interface LobbySnapshot {
   connected: boolean;
   selectedModelId: string;
@@ -35,6 +88,7 @@ export interface LobbySnapshot {
   managedLocalRuntimes: ManagedLocalRuntime[];
   resourceGovernor: ResourceGovernorStatus | null;
   runtimeLoadQueue: RuntimeLoadQueueEntry[];
+  mcp: McpStatus | null;
   globalAuditEvents: AuditEvent[];
   scheduledJobs: ScheduledJob[];
   orchestrations: LobbyOrchestrationSummary[];
@@ -888,6 +942,50 @@ export interface LobbySnapshotDto {
     requested_at_ms: number;
     updated_at_ms: number;
   }>;
+  mcp: {
+    servers: Array<{
+      server_id: string;
+      label: string | null;
+      transport: string;
+      trust_level: string;
+      auth_mode: string;
+      health: string;
+      tool_prefix: string;
+      enabled: boolean;
+      connected: boolean;
+      default_allowlisted: boolean;
+      approval_required: boolean;
+      roots_enabled: boolean;
+      exposed_tools: string[];
+      discovered_tools: Array<{
+        agentic_tool_name: string;
+        target_name: string;
+        title: string | null;
+        description: string;
+        dangerous: boolean;
+        default_allowlisted: boolean;
+        approval_required: boolean;
+        read_only_hint: boolean;
+        destructive_hint: boolean;
+        idempotent_hint: boolean;
+        open_world_hint: boolean;
+      }>;
+      prompts: Array<{
+        name: string;
+        title: string | null;
+        description: string | null;
+      }>;
+      resources: Array<{
+        name: string;
+        title: string | null;
+        uri: string;
+        description: string | null;
+        mime_type: string | null;
+      }>;
+      last_latency_ms: number | null;
+      last_error: string | null;
+    }>;
+  } | null;
   global_audit_events: AuditEventDto[];
   scheduled_jobs: Array<{
     job_id: number;

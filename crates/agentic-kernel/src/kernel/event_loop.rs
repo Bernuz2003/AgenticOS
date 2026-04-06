@@ -87,6 +87,7 @@ pub(crate) struct Kernel {
     pub(crate) syscall_worker_handle: Option<JoinHandle<()>>,
     pub(crate) metrics: MetricsState,
     pub(crate) tool_registry: ToolRegistry,
+    pub(crate) mcp_bridge: Option<crate::mcp::bridge::McpBridgeRuntime>,
     pub(crate) auth_token: String,
     pub(crate) auth_disabled: bool,
     pub(crate) session_registry: SessionRegistry,
@@ -116,6 +117,9 @@ impl Kernel {
                     &mut self.worker_handle,
                     &mut self.syscall_worker_handle,
                 );
+                if let Some(mcp_bridge) = self.mcp_bridge.as_mut() {
+                    mcp_bridge.shutdown();
+                }
                 shutdown_managed_runtimes();
                 break;
             }
@@ -668,6 +672,7 @@ fn handle_client_event(
                 &mut kernel.tool_registry,
                 &mut kernel.turn_assembly,
                 &kernel.auth_token,
+                kernel.mcp_bridge.as_ref(),
             )
         {
             should_close = true;

@@ -63,6 +63,7 @@ impl KernelBridge {
                     managed_local_runtimes: status.model.managed_local_runtimes,
                     resource_governor: status.model.resource_governor,
                     runtime_load_queue: status.model.runtime_load_queue,
+                    mcp: status.mcp,
                     global_audit_events,
                     scheduled_jobs: status.jobs.scheduled_jobs,
                     orchestrations: status
@@ -94,6 +95,7 @@ impl KernelBridge {
                 managed_local_runtimes: Vec::new(),
                 resource_governor: None,
                 runtime_load_queue: persisted_runtime_load_queue,
+                mcp: None,
                 global_audit_events,
                 scheduled_jobs: Vec::new(),
                 orchestrations: Vec::new(),

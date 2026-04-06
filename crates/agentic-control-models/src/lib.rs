@@ -272,6 +272,8 @@ pub struct StatusResponse {
     pub total_signals: u64,
     #[serde(default)]
     pub global_accounting: Option<BackendTelemetryView>,
+    #[serde(default)]
+    pub mcp: Option<McpStatusView>,
     pub model: ModelStatus,
     pub generation: Option<GenerationStatus>,
     pub memory: MemoryStatus,
@@ -303,6 +305,78 @@ pub struct ModelStatus {
     pub resource_governor: Option<ResourceGovernorStatusView>,
     #[serde(default)]
     pub runtime_load_queue: Vec<RuntimeLoadQueueEntryView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpStatusView {
+    #[serde(default)]
+    pub servers: Vec<McpServerStatusView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerStatusView {
+    pub server_id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    pub transport: String,
+    pub trust_level: String,
+    pub auth_mode: String,
+    pub health: String,
+    pub tool_prefix: String,
+    pub enabled: bool,
+    pub connected: bool,
+    pub default_allowlisted: bool,
+    pub approval_required: bool,
+    pub roots_enabled: bool,
+    #[serde(default)]
+    pub exposed_tools: Vec<String>,
+    #[serde(default)]
+    pub discovered_tools: Vec<McpDiscoveredToolView>,
+    #[serde(default)]
+    pub prompts: Vec<McpPromptView>,
+    #[serde(default)]
+    pub resources: Vec<McpResourceView>,
+    #[serde(default)]
+    pub last_latency_ms: Option<u64>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpDiscoveredToolView {
+    pub agentic_tool_name: String,
+    pub target_name: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub description: String,
+    pub dangerous: bool,
+    pub default_allowlisted: bool,
+    pub approval_required: bool,
+    pub read_only_hint: bool,
+    pub destructive_hint: bool,
+    pub idempotent_hint: bool,
+    pub open_world_hint: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpPromptView {
+    pub name: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpResourceView {
+    pub name: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub uri: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

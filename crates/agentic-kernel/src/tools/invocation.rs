@@ -351,6 +351,7 @@ fn allowlisted_tools_for_caller(registry: &ToolRegistry, caller: &ToolCaller) ->
         .list()
         .into_iter()
         .filter(|entry| entry.descriptor.enabled)
+        .filter(|entry| entry.descriptor.default_allowlisted)
         .filter(|entry| {
             entry
                 .descriptor

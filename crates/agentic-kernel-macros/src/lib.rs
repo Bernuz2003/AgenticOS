@@ -168,6 +168,9 @@ fn expand_agentic_tool(attr: TokenStream, item: TokenStream) -> Result<TokenStre
                     capabilities: vec![#(#capabilities.to_string()),*],
                     dangerous: #dangerous,
                     enabled: #enabled,
+                    default_allowlisted: true,
+                    approval_required: false,
+                    interop: None,
                     source: crate::tool_registry::ToolSource::BuiltIn,
                 },
                 backend: crate::tool_registry::ToolBackendConfig::Host {

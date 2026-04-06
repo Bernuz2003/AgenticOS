@@ -16,6 +16,24 @@ fn next_human_request_id() -> String {
     format!("human-{}-{seq}", current_timestamp_ms())
 }
 
+pub(crate) fn build_approval_request(
+    question: impl Into<String>,
+    details: Option<String>,
+) -> HumanInputRequest {
+    HumanInputRequest {
+        request_id: next_human_request_id(),
+        kind: HumanInputRequestKind::Approval,
+        question: question.into(),
+        details: details
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        choices: vec!["approve".to_string(), "reject".to_string()],
+        allow_free_text: false,
+        placeholder: None,
+        requested_at_ms: current_timestamp_ms(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AskHumanKind {
